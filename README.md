@@ -51,7 +51,7 @@ CHOMP combines **automatic differentiation**, **sparse linear algebra**, and **a
 ### Quick install (Python)
 
 ```bash
-git clone https://github.com/your-org/chomp.git
+git clone https://github.com/lseman/chomp.git
 cd chomp
 pip install -e .
 ````
