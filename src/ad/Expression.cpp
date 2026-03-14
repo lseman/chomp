@@ -52,7 +52,21 @@ using ExpressionPtr = std::shared_ptr<Expression>;
 
 // Minimal constant-node helper using make_cte from the operators file.
 [[gnu::always_inline]] inline ADNodePtr make_const_node_fast(const ADGraphPtr& g, double v) {
-    return make_cte(g, v);
+    if (g) [[likely]] {
+        return g->createConstantNode(v);
+    }
+    auto n = std::make_shared<ADNode>();
+    n->type = Operator::cte;
+    n->value = v;
+    return n;
+}
+
+[[gnu::always_inline]] inline bool const_node_value(const ADNodePtr& n, double& out) noexcept {
+    if (n && n->type == Operator::cte) [[likely]] {
+        out = n->value;
+        return true;
+    }
+    return false;
 }
 
 // Node constructors with reserved inputs to avoid reallocs.
@@ -106,6 +120,13 @@ ExpressionPtr Expression::operator+(const Expression& o) const {
     auto g = pick_graph_fast(graph, o.graph);
     adopt_if_needed(g, graph,   node);
     adopt_if_needed(g, o.graph, o.node);
+    double a = 0.0, b = 0.0;
+    if (const_node_value(node, a) && const_node_value(o.node, b)) [[unlikely]]
+        return alias_expr(g, make_const_node_fast(g, a + b));
+    if (const_node_value(node, a) && is_pos0(a)) [[unlikely]]
+        return alias_expr(g, o.node);
+    if (const_node_value(o.node, b) && is_pos0(b)) [[unlikely]]
+        return alias_expr(g, node);
     return alias_expr(g, make_node_2in<Operator::Add>(g, node, o.node));
 }
 
@@ -113,6 +134,13 @@ ExpressionPtr Expression::operator-(const Expression& o) const {
     auto g = pick_graph_fast(graph, o.graph);
     adopt_if_needed(g, graph,   node);
     adopt_if_needed(g, o.graph, o.node);
+    double a = 0.0, b = 0.0;
+    if (const_node_value(node, a) && const_node_value(o.node, b)) [[unlikely]]
+        return alias_expr(g, make_const_node_fast(g, a - b));
+    if (const_node_value(o.node, b) && is_pos0(b)) [[unlikely]]
+        return alias_expr(g, node);
+    if (const_node_value(node, a) && is_pos0(a)) [[unlikely]]
+        return negate_expr(g, o.node);
     return alias_expr(g, make_node_2in<Operator::Subtract>(g, node, o.node));
 }
 
@@ -120,6 +148,19 @@ ExpressionPtr Expression::operator*(const Expression& o) const {
     auto g = pick_graph_fast(graph, o.graph);
     adopt_if_needed(g, graph,   node);
     adopt_if_needed(g, o.graph, o.node);
+    double a = 0.0, b = 0.0;
+    if (const_node_value(node, a) && const_node_value(o.node, b)) [[unlikely]]
+        return alias_expr(g, make_const_node_fast(g, a * b));
+    if ((const_node_value(node, a) && is_pos0(a)) || (const_node_value(o.node, b) && is_pos0(b))) [[unlikely]]
+        return alias_expr(g, make_const_node_fast(g, 0.0));
+    if (const_node_value(node, a) && is_pos1(a)) [[unlikely]]
+        return alias_expr(g, o.node);
+    if (const_node_value(o.node, b) && is_pos1(b)) [[unlikely]]
+        return alias_expr(g, node);
+    if (const_node_value(node, a) && is_neg1(a)) [[unlikely]]
+        return negate_expr(g, o.node);
+    if (const_node_value(o.node, b) && is_neg1(b)) [[unlikely]]
+        return negate_expr(g, node);
     return alias_expr(g, make_node_2in<Operator::Multiply>(g, node, o.node));
 }
 
@@ -127,6 +168,17 @@ ExpressionPtr Expression::operator/(const Expression& o) const {
     auto g = pick_graph_fast(graph, o.graph);
     adopt_if_needed(g, graph,   node);
     adopt_if_needed(g, o.graph, o.node);
+    double a = 0.0, b = 0.0;
+    if (const_node_value(o.node, b) && is_pos0(b)) [[unlikely]]
+        throw std::domain_error("Division by zero in expression");
+    if (const_node_value(node, a) && const_node_value(o.node, b)) [[unlikely]]
+        return alias_expr(g, make_const_node_fast(g, a / b));
+    if (const_node_value(node, a) && is_pos0(a)) [[unlikely]]
+        return alias_expr(g, make_const_node_fast(g, 0.0));
+    if (const_node_value(o.node, b) && is_pos1(b)) [[unlikely]]
+        return alias_expr(g, node);
+    if (const_node_value(o.node, b) && is_neg1(b)) [[unlikely]]
+        return negate_expr(g, node);
     return alias_expr(g, make_node_2in<Operator::Divide>(g, node, o.node));
 }
 
@@ -276,6 +328,14 @@ ExpressionPtr pow(const Expression& x, double p) {
     auto ex  = make_node_1in<Operator::Exp>(g, scl);
     return alias_expr(g, ex);
 }
+
+ExpressionPtr max(const Expression& a, const Expression& b) {
+    auto g = pick_graph_fast(a.graph, b.graph);
+    adopt_if_needed(g, a.graph, a.node);
+    adopt_if_needed(g, b.graph, b.node);
+    return alias_expr(g, make_node_2in<Operator::Max>(g, a.node, b.node));
+}
+
 
 // ============================================================================
 // Math functions

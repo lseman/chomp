@@ -28,18 +28,20 @@ std::vector<ExpressionPtr> Variable::getParents() const {
 
 // Variable * Variable -> Expression
 ExpressionPtr Variable::operator*(const Variable& other) const {
+    auto g = std::make_shared<ADGraph>();
     auto self = std::const_pointer_cast<Variable>(shared_from_this());
-    auto lhs  = std::make_shared<Expression>(self, 1.0);
+    auto lhs  = std::make_shared<Expression>(self, 1.0, g);
 
     auto otherPtr = std::const_pointer_cast<Variable>(other.shared_from_this());
-    auto rhs      = std::make_shared<Expression>(otherPtr, 1.0);
+    auto rhs      = std::make_shared<Expression>(otherPtr, 1.0, g);
 
     return (*lhs) * (*rhs);
 }
 
 // Variable * scalar -> Expression
-ExpressionPtr Variable::operator*(double lhs) {
+ExpressionPtr Variable::operator*(double lhs) const {
     auto self = std::const_pointer_cast<Variable>(shared_from_this());
-    auto e    = std::make_shared<Expression>(self, 1.0);
+    auto g    = std::make_shared<ADGraph>();
+    auto e    = std::make_shared<Expression>(self, 1.0, g);
     return (*e) * lhs;
 }

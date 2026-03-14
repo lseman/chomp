@@ -3,18 +3,10 @@
 #ifndef DEFINITIONS_H
 #define DEFINITIONS_H
 
+#include <iostream>
 #include <map>
 #include <memory>
 #include <set>
-#include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
-#include <iostream>
-
-
-#include <map>
-#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -40,22 +32,23 @@ enum class Operator {
     Subtract,
     Multiply,
     Divide,
-    Sin,     // NEW
-    Cos,     // NEW
+    Sin,  // NEW
+    Cos,  // NEW
     Tan,
     Exp,
     Log,
     Max,
-    Tanh,    // NEW
-    Silu,    // NEW
-    Gelu,    // NEW
-    Relu,    // NEW
+    Tanh,  // NEW
+    Silu,  // NEW
+    Gelu,  // NEW
+    Relu,  // NEW
     Softmax,
-    Abs,     // NEW
-    Sqrt,    // NEW
-    Pow      // NEW
+    Abs,   // NEW
+    Sqrt,  // NEW
+    Pow,    // NEW
+    Neg,
+    Min
 };
 enum class NLP { NA, Bilinear };
 
-
-#endif // DEFINITIONS_H
+#endif  // DEFINITIONS_H

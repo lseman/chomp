@@ -1,11 +1,12 @@
 // OpTraits.h — COMPLETE IMPLEMENTATION with Lane Support
 #pragma once
-#include "ADGraph.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <memory>
+
+#include "ADGraph.h"
 
 // ---- Optimized helpers ----
 inline double _safe_div(double a, double b) noexcept {
@@ -21,80 +22,81 @@ extern thread_local std::vector<double> g_scratch_values;
 extern thread_local std::vector<size_t> g_scratch_bases;
 
 inline void ensure_scratch_size(size_t n) {
-    if (g_scratch_values.size() < n)
-        g_scratch_values.resize(n * 2);
+    if (g_scratch_values.size() < n) g_scratch_values.resize(n * 2);
 }
 
 inline void ensure_base_size(size_t n) {
-    if (g_scratch_bases.size() < n)
-        g_scratch_bases.resize(n * 2);
+    if (g_scratch_bases.size() < n) g_scratch_bases.resize(n * 2);
 }
-} // namespace
+}  // namespace
 
 // ---- Extended base template ----
-template <Operator Op> struct OpTraits {
-    static constexpr const char *name = "unknown";
-    static inline void forward(ADNode &, ADGraph &) noexcept {}
-    static inline void backward(ADNode &, ADGraph &) noexcept {}
-    static inline void forward_dot_lanes(ADNode &, ADGraph &, size_t,
+template <Operator Op>
+struct OpTraits {
+    static constexpr const char* name = "unknown";
+    static inline void forward(ADNode&, ADGraph&) noexcept {}
+    static inline void backward(ADNode&, ADGraph&) noexcept {}
+    static inline void forward_dot_lanes(ADNode&, ADGraph&, size_t,
                                          size_t) noexcept {}
-    static inline void backward_lanes(ADNode &, ADGraph &, size_t,
+    static inline void backward_lanes(ADNode&, ADGraph&, size_t,
                                       size_t) noexcept {}
-    static inline void fused_forward(ADNode &, ADGraph &, size_t,
+    static inline void fused_forward(ADNode&, ADGraph&, size_t,
                                      size_t) noexcept {}
 };
 
 // ===== NULLARY: cte / var =====
-template <> struct OpTraits<Operator::cte> {
-    static constexpr const char *name = "cte";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::cte> {
+    static constexpr const char* name = "cte";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.value);
     }
-    static inline void backward(ADNode &, ADGraph &) noexcept {}
-    static inline void forward_dot_lanes(ADNode &, ADGraph &, size_t,
+    static inline void backward(ADNode&, ADGraph&) noexcept {}
+    static inline void forward_dot_lanes(ADNode&, ADGraph&, size_t,
                                          size_t) noexcept {}
-    static inline void backward_lanes(ADNode &, ADGraph &, size_t,
+    static inline void backward_lanes(ADNode&, ADGraph&, size_t,
                                       size_t) noexcept {}
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t,
                                      size_t) noexcept {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.value);
     }
 };
 
-template <> struct OpTraits<Operator::Var> {
-    static constexpr const char *name = "var";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Var> {
+    static constexpr const char* name = "var";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.value);
     }
-    static inline void backward(ADNode &, ADGraph &) noexcept {}
-    static inline void forward_dot_lanes(ADNode &, ADGraph &, size_t,
+    static inline void backward(ADNode&, ADGraph&) noexcept {}
+    static inline void forward_dot_lanes(ADNode&, ADGraph&, size_t,
                                          size_t) noexcept {}
-    static inline void backward_lanes(ADNode &, ADGraph &, size_t,
+    static inline void backward_lanes(ADNode&, ADGraph&, size_t,
                                       size_t) noexcept {}
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t,
                                      size_t) noexcept {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.value);
     }
 };
 
 // ===== UNARY OPERATORS =====
-template <> struct OpTraits<Operator::Sin> {
-    static constexpr const char *name = "sin";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Sin> {
+    static constexpr const char* name = "sin";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::sin(x));
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double df = std::cos(x);
         ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double cosx = std::cos(n.inputs[0]->value);
@@ -102,10 +104,9 @@ template <> struct OpTraits<Operator::Sin> {
             g.lanes_.dot[ybase + l] = cosx * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         const double c = std::cos(x), s = std::sin(x);
@@ -117,10 +118,9 @@ template <> struct OpTraits<Operator::Sin> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const double sinx = std::sin(x);
         const double cosx = std::cos(x);
@@ -133,23 +133,23 @@ template <> struct OpTraits<Operator::Sin> {
     }
 };
 
-template <> struct OpTraits<Operator::Cos> {
-    static constexpr const char *name = "cos";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Cos> {
+    static constexpr const char* name = "cos";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::cos(x));
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double df = -std::sin(x);
         ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double sinx = -std::sin(n.inputs[0]->value);
@@ -157,10 +157,9 @@ template <> struct OpTraits<Operator::Cos> {
             g.lanes_.dot[ybase + l] = sinx * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         const double s = std::sin(x), c = std::cos(x);
@@ -172,10 +171,9 @@ template <> struct OpTraits<Operator::Cos> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const double cosx = std::cos(x);
         const double sinx = std::sin(x);
@@ -188,13 +186,14 @@ template <> struct OpTraits<Operator::Cos> {
     }
 };
 
-template <> struct OpTraits<Operator::Tan> {
-    static constexpr const char *name = "tan";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Tan> {
+    static constexpr const char* name = "tan";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::tan(x));
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double c = std::cos(x);
         const double df = LIKELY(std::abs(c) > 1e-12) ? (1.0 / (c * c)) : 0.0;
@@ -202,10 +201,9 @@ template <> struct OpTraits<Operator::Tan> {
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double tx = std::tan(n.inputs[0]->value);
@@ -214,10 +212,9 @@ template <> struct OpTraits<Operator::Tan> {
             g.lanes_.dot[ybase + l] = sec2 * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         const double t = std::tan(x);
@@ -230,10 +227,9 @@ template <> struct OpTraits<Operator::Tan> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const double tanx = std::tan(x);
 
@@ -246,24 +242,24 @@ template <> struct OpTraits<Operator::Tan> {
     }
 };
 
-template <> struct OpTraits<Operator::Exp> {
-    static constexpr const char *name = "exp";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Exp> {
+    static constexpr const char* name = "exp";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double result = std::exp(x);
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double df = std::exp(x);
         ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double ex = std::exp(n.inputs[0]->value);
@@ -271,10 +267,9 @@ template <> struct OpTraits<Operator::Exp> {
             g.lanes_.dot[ybase + l] = ex * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double ex = std::exp(n.inputs[0]->value);
         const double w = n.gradient;
@@ -285,10 +280,9 @@ template <> struct OpTraits<Operator::Exp> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const double ex = std::exp(x);
 
@@ -300,14 +294,15 @@ template <> struct OpTraits<Operator::Exp> {
     }
 };
 
-template <> struct OpTraits<Operator::Log> {
-    static constexpr const char *name = "log";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Log> {
+    static constexpr const char* name = "log";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double result = LIKELY(x > 0.0) ? std::log(x) : std::log(1e-16);
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         if (LIKELY(x > 0.0)) {
             ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
@@ -315,10 +310,9 @@ template <> struct OpTraits<Operator::Log> {
         }
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double x = n.inputs[0]->value;
@@ -330,10 +324,9 @@ template <> struct OpTraits<Operator::Log> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         if (x > 0.0) {
@@ -348,10 +341,9 @@ template <> struct OpTraits<Operator::Log> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
 
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::log(x));
@@ -367,13 +359,14 @@ template <> struct OpTraits<Operator::Log> {
     }
 };
 
-template <> struct OpTraits<Operator::Tanh> {
-    static constexpr const char *name = "tanh";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Tanh> {
+    static constexpr const char* name = "tanh";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::tanh(x));
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double t = std::tanh(x);
         const double df = 1.0 - t * t;
@@ -381,10 +374,9 @@ template <> struct OpTraits<Operator::Tanh> {
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double th = std::tanh(n.inputs[0]->value);
@@ -393,10 +385,9 @@ template <> struct OpTraits<Operator::Tanh> {
             g.lanes_.dot[ybase + l] = sech2 * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         const double t = std::tanh(x);
@@ -410,10 +401,9 @@ template <> struct OpTraits<Operator::Tanh> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const double th = std::tanh(x);
 
@@ -437,14 +427,15 @@ inline double fast_sigmoid(double x) noexcept {
     }
 }
 
-template <> struct OpTraits<Operator::Silu> {
-    static constexpr const char *name = "silu";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Silu> {
+    static constexpr const char* name = "silu";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double s = fast_sigmoid(x);
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, x * s);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double s = fast_sigmoid(x);
         const double df = s * (1.0 + x * (1.0 - s));
@@ -452,10 +443,9 @@ template <> struct OpTraits<Operator::Silu> {
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double x = n.inputs[0]->value;
@@ -466,10 +456,9 @@ template <> struct OpTraits<Operator::Silu> {
             g.lanes_.dot[ybase + l] = f1 * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         const double s = fast_sigmoid(x);
@@ -484,10 +473,9 @@ template <> struct OpTraits<Operator::Silu> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const double sigmoid = fast_sigmoid(x);
 
@@ -501,15 +489,16 @@ template <> struct OpTraits<Operator::Silu> {
     }
 };
 
-template <> struct OpTraits<Operator::Gelu> {
-    static constexpr const char *name = "gelu";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Gelu> {
+    static constexpr const char* name = "gelu";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double z = x * M_SQRT1_2;
         const double result = 0.5 * x * (1.0 + std::erf(z));
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double z = x * M_SQRT1_2;
         const double A = std::sqrt(2.0 / M_PI) * std::exp(-0.5 * x * x);
@@ -518,10 +507,9 @@ template <> struct OpTraits<Operator::Gelu> {
                           g.cur_grad_epoch_) += n.gradient * df;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         constexpr double inv_sqrt2 = 0.70710678118654752440;
@@ -534,10 +522,9 @@ template <> struct OpTraits<Operator::Gelu> {
             g.lanes_.dot[ybase + l] = f1 * g.lanes_.dot[xbase + l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         constexpr double inv_sqrt2 = 0.70710678118654752440;
         constexpr double inv_sqrt2pi = 0.39894228040143267794;
@@ -554,10 +541,9 @@ template <> struct OpTraits<Operator::Gelu> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         constexpr double inv_sqrt2 = 0.70710678118654752440;
         constexpr double inv_sqrt2pi = 0.39894228040143267794;
         const double x = n.inputs[0]->value;
@@ -574,14 +560,15 @@ template <> struct OpTraits<Operator::Gelu> {
     }
 };
 
-template <> struct OpTraits<Operator::Relu> {
-    static constexpr const char *name = "relu";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Relu> {
+    static constexpr const char* name = "relu";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         const double result = (x > 0.0) ? x : 0.0;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         if (x > 0.0) {
             ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
@@ -589,10 +576,9 @@ template <> struct OpTraits<Operator::Relu> {
         }
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double xv = n.inputs[0]->value;
@@ -603,10 +589,9 @@ template <> struct OpTraits<Operator::Relu> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         if (x > 0.0) {
@@ -615,10 +600,9 @@ template <> struct OpTraits<Operator::Relu> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 1)
-            return;
+        if (n.inputs.size() != 1) return;
         const double x = n.inputs[0]->value;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
 
@@ -634,21 +618,25 @@ template <> struct OpTraits<Operator::Relu> {
 
 // ===== BINARY OPERATORS =====
 // ===== BINARY: SUBTRACT (tight inner loops) =====
-template <> struct OpTraits<Operator::Subtract> {
-    static constexpr const char *name = "subtract";
+template <>
+struct OpTraits<Operator::Subtract> {
+    static constexpr const char* name = "subtract";
 
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                         n.inputs[0]->value - n.inputs[1]->value);
     }
 
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double w = n.gradient;
-        ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w;
-        ensure_epoch_zero(n.inputs[1]->gradient, n.inputs[1]->grad_epoch, g.cur_grad_epoch_) -= w;
+        ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
+                          g.cur_grad_epoch_) += w;
+        ensure_epoch_zero(n.inputs[1]->gradient, n.inputs[1]->grad_epoch,
+                          g.cur_grad_epoch_) -= w;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
+                                         size_t ybase) noexcept {
         const size_t a = g.lanes_.base(n.inputs[0]->id);
         const size_t b = g.lanes_.base(n.inputs[1]->id);
         double* __restrict yd = &g.lanes_.dot[ybase];
@@ -657,16 +645,21 @@ template <> struct OpTraits<Operator::Subtract> {
         for (size_t l = 0; l < L; ++l) yd[l] = ad[l] - bd[l];
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
+                                      size_t ybase) noexcept {
         const size_t a = g.lanes_.base(n.inputs[0]->id);
         const size_t b = g.lanes_.base(n.inputs[1]->id);
         const double* __restrict gu = &g.lanes_.gdot[ybase];
         double* __restrict ga = &g.lanes_.gdot[a];
         double* __restrict gb = &g.lanes_.gdot[b];
-        for (size_t l = 0; l < L; ++l) { ga[l] += gu[l]; gb[l] -= gu[l]; }
+        for (size_t l = 0; l < L; ++l) {
+            ga[l] += gu[l];
+            gb[l] -= gu[l];
+        }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
+                                     size_t ybase) noexcept {
         const double a0 = n.inputs[0]->value, b0 = n.inputs[1]->value;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, a0 - b0);
         const size_t a = g.lanes_.base(n.inputs[0]->id);
@@ -678,16 +671,16 @@ template <> struct OpTraits<Operator::Subtract> {
     }
 };
 
-
-template <> struct OpTraits<Operator::Divide> {
-    static constexpr const char *name = "divide";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Divide> {
+    static constexpr const char* name = "divide";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         const double result = _safe_div(a, b);
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         const double w = n.gradient;
@@ -700,10 +693,9 @@ template <> struct OpTraits<Operator::Divide> {
         }
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 2)
-            return;
+        if (n.inputs.size() != 2) return;
         const int ia = n.inputs[0]->id, ib = n.inputs[1]->id;
         const size_t abase = g.lanes_.base(ia), bbase = g.lanes_.base(ib);
         const double aval = n.inputs[0]->value, bval = n.inputs[1]->value;
@@ -719,10 +711,9 @@ template <> struct OpTraits<Operator::Divide> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 2)
-            return;
+        if (n.inputs.size() != 2) return;
         const size_t abase = g.lanes_.base(n.inputs[0]->id);
         const size_t bbase = g.lanes_.base(n.inputs[1]->id);
         const double aval = n.inputs[0]->value, bval = n.inputs[1]->value;
@@ -743,10 +734,9 @@ template <> struct OpTraits<Operator::Divide> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 2)
-            return;
+        if (n.inputs.size() != 2) return;
         const double aval = n.inputs[0]->value;
         const double bval = n.inputs[1]->value;
         const int ia = n.inputs[0]->id, ib = n.inputs[1]->id;
@@ -769,15 +759,16 @@ template <> struct OpTraits<Operator::Divide> {
     }
 };
 
-template <> struct OpTraits<Operator::Max> {
-    static constexpr const char *name = "max";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Max> {
+    static constexpr const char* name = "max";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         const double result = (a >= b) ? a : b;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         if (a >= b) {
@@ -789,10 +780,9 @@ template <> struct OpTraits<Operator::Max> {
         }
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
-        if (n.inputs.size() != 2)
-            return;
+        if (n.inputs.size() != 2) return;
         const int ia = n.inputs[0]->id, ib = n.inputs[1]->id;
         const size_t abase = g.lanes_.base(ia), bbase = g.lanes_.base(ib);
         const double a = n.inputs[0]->value, b = n.inputs[1]->value;
@@ -803,10 +793,9 @@ template <> struct OpTraits<Operator::Max> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
-        if (n.inputs.size() != 2)
-            return;
+        if (n.inputs.size() != 2) return;
         const size_t abase = g.lanes_.base(n.inputs[0]->id);
         const size_t bbase = g.lanes_.base(n.inputs[1]->id);
         const double a = n.inputs[0]->value, b = n.inputs[1]->value;
@@ -819,10 +808,9 @@ template <> struct OpTraits<Operator::Max> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
-        if (n.inputs.size() != 2)
-            return;
+        if (n.inputs.size() != 2) return;
         const double aval = n.inputs[0]->value;
         const double bval = n.inputs[1]->value;
         const int ia = n.inputs[0]->id, ib = n.inputs[1]->id;
@@ -838,14 +826,21 @@ template <> struct OpTraits<Operator::Max> {
     }
 };
 
-
 // ===== N-ARY: ADD (fast) =====
-template <> struct OpTraits<Operator::Add> {
-    static constexpr const char *name = "add";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Add> {
+    static constexpr const char* name = "add";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const size_t m = n.inputs.size();
-        if (m == 0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 0.0); return; }
-        if (m == 1) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.inputs[0]->value); return; }
+        if (m == 0) {
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 0.0);
+            return;
+        }
+        if (m == 1) {
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                            n.inputs[0]->value);
+            return;
+        }
 
         // Tiny cases fully unrolled
         if (m == 2) {
@@ -854,14 +849,15 @@ template <> struct OpTraits<Operator::Add> {
             return;
         }
         if (m == 3) {
-            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
-                            n.inputs[0]->value + n.inputs[1]->value + n.inputs[2]->value);
+            set_epoch_value(
+                n.value, n.val_epoch, g.cur_val_epoch_,
+                n.inputs[0]->value + n.inputs[1]->value + n.inputs[2]->value);
             return;
         }
         if (m == 4) {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                             (n.inputs[0]->value + n.inputs[1]->value) +
-                            (n.inputs[2]->value + n.inputs[3]->value));
+                                (n.inputs[2]->value + n.inputs[3]->value));
             return;
         }
 
@@ -876,13 +872,15 @@ template <> struct OpTraits<Operator::Add> {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, s0 + s1);
     }
 
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double w = n.gradient;
-        for (const auto &inp : n.inputs)
-            ensure_epoch_zero(inp->gradient, inp->grad_epoch, g.cur_grad_epoch_) += w;
+        for (const auto& inp : n.inputs)
+            ensure_epoch_zero(inp->gradient, inp->grad_epoch,
+                              g.cur_grad_epoch_) += w;
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
+                                         size_t ybase) noexcept {
         const size_t m = n.inputs.size();
         if (m == 0) return;
         if (m == 1) {
@@ -912,26 +910,30 @@ template <> struct OpTraits<Operator::Add> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
+                                      size_t ybase) noexcept {
         const double* __restrict gud = &g.lanes_.gdot[ybase];
-        for (const auto &inp : n.inputs) {
+        for (const auto& inp : n.inputs) {
             const size_t b = g.lanes_.base(inp->id);
             double* __restrict gd = &g.lanes_.gdot[b];
             for (size_t l = 0; l < L; ++l) gd[l] += gud[l];
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
+                                     size_t ybase) noexcept {
         const size_t m = n.inputs.size();
         if (m == 0) return;
         if (m == 1) {
-            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.inputs[0]->value);
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                            n.inputs[0]->value);
             const size_t b = g.lanes_.base(n.inputs[0]->id);
             std::copy_n(&g.lanes_.dot[b], L, &g.lanes_.dot[ybase]);
             return;
         }
 
-        // Seed lanes with the first input, accumulate others; accumulate primal alongside
+        // Seed lanes with the first input, accumulate others; accumulate primal
+        // alongside
         double sum_val = n.inputs[0]->value;
         const size_t b0 = g.lanes_.base(n.inputs[0]->id);
         std::copy_n(&g.lanes_.dot[b0], L, &g.lanes_.dot[ybase]);
@@ -948,71 +950,94 @@ template <> struct OpTraits<Operator::Add> {
 };
 
 // ===== N-ARY: MULTIPLY (fast) =====
-template <> struct OpTraits<Operator::Multiply> {
-    static constexpr const char *name = "multiply";
+template <>
+struct OpTraits<Operator::Multiply> {
+    static constexpr const char* name = "multiply";
 
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const size_t m = n.inputs.size();
-        if (m == 0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 1.0); return; }
-        if (m == 1) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.inputs[0]->value); return; }
+        if (m == 0) {
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 1.0);
+            return;
+        }
+        if (m == 1) {
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                            n.inputs[0]->value);
+            return;
+        }
         if (m == 2) {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                             n.inputs[0]->value * n.inputs[1]->value);
             return;
         }
         if (m == 3) {
-            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
-                            (n.inputs[0]->value * n.inputs[1]->value) * n.inputs[2]->value);
+            set_epoch_value(
+                n.value, n.val_epoch, g.cur_val_epoch_,
+                (n.inputs[0]->value * n.inputs[1]->value) * n.inputs[2]->value);
             return;
         }
 
         // Count zeros and compute product of nonzeros
-        size_t zero_cnt = 0; size_t zero_idx = SIZE_MAX;
+        size_t zero_cnt = 0;
+        size_t zero_idx = SIZE_MAX;
         double prod_nz = 1.0;
         for (size_t i = 0; i < m; ++i) {
             const double v = n.inputs[i]->value;
-            if (v == 0.0) { if (++zero_cnt == 1) zero_idx = i; }
-            else { prod_nz *= v; }
+            if (v == 0.0) {
+                if (++zero_cnt == 1) zero_idx = i;
+            } else {
+                prod_nz *= v;
+            }
         }
         const double result = (zero_cnt == 0) ? prod_nz : 0.0;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
 
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const size_t m = n.inputs.size();
         if (m == 0) return;
         if (m == 1) {
-            ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += n.gradient;
+            ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
+                              g.cur_grad_epoch_) += n.gradient;
             return;
         }
         if (m == 2) {
-            const double a = n.inputs[0]->value, b = n.inputs[1]->value, w = n.gradient;
-            ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * b;
-            ensure_epoch_zero(n.inputs[1]->gradient, n.inputs[1]->grad_epoch, g.cur_grad_epoch_) += w * a;
+            const double a = n.inputs[0]->value, b = n.inputs[1]->value,
+                         w = n.gradient;
+            ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
+                              g.cur_grad_epoch_) += w * b;
+            ensure_epoch_zero(n.inputs[1]->gradient, n.inputs[1]->grad_epoch,
+                              g.cur_grad_epoch_) += w * a;
             return;
         }
 
         // m > 2
-        size_t zc = 0, zi = SIZE_MAX; double prod_nz = 1.0;
+        size_t zc = 0, zi = SIZE_MAX;
+        double prod_nz = 1.0;
         for (size_t i = 0; i < m; ++i) {
             const double v = n.inputs[i]->value;
-            if (v == 0.0) { if (++zc == 1) zi = i; }
-            else prod_nz *= v;
+            if (v == 0.0) {
+                if (++zc == 1) zi = i;
+            } else
+                prod_nz *= v;
         }
         const double w = n.gradient;
-        if (zc >= 2) return; // all grads zero
+        if (zc >= 2) return;  // all grads zero
         if (zc == 1) {
-            ensure_epoch_zero(n.inputs[zi]->gradient, n.inputs[zi]->grad_epoch, g.cur_grad_epoch_) += w * prod_nz;
+            ensure_epoch_zero(n.inputs[zi]->gradient, n.inputs[zi]->grad_epoch,
+                              g.cur_grad_epoch_) += w * prod_nz;
             return;
         }
         // No zeros: ∂/∂x_i = w * prod / x_i
         for (size_t i = 0; i < m; ++i) {
             const double xi = n.inputs[i]->value;
-            ensure_epoch_zero(n.inputs[i]->gradient, n.inputs[i]->grad_epoch, g.cur_grad_epoch_) += w * (prod_nz / xi);
+            ensure_epoch_zero(n.inputs[i]->gradient, n.inputs[i]->grad_epoch,
+                              g.cur_grad_epoch_) += w * (prod_nz / xi);
         }
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
+                                         size_t ybase) noexcept {
         const size_t m = n.inputs.size();
         if (!m) return;
         if (m == 1) {
@@ -1033,15 +1058,21 @@ template <> struct OpTraits<Operator::Multiply> {
         }
 
         // m > 2, product & zero handling (no prefix/suffix)
-        size_t zc = 0, zi = SIZE_MAX; double prod_nz = 1.0;
+        size_t zc = 0, zi = SIZE_MAX;
+        double prod_nz = 1.0;
         for (size_t j = 0; j < m; ++j) {
             const double v = n.inputs[j]->value;
-            if (v == 0.0) { if (++zc == 1) zi = j; }
-            else prod_nz *= v;
+            if (v == 0.0) {
+                if (++zc == 1) zi = j;
+            } else
+                prod_nz *= v;
         }
         double* __restrict yd = &g.lanes_.dot[ybase];
 
-        if (zc >= 2) { std::fill_n(yd, L, 0.0); return; }
+        if (zc >= 2) {
+            std::fill_n(yd, L, 0.0);
+            return;
+        }
         if (zc == 1) {
             const size_t zb = g.lanes_.base(n.inputs[zi]->id);
             const double* __restrict zd = &g.lanes_.dot[zb];
@@ -1061,7 +1092,8 @@ template <> struct OpTraits<Operator::Multiply> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
+                                      size_t ybase) noexcept {
         const size_t m = n.inputs.size();
         if (!m) return;
 
@@ -1090,15 +1122,18 @@ template <> struct OpTraits<Operator::Multiply> {
         }
 
         // m > 2
-        size_t zc = 0, zi = SIZE_MAX; double prod_nz = 1.0;
+        size_t zc = 0, zi = SIZE_MAX;
+        double prod_nz = 1.0;
         for (size_t j = 0; j < m; ++j) {
             const double v = n.inputs[j]->value;
-            if (v == 0.0) { if (++zc == 1) zi = j; }
-            else prod_nz *= v;
+            if (v == 0.0) {
+                if (++zc == 1) zi = j;
+            } else
+                prod_nz *= v;
         }
         const double* __restrict gu = &g.lanes_.gdot[ybase];
 
-        if (zc >= 2) return; // everything zero already
+        if (zc >= 2) return;  // everything zero already
         if (zc == 1) {
             // Only the zero input gets gu * prod_nz; others only get w * terms
             const size_t zb = g.lanes_.base(n.inputs[zi]->id);
@@ -1108,15 +1143,16 @@ template <> struct OpTraits<Operator::Multiply> {
                 gz[l] += gu[l] * prod_nz;
             }
             // w * terms to non-zero children: dz * (prod/x_i)
-            for (size_t i = 0; i < m; ++i) if (i != zi) {
-                const size_t ib = g.lanes_.base(n.inputs[i]->id);
-                double* __restrict gi = &g.lanes_.gdot[ib];
-                const double xi = n.inputs[i]->value;
-                for (size_t l = 0; l < L; ++l) {
-                    const double dz = zd[l];
-                    gi[l] += w * (dz * (prod_nz / xi));
+            for (size_t i = 0; i < m; ++i)
+                if (i != zi) {
+                    const size_t ib = g.lanes_.base(n.inputs[i]->id);
+                    double* __restrict gi = &g.lanes_.gdot[ib];
+                    const double xi = n.inputs[i]->value;
+                    for (size_t l = 0; l < L; ++l) {
+                        const double dz = zd[l];
+                        gi[l] += w * (dz * (prod_nz / xi));
+                    }
                 }
-            }
             return;
         }
 
@@ -1141,11 +1177,13 @@ template <> struct OpTraits<Operator::Multiply> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
+                                     size_t ybase) noexcept {
         const size_t m = n.inputs.size();
         if (!m) return;
         if (m == 1) {
-            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, n.inputs[0]->value);
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                            n.inputs[0]->value);
             const size_t b = g.lanes_.base(n.inputs[0]->id);
             std::copy_n(&g.lanes_.dot[b], L, &g.lanes_.dot[ybase]);
             return;
@@ -1164,16 +1202,23 @@ template <> struct OpTraits<Operator::Multiply> {
         }
 
         // m > 2
-        size_t zc = 0, zi = SIZE_MAX; double prod_nz = 1.0;
+        size_t zc = 0, zi = SIZE_MAX;
+        double prod_nz = 1.0;
         for (size_t j = 0; j < m; ++j) {
             const double v = n.inputs[j]->value;
-            if (v == 0.0) { if (++zc == 1) zi = j; }
-            else prod_nz *= v;
+            if (v == 0.0) {
+                if (++zc == 1) zi = j;
+            } else
+                prod_nz *= v;
         }
-        set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, (zc==0)? prod_nz : 0.0);
+        set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                        (zc == 0) ? prod_nz : 0.0);
 
         double* __restrict yd = &g.lanes_.dot[ybase];
-        if (zc >= 2) { std::fill_n(yd, L, 0.0); return; }
+        if (zc >= 2) {
+            std::fill_n(yd, L, 0.0);
+            return;
+        }
         if (zc == 1) {
             const size_t zb = g.lanes_.base(n.inputs[zi]->id);
             const double* __restrict zd = &g.lanes_.dot[zb];
@@ -1193,17 +1238,18 @@ template <> struct OpTraits<Operator::Multiply> {
 };
 
 // ===== SOFTMAX =====
-template <> struct OpTraits<Operator::Softmax> {
-    static constexpr const char *name = "softmax";
+template <>
+struct OpTraits<Operator::Softmax> {
+    static constexpr const char* name = "softmax";
     static constexpr size_t STACK_THRESHOLD = 32;
 
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const size_t m = n.inputs.size();
 
         // Stack allocation for small arrays
         double stack_x[STACK_THRESHOLD];
         std::unique_ptr<double[]> heap_x;
-        double *x = (m <= STACK_THRESHOLD)
+        double* x = (m <= STACK_THRESHOLD)
                         ? stack_x
                         : (heap_x = std::make_unique<double[]>(m)).get();
 
@@ -1211,8 +1257,7 @@ template <> struct OpTraits<Operator::Softmax> {
         double xmax = -std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < m; ++i) {
             x[i] = n.inputs[i]->value;
-            if (x[i] > xmax)
-                xmax = x[i];
+            if (x[i] > xmax) xmax = x[i];
         }
 
         // Compute stable softmax
@@ -1220,23 +1265,22 @@ template <> struct OpTraits<Operator::Softmax> {
         for (size_t i = 0; i < m; ++i) {
             Z += std::exp(x[i] - xmax);
         }
-        if (UNLIKELY(Z <= 0.0))
-            Z = 1.0;
+        if (UNLIKELY(Z <= 0.0)) Z = 1.0;
 
         const double result = std::exp(x[0] - xmax) / Z;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, result);
     }
 
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const size_t m = n.inputs.size();
 
         // Stack allocation for small arrays
         double stack_x[STACK_THRESHOLD], stack_y[STACK_THRESHOLD];
         std::unique_ptr<double[]> heap_x, heap_y;
-        double *x = (m <= STACK_THRESHOLD)
+        double* x = (m <= STACK_THRESHOLD)
                         ? stack_x
                         : (heap_x = std::make_unique<double[]>(m)).get();
-        double *y = (m <= STACK_THRESHOLD)
+        double* y = (m <= STACK_THRESHOLD)
                         ? stack_y
                         : (heap_y = std::make_unique<double[]>(m)).get();
 
@@ -1244,8 +1288,7 @@ template <> struct OpTraits<Operator::Softmax> {
         double xmax = -std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < m; ++i) {
             x[i] = n.inputs[i]->value;
-            if (x[i] > xmax)
-                xmax = x[i];
+            if (x[i] > xmax) xmax = x[i];
         }
 
         double Z = 0.0;
@@ -1253,8 +1296,7 @@ template <> struct OpTraits<Operator::Softmax> {
             y[i] = std::exp(x[i] - xmax);
             Z += y[i];
         }
-        if (UNLIKELY(Z <= 0.0))
-            Z = 1.0;
+        if (UNLIKELY(Z <= 0.0)) Z = 1.0;
 
         for (size_t i = 0; i < m; ++i) {
             y[i] /= Z;
@@ -1272,11 +1314,10 @@ template <> struct OpTraits<Operator::Softmax> {
         }
     }
 
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
         const size_t m = n.inputs.size();
-        if (m == 0)
-            return;
+        if (m == 0) return;
 
         ensure_scratch_size(m);
         // stable softmax over AoS primals
@@ -1288,10 +1329,9 @@ template <> struct OpTraits<Operator::Softmax> {
             g_scratch_values[j] = std::exp(n.inputs[j]->value - mmax);
             Z += g_scratch_values[j];
         }
-        for (size_t j = 0; j < m; ++j)
-            g_scratch_values[j] /= Z; // s_j
+        for (size_t j = 0; j < m; ++j) g_scratch_values[j] /= Z;  // s_j
 
-        const size_t i = 0; // component index (first input)
+        const size_t i = 0;  // component index (first input)
         const double si = g_scratch_values[i];
 
         for (size_t l = 0; l < L; ++l) {
@@ -1305,11 +1345,10 @@ template <> struct OpTraits<Operator::Softmax> {
         }
     }
 
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
         const size_t m = n.inputs.size();
-        if (m == 0)
-            return;
+        if (m == 0) return;
         const double w = n.gradient;
 
         ensure_scratch_size(m);
@@ -1322,8 +1361,7 @@ template <> struct OpTraits<Operator::Softmax> {
             g_scratch_values[j] = std::exp(n.inputs[j]->value - mmax);
             Z += g_scratch_values[j];
         }
-        for (size_t j = 0; j < m; ++j)
-            g_scratch_values[j] /= Z;
+        for (size_t j = 0; j < m; ++j) g_scratch_values[j] /= Z;
         const size_t i = 0;
         const double si = g_scratch_values[i];
 
@@ -1357,11 +1395,10 @@ template <> struct OpTraits<Operator::Softmax> {
         }
     }
 
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
         const size_t m = n.inputs.size();
-        if (m == 0)
-            return;
+        if (m == 0) return;
 
         ensure_scratch_size(m);
 
@@ -1380,10 +1417,10 @@ template <> struct OpTraits<Operator::Softmax> {
 
         // Third pass: normalize to get softmax values
         for (size_t j = 0; j < m; ++j)
-            g_scratch_values[j] /= Z; // s_j = softmax values
+            g_scratch_values[j] /= Z;  // s_j = softmax values
 
         // Store primal result (assuming this is component 0)
-        const size_t i = 0; // component index (first input)
+        const size_t i = 0;  // component index (first input)
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                         g_scratch_values[i]);
 
@@ -1404,20 +1441,21 @@ template <> struct OpTraits<Operator::Softmax> {
 };
 
 // ===== UNARY: ABS =====
-template <> struct OpTraits<Operator::Abs> {
-    static constexpr const char *name = "abs";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Abs> {
+    static constexpr const char* name = "abs";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::abs(x));
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
-        const double df = (x > 0.0) - (x < 0.0); // sign, 0 at 0
+        const double df = (x > 0.0) - (x < 0.0);  // sign, 0 at 0
         if (df != 0.0)
             ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
                               g.cur_grad_epoch_) += n.gradient * df;
     }
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
         const double x = n.inputs[0]->value;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
@@ -1429,17 +1467,16 @@ template <> struct OpTraits<Operator::Abs> {
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = s * g.lanes_.dot[xbase + l];
     }
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
         const double x = n.inputs[0]->value;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double s = (x > 0.0) - (x < 0.0);
-        if (s == 0.0)
-            return;
+        if (s == 0.0) return;
         for (size_t l = 0; l < L; ++l)
             g.lanes_.gdot[xbase + l] += s * g.lanes_.gdot[ybase + l];
     }
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
         const double x = n.inputs[0]->value;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
@@ -1455,14 +1492,15 @@ template <> struct OpTraits<Operator::Abs> {
 };
 
 // ===== UNARY: SQRT =====
-template <> struct OpTraits<Operator::Sqrt> {
-    static constexpr const char *name = "sqrt";
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+template <>
+struct OpTraits<Operator::Sqrt> {
+    static constexpr const char* name = "sqrt";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         double x = n.inputs[0]->value;
-        x = (x > 0.0) ? x : 0.0; // clamp for stability
+        x = (x > 0.0) ? x : 0.0;  // clamp for stability
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::sqrt(x));
     }
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double x = n.inputs[0]->value;
         if (x > 0.0) {
             const double df = 0.5 / std::sqrt(x);
@@ -1470,7 +1508,7 @@ template <> struct OpTraits<Operator::Sqrt> {
                               g.cur_grad_epoch_) += n.gradient * df;
         }
     }
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
                                          size_t ybase) noexcept {
         const double x = n.inputs[0]->value;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
@@ -1482,14 +1520,13 @@ template <> struct OpTraits<Operator::Sqrt> {
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = df * g.lanes_.dot[xbase + l];
     }
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L,
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
                                       size_t ybase) noexcept {
         const double x = n.inputs[0]->value;
-        if (x <= 0.0)
-            return;
+        if (x <= 0.0) return;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double df = 0.5 / std::sqrt(x);
-        const double fpp = -0.25 / (x * std::sqrt(x)); // d(0.5 x^-1/2)/dx
+        const double fpp = -0.25 / (x * std::sqrt(x));  // d(0.5 x^-1/2)/dx
         const double w = n.gradient;
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
@@ -1497,7 +1534,7 @@ template <> struct OpTraits<Operator::Sqrt> {
             g.lanes_.gdot[xbase + l] += gu * df + w * fpp * dx;
         }
     }
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L,
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
                                      size_t ybase) noexcept {
         double x = n.inputs[0]->value;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
@@ -1523,23 +1560,30 @@ template <> struct OpTraits<Operator::Sqrt> {
 // - a = 0:  y = 0  if b>0;  +inf otherwise. Grads/lanes = 0 (defensive).
 // - a < 0:  fallback to std::pow for value; grads/lanes skipped (may be NaN).
 // ===== BINARY: POW (fast constant-exponent & exp2/log2 path) =====
-template <> struct OpTraits<Operator::Pow> {
-    static constexpr const char *name = "pow";
+template <>
+struct OpTraits<Operator::Pow> {
+    static constexpr const char* name = "pow";
 
     // Helper: detect small integer exponent (for constant exponent nodes only)
-    [[gnu::always_inline]] static inline bool _is_small_int(double b, long long &bi) noexcept {
+    [[gnu::always_inline]] static inline bool _is_small_int(
+        double b, long long& bi) noexcept {
         double r = std::nearbyint(b);
-        if (std::isfinite(r) && std::fabs(b - r) <= 1e-12 * std::max(1.0, std::fabs(b))) {
+        if (std::isfinite(r) &&
+            std::fabs(b - r) <= 1e-12 * std::max(1.0, std::fabs(b))) {
             bi = static_cast<long long>(r);
-            return (std::llabs(bi) <= 19); // cheap safe bound for pow by squaring
+            return (std::llabs(bi) <=
+                    19);  // cheap safe bound for pow by squaring
         }
         return false;
     }
 
     // powi by squaring (handles negative n via reciprocal)
-    [[gnu::always_inline]] static inline double _powi(double a, long long n) noexcept {
+    [[gnu::always_inline]] static inline double _powi(double a,
+                                                      long long n) noexcept {
         if (n == 0) return 1.0;
-        if (n < 0)  { return 1.0 / _powi(a, -n); }
+        if (n < 0) {
+            return 1.0 / _powi(a, -n);
+        }
         double y = 1.0, x = a;
         while (n) {
             if (n & 1) y *= x;
@@ -1550,14 +1594,18 @@ template <> struct OpTraits<Operator::Pow> {
     }
 
     // -------- Forward --------
-    static inline void forward(ADNode &n, ADGraph &g) noexcept {
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
 
         // Trivial bases
-        if (a == 1.0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 1.0); return; }
+        if (a == 1.0) {
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 1.0);
+            return;
+        }
         if (a == 0.0) {
-            double y = (b > 0.0) ? 0.0 : std::numeric_limits<double>::infinity();
+            double y =
+                (b > 0.0) ? 0.0 : std::numeric_limits<double>::infinity();
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, y);
             return;
         }
@@ -1569,24 +1617,49 @@ template <> struct OpTraits<Operator::Pow> {
             long long bi;
             if (_is_small_int(b, bi)) {
                 // integer exponent, valid for any a (including a<0)
-                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, _powi(a, bi));
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                                _powi(a, bi));
                 return;
             }
             // common constants
-            if (b ==  1.0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, a); return; }
-            if (b == -1.0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 1.0 / a); return; }
-            if (b ==  2.0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, a * a); return; }
-            if (b == -2.0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 1.0 / (a * a)); return; }
-            if (b ==  3.0) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, a * a * a); return; }
-            if (b ==  0.5) { set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, (a > 0.0) ? std::sqrt(a) : 0.0); return; }
+            if (b == 1.0) {
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, a);
+                return;
+            }
+            if (b == -1.0) {
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                                1.0 / a);
+                return;
+            }
+            if (b == 2.0) {
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, a * a);
+                return;
+            }
+            if (b == -2.0) {
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                                1.0 / (a * a));
+                return;
+            }
+            if (b == 3.0) {
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                                a * a * a);
+                return;
+            }
+            if (b == 0.5) {
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                                (a > 0.0) ? std::sqrt(a) : 0.0);
+                return;
+            }
 
             // general constant exponent:
             if (a > 0.0) {
                 // faster than exp/log on many platforms
-                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::exp2(b * std::log2(a)));
+                set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                                std::exp2(b * std::log2(a)));
                 return;
             } else {
-                // negative base with non-integer constant exponent -> use std::pow, clamp NaNs
+                // negative base with non-integer constant exponent -> use
+                // std::pow, clamp NaNs
                 double y = std::pow(a, b);
                 if (!std::isfinite(y)) y = 0.0;
                 set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, y);
@@ -1596,7 +1669,8 @@ template <> struct OpTraits<Operator::Pow> {
 
         // Dynamic exponent path (correct gradients require a>0)
         if (a > 0.0) {
-            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, std::exp2(b * std::log2(a)));
+            set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                            std::exp2(b * std::log2(a)));
         } else {
             // Fallback: compute a^b, but we won't propagate grads (undefined)
             double y = std::pow(a, b);
@@ -1606,7 +1680,7 @@ template <> struct OpTraits<Operator::Pow> {
     }
 
     // -------- Backward (scalar) --------
-    static inline void backward(ADNode &n, ADGraph &g) noexcept {
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         const bool exp_is_const = (n.inputs[1]->type == Operator::cte);
@@ -1618,41 +1692,76 @@ template <> struct OpTraits<Operator::Pow> {
             long long bi;
             if (_is_small_int(b, bi)) {
                 // dy/da = bi * a^(bi-1)
-                const double d = (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
-                ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * d;
+                const double d =
+                    (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w * d;
                 return;
             }
-            if (b ==  1.0) { ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w; return; }
-            if (b == -1.0) { ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * (-1.0/(a*a)); return; }
-            if (b ==  2.0) { ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * (2.0 * a); return; }
-            if (b == -2.0) { ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * (-2.0 /(a*a*a)); return; }
-            if (b ==  3.0) { ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * (3.0 * a*a); return; }
-            if (b ==  0.5) {
+            if (b == 1.0) {
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w;
+                return;
+            }
+            if (b == -1.0) {
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w * (-1.0 / (a * a));
+                return;
+            }
+            if (b == 2.0) {
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w * (2.0 * a);
+                return;
+            }
+            if (b == -2.0) {
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w * (-2.0 / (a * a * a));
+                return;
+            }
+            if (b == 3.0) {
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w * (3.0 * a * a);
+                return;
+            }
+            if (b == 0.5) {
                 if (a > 0.0) {
-                    ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * (0.5 / std::sqrt(a));
+                    ensure_epoch_zero(
+                        n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
+                        g.cur_grad_epoch_) += w * (0.5 / std::sqrt(a));
                 }
                 return;
             }
             // general constant real b
             if (a > 0.0) {
-                const double y  = std::exp2(b * std::log2(a));
-                const double da = y * b / a; // dy/da
-                ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * da;
+                const double y = std::exp2(b * std::log2(a));
+                const double da = y * b / a;  // dy/da
+                ensure_epoch_zero(n.inputs[0]->gradient,
+                                  n.inputs[0]->grad_epoch, g.cur_grad_epoch_) +=
+                    w * da;
             }
-            return; // no flow to exponent (cte)
+            return;  // no flow to exponent (cte)
         }
 
         // Dynamic exponent: require a>0 for correct derivatives
         if (a > 0.0) {
             const double la = std::log(a);
-            const double y  = std::exp(b * la);
-            ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch, g.cur_grad_epoch_) += w * (y * b / a);
-            ensure_epoch_zero(n.inputs[1]->gradient, n.inputs[1]->grad_epoch, g.cur_grad_epoch_) += w * (y * la);
+            const double y = std::exp(b * la);
+            ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
+                              g.cur_grad_epoch_) += w * (y * b / a);
+            ensure_epoch_zero(n.inputs[1]->gradient, n.inputs[1]->grad_epoch,
+                              g.cur_grad_epoch_) += w * (y * la);
         }
     }
 
     // -------- Lanes: forward_dot --------
-    static inline void forward_dot_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
+                                         size_t ybase) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         const size_t abase = g.lanes_.base(n.inputs[0]->id);
@@ -1666,21 +1775,26 @@ template <> struct OpTraits<Operator::Pow> {
             long long bi;
             if (_is_small_int(b, bi)) {
                 // y = a^bi; dy = bi*a^(bi-1) * da
-                const double df = (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
+                const double df =
+                    (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
                 const double* __restrict ad = &g.lanes_.dot[abase];
                 for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
                 return;
             }
-            if (b ==  1.0) { std::copy_n(&g.lanes_.dot[abase], L, yd); return; }
-            if (b == -1.0) {
-                if (a != 0.0) {
-                    const double df = -1.0/(a*a);
-                    const double* __restrict ad = &g.lanes_.dot[abase];
-                    for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
-                } else std::fill_n(yd, L, 0.0);
+            if (b == 1.0) {
+                std::copy_n(&g.lanes_.dot[abase], L, yd);
                 return;
             }
-            if (b ==  2.0) {
+            if (b == -1.0) {
+                if (a != 0.0) {
+                    const double df = -1.0 / (a * a);
+                    const double* __restrict ad = &g.lanes_.dot[abase];
+                    for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
+                } else
+                    std::fill_n(yd, L, 0.0);
+                return;
+            }
+            if (b == 2.0) {
                 const double df = 2.0 * a;
                 const double* __restrict ad = &g.lanes_.dot[abase];
                 for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
@@ -1688,30 +1802,32 @@ template <> struct OpTraits<Operator::Pow> {
             }
             if (b == -2.0) {
                 if (a != 0.0) {
-                    const double df = -2.0/(a*a*a);
+                    const double df = -2.0 / (a * a * a);
                     const double* __restrict ad = &g.lanes_.dot[abase];
                     for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
-                } else std::fill_n(yd, L, 0.0);
+                } else
+                    std::fill_n(yd, L, 0.0);
                 return;
             }
-            if (b ==  3.0) {
+            if (b == 3.0) {
                 const double df = 3.0 * a * a;
                 const double* __restrict ad = &g.lanes_.dot[abase];
                 for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
                 return;
             }
-            if (b ==  0.5) {
+            if (b == 0.5) {
                 if (a > 0.0) {
                     const double df = 0.5 / std::sqrt(a);
                     const double* __restrict ad = &g.lanes_.dot[abase];
                     for (size_t l = 0; l < L; ++l) yd[l] = df * ad[l];
-                } else std::fill_n(yd, L, 0.0);
+                } else
+                    std::fill_n(yd, L, 0.0);
                 return;
             }
             // general constant b
             if (a > 0.0) {
                 const double la = std::log(a);
-                const double y  = std::exp(b * la);
+                const double y = std::exp(b * la);
                 const double da = y * b / a;
                 const double* __restrict ad = &g.lanes_.dot[abase];
                 for (size_t l = 0; l < L; ++l) yd[l] = da * ad[l];
@@ -1724,7 +1840,7 @@ template <> struct OpTraits<Operator::Pow> {
         // dynamic exponent path
         if (a > 0.0) {
             const double la = std::log(a);
-            const double y  = std::exp(b * la);
+            const double y = std::exp(b * la);
             const double da = y * b / a;
             const double db = y * la;
             const double* __restrict ad = &g.lanes_.dot[abase];
@@ -1737,7 +1853,8 @@ template <> struct OpTraits<Operator::Pow> {
     }
 
     // -------- Lanes: backward_lanes --------
-    static inline void backward_lanes(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
+                                      size_t ybase) noexcept {
         const double a = n.inputs[0]->value;
         const double b = n.inputs[1]->value;
         const size_t abase = g.lanes_.base(n.inputs[0]->id);
@@ -1754,7 +1871,8 @@ template <> struct OpTraits<Operator::Pow> {
                 double d = (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
                 double* __restrict ga = &g.lanes_.gdot[abase];
                 const double* __restrict ad = &g.lanes_.dot[abase];
-                for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * d; // w* second-deriv skipped (cte b)
+                for (size_t l = 0; l < L; ++l)
+                    ga[l] += gu[l] * d;  // w* second-deriv skipped (cte b)
                 return;
             }
             // closed forms for common constants
@@ -1765,35 +1883,43 @@ template <> struct OpTraits<Operator::Pow> {
                 return;
             }
             if (b == -1.0) {
-                if (a != 0.0) for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (-1.0/(a*a));
+                if (a != 0.0)
+                    for (size_t l = 0; l < L; ++l)
+                        ga[l] += gu[l] * (-1.0 / (a * a));
                 return;
             }
             if (b == 2.0) {
-                for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (2.0*a);
+                for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (2.0 * a);
                 return;
             }
             if (b == -2.0) {
-                if (a != 0.0) for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (-2.0/(a*a*a));
+                if (a != 0.0)
+                    for (size_t l = 0; l < L; ++l)
+                        ga[l] += gu[l] * (-2.0 / (a * a * a));
                 return;
             }
             if (b == 3.0) {
-                for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (3.0*a*a);
+                for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (3.0 * a * a);
                 return;
             }
             if (b == 0.5) {
-                if (a > 0.0) for (size_t l = 0; l < L; ++l) ga[l] += gu[l] * (0.5 / std::sqrt(a));
+                if (a > 0.0)
+                    for (size_t l = 0; l < L; ++l)
+                        ga[l] += gu[l] * (0.5 / std::sqrt(a));
                 return;
             }
             // general constant b with a>0
             if (a > 0.0) {
                 const double la = std::log(a);
-                const double y  = std::exp(b * la);
+                const double y = std::exp(b * la);
                 const double da = y * b / a;
-                const double ddaa = y * (b * (b - 1.0)) / (a * a); // second derivative wrt a
+                const double ddaa =
+                    y * (b * (b - 1.0)) / (a * a);  // second derivative wrt a
                 double* __restrict ga2 = &g.lanes_.gdot[abase];
                 const double* __restrict ad2 = &g.lanes_.dot[abase];
                 for (size_t l = 0; l < L; ++l)
-                    ga2[l] = std::fma(gu[l], da, std::fma(w * ddaa, ad2[l], ga2[l]));
+                    ga2[l] =
+                        std::fma(gu[l], da, std::fma(w * ddaa, ad2[l], ga2[l]));
             }
             return;
         }
@@ -1802,7 +1928,7 @@ template <> struct OpTraits<Operator::Pow> {
         if (a <= 0.0) return;
 
         const double la = std::log(a);
-        const double y  = std::exp(b * la);
+        const double y = std::exp(b * la);
         const double da = y * b / a;
         const double db = y * la;
 
@@ -1817,26 +1943,30 @@ template <> struct OpTraits<Operator::Pow> {
         double* __restrict gb = &g.lanes_.gdot[bbase];
 
         for (size_t l = 0; l < L; ++l) {
-            ga[l] = std::fma(gu[l], da, std::fma(w * ddaa, ad[l], std::fma(w * ddab, bd[l], ga[l])));
-            gb[l] = std::fma(gu[l], db, std::fma(w * ddba, ad[l], std::fma(w * ddbb, bd[l], gb[l])));
+            ga[l] = std::fma(
+                gu[l], da,
+                std::fma(w * ddaa, ad[l], std::fma(w * ddab, bd[l], ga[l])));
+            gb[l] = std::fma(
+                gu[l], db,
+                std::fma(w * ddba, ad[l], std::fma(w * ddbb, bd[l], gb[l])));
         }
     }
 
     // -------- fused_forward --------
-    static inline void fused_forward(ADNode &n, ADGraph &g, size_t L, size_t ybase) noexcept {
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
+                                     size_t ybase) noexcept {
         // Reuse forward() logic to set primal, then fast dot as above
         forward(n, g);
         forward_dot_lanes(n, g, L, ybase);
     }
 };
 
-
 // =====================================================================
 //                     Name mapping (simplified)
 // =====================================================================
-inline const char *op_name(Operator op) noexcept {
+inline const char* op_name(Operator op) noexcept {
     // Use static array for O(1) lookup instead of switch
-    static constexpr const char *names[] = {
+    static constexpr const char* names[] = {
         "var",  "cte",  "add",     "subtract", "multiply", "divide", "sin",
         "cos",  "tan",  "exp",     "log",      "tanh",     "relu",   "max",
         "gelu", "silu", "softmax", "abs",      "sqrt",     "pow"};

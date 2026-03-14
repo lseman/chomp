@@ -1,22 +1,22 @@
 #pragma once
-#include "ADGraph.h"
-#include "Expression.h"
-#include "Variable.h"
-
 #include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ADGraph.h"
+#include "Expression.h"
+#include "Variable.h"
+
 // If you have robin_map/robin_set etc., include them above as needed.
 
 // ============================================================================
 // Local type aliases (match your codebase)
-using VariablePtr   = std::shared_ptr<Variable>;
+using VariablePtr = std::shared_ptr<Variable>;
 using ExpressionPtr = std::shared_ptr<Expression>;
-using ADNodePtr     = std::shared_ptr<ADNode>;
-using ADGraphPtr    = std::shared_ptr<ADGraph>;
+using ADNodePtr = std::shared_ptr<ADNode>;
+using ADGraphPtr = std::shared_ptr<ADGraph>;
 
 // ============================================================================
 // Minimal hot helpers (self-contained)
@@ -34,18 +34,20 @@ inline bool is_const(const ADNodePtr& n, double* out = nullptr) noexcept {
 
 // Minimal constant-node helper (no dependency on ADGraph internals)
 [[gnu::always_inline, gnu::hot]]
-inline ADNodePtr make_cte(const ADGraphPtr &g, double v) {
+inline ADNodePtr make_cte(const ADGraphPtr& g, double v) {
     auto c = std::make_shared<ADNode>();
-    c->type  = Operator::cte;
+    c->type = Operator::cte;
     c->value = v;
-    if (g) [[likely]] g->addNode(c);
+    if (g) [[likely]]
+        g->addNode(c);
     return c;
 }
 
 // Optimized input attachment with early returns
 [[gnu::always_inline, gnu::hot]]
-inline ADNodePtr attach_input(const ExpressionPtr &e, const ADGraphPtr &g) {
-    if (!e) [[unlikely]] return nullptr;
+inline ADNodePtr attach_input(const ExpressionPtr& e, const ADGraphPtr& g) {
+    if (!e) [[unlikely]]
+        return nullptr;
 
     // Fast path: check rootNode first (more specific)
     if (e->rootNode) [[likely]] {
@@ -61,7 +63,8 @@ inline ADNodePtr attach_input(const ExpressionPtr &e, const ADGraphPtr &g) {
 
 // Optimized flattening with capacity hints
 [[gnu::always_inline]]
-inline void flatten_into(Operator op, const ADNodePtr& child, std::vector<ADNodePtr>& dst) {
+inline void flatten_into(Operator op, const ADNodePtr& child,
+                         std::vector<ADNodePtr>& dst) {
     if (child && child->type == op) [[likely]] {
         dst.insert(dst.end(), child->inputs.begin(), child->inputs.end());
     } else {
@@ -73,15 +76,15 @@ inline void flatten_into(Operator op, const ADNodePtr& child, std::vector<ADNode
 [[gnu::always_inline]]
 inline ADNodePtr build_nary_node(const ADGraphPtr& g, Operator op,
                                  std::vector<ADNodePtr>&& ins) {
-    auto out  = std::make_shared<ADNode>();
+    auto out = std::make_shared<ADNode>();
     out->type = op;
     out->inputs = std::move(ins);
     if (g) g->addNode(out);
     return out;
 }
 
-// Consolidate all constant children in an n-ary Add/Multiply and drop identities.
-// Also short-circuits Multiply if a zero is found.
+// Consolidate all constant children in an n-ary Add/Multiply and drop
+// identities. Also short-circuits Multiply if a zero is found.
 [[gnu::always_inline]]
 inline void combine_constants_in_nary(Operator op, std::vector<ADNodePtr>& ins,
                                       const ADGraphPtr& g) {
@@ -108,7 +111,8 @@ inline void combine_constants_in_nary(Operator op, std::vector<ADNodePtr>& ins,
     }
 
     // Reinsert consolidated constant if not identity
-    const bool is_identity = (op == Operator::Add ? (acc == 0.0) : (acc == 1.0));
+    const bool is_identity =
+        (op == Operator::Add ? (acc == 0.0) : (acc == 1.0));
     if (!is_identity) ins.push_back(make_cte(g, acc));
 }
 
@@ -120,12 +124,15 @@ inline void light_canon_for_cse(std::vector<ADNodePtr>& ins) {
     if (ins.size() <= 1) return;
 
     // Ensure a single constant (if any) sits at the back.
-    int k = -1; double _;
+    int k = -1;
+    double _;
     for (int i = 0; i < (int)ins.size(); ++i) {
-        if (is_const(ins[i], &_)) { k = i; break; }
+        if (is_const(ins[i], &_)) {
+            k = i;
+            break;
+        }
     }
-    if (k >= 0 && k != (int)ins.size() - 1)
-        std::swap(ins[k], ins.back());
+    if (k >= 0 && k != (int)ins.size() - 1) std::swap(ins[k], ins.back());
 }
 
 // ============================================================================
@@ -133,7 +140,8 @@ inline void light_canon_for_cse(std::vector<ADNodePtr>& ins) {
 // ============================================================================
 
 [[gnu::hot]]
-inline ExpressionPtr operator+(const ExpressionPtr &lhs, const ExpressionPtr &rhs) {
+inline ExpressionPtr operator+(const ExpressionPtr& lhs,
+                               const ExpressionPtr& rhs) {
     auto g = pick_graph(lhs ? lhs->graph : nullptr, rhs ? rhs->graph : nullptr);
     auto a = attach_input(lhs, g);
     auto b = attach_input(rhs, g);
@@ -144,14 +152,16 @@ inline ExpressionPtr operator+(const ExpressionPtr &lhs, const ExpressionPtr &rh
         return std::make_shared<Expression>(make_cte(g, av + bv), g);
 
     // Identity
-    if (is_const(a, &av) && av == 0.0) [[unlikely]] return std::make_shared<Expression>(b, g);
-    if (is_const(b, &bv) && bv == 0.0) [[unlikely]] return std::make_shared<Expression>(a, g);
+    if (is_const(a, &av) && av == 0.0) [[unlikely]]
+        return std::make_shared<Expression>(b, g);
+    if (is_const(b, &bv) && bv == 0.0) [[unlikely]]
+        return std::make_shared<Expression>(a, g);
 
     // n-ary Add + constant sinking
     const bool a_is_add = (a && a->type == Operator::Add);
     const bool b_is_add = (b && b->type == Operator::Add);
-    const size_t est_sz  = (a_is_add ? a->inputs.size() : 1) +
-                           (b_is_add ? b->inputs.size() : 1);
+    const size_t est_sz =
+        (a_is_add ? a->inputs.size() : 1) + (b_is_add ? b->inputs.size() : 1);
     std::vector<ADNodePtr> ins;
     ins.reserve(est_sz + 2);
 
@@ -161,13 +171,15 @@ inline ExpressionPtr operator+(const ExpressionPtr &lhs, const ExpressionPtr &rh
     combine_constants_in_nary(Operator::Add, ins, g);
     light_canon_for_cse(ins);
 
-    if (ins.empty())  return std::make_shared<Expression>(make_cte(g, 0.0), g);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Add, std::move(ins)), g);
+    if (ins.empty()) return std::make_shared<Expression>(make_cte(g, 0.0), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Add, std::move(ins)), g);
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator-(const ExpressionPtr &lhs, const ExpressionPtr &rhs) {
+inline ExpressionPtr operator-(const ExpressionPtr& lhs,
+                               const ExpressionPtr& rhs) {
     auto g = pick_graph(lhs ? lhs->graph : nullptr, rhs ? rhs->graph : nullptr);
     auto a = attach_input(lhs, g);
     auto b = attach_input(rhs, g);
@@ -184,13 +196,15 @@ inline ExpressionPtr operator-(const ExpressionPtr &lhs, const ExpressionPtr &rh
     if (is_const(a, &av) && av == 0.0) [[unlikely]] {
         // 0 - b -> (-1) * b (flatten-friendly)
         std::vector<ADNodePtr> ins;
-        ins.reserve((b && b->type == Operator::Multiply ? b->inputs.size() : 1) + 1);
+        ins.reserve(
+            (b && b->type == Operator::Multiply ? b->inputs.size() : 1) + 1);
         flatten_into(Operator::Multiply, b, ins);
         ins.push_back(make_cte(g, -1.0));
         combine_constants_in_nary(Operator::Multiply, ins, g);
         light_canon_for_cse(ins);
-        if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-        return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+        if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+        return std::make_shared<Expression>(
+            build_nary_node(g, Operator::Multiply, std::move(ins)), g);
     }
 
     // Keep binary Subtract (don’t normalize in-graph)
@@ -203,7 +217,8 @@ inline ExpressionPtr operator-(const ExpressionPtr &lhs, const ExpressionPtr &rh
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator*(const ExpressionPtr &lhs, const ExpressionPtr &rhs) {
+inline ExpressionPtr operator*(const ExpressionPtr& lhs,
+                               const ExpressionPtr& rhs) {
     auto g = pick_graph(lhs ? lhs->graph : nullptr, rhs ? rhs->graph : nullptr);
     auto a = attach_input(lhs, g);
     auto b = attach_input(rhs, g);
@@ -214,16 +229,19 @@ inline ExpressionPtr operator*(const ExpressionPtr &lhs, const ExpressionPtr &rh
         return std::make_shared<Expression>(make_cte(g, av * bv), g);
 
     // Zero / identity
-    if ((is_const(a, &av) && av == 0.0) || (is_const(b, &bv) && bv == 0.0)) [[unlikely]]
+    if ((is_const(a, &av) && av == 0.0) || (is_const(b, &bv) && bv == 0.0))
+        [[unlikely]]
         return std::make_shared<Expression>(make_cte(g, 0.0), g);
-    if (is_const(a, &av) && av == 1.0) [[unlikely]] return std::make_shared<Expression>(b, g);
-    if (is_const(b, &bv) && bv == 1.0) [[unlikely]] return std::make_shared<Expression>(a, g);
+    if (is_const(a, &av) && av == 1.0) [[unlikely]]
+        return std::make_shared<Expression>(b, g);
+    if (is_const(b, &bv) && bv == 1.0) [[unlikely]]
+        return std::make_shared<Expression>(a, g);
 
     // n-ary Multiply + constant sinking
     const bool a_is_mul = (a && a->type == Operator::Multiply);
     const bool b_is_mul = (b && b->type == Operator::Multiply);
-    const size_t est_sz  = (a_is_mul ? a->inputs.size() : 1) +
-                           (b_is_mul ? b->inputs.size() : 1);
+    const size_t est_sz =
+        (a_is_mul ? a->inputs.size() : 1) + (b_is_mul ? b->inputs.size() : 1);
     std::vector<ADNodePtr> ins;
     ins.reserve(est_sz + 2);
 
@@ -233,13 +251,15 @@ inline ExpressionPtr operator*(const ExpressionPtr &lhs, const ExpressionPtr &rh
     combine_constants_in_nary(Operator::Multiply, ins, g);
     light_canon_for_cse(ins);
 
-    if (ins.empty())   return std::make_shared<Expression>(make_cte(g, 1.0), g);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+    if (ins.empty()) return std::make_shared<Expression>(make_cte(g, 1.0), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Multiply, std::move(ins)), g);
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator/(const ExpressionPtr &lhs, const ExpressionPtr &rhs) {
+inline ExpressionPtr operator/(const ExpressionPtr& lhs,
+                               const ExpressionPtr& rhs) {
     auto g = pick_graph(lhs ? lhs->graph : nullptr, rhs ? rhs->graph : nullptr);
     auto a = attach_input(lhs, g);
     auto b = attach_input(rhs, g);
@@ -247,7 +267,8 @@ inline ExpressionPtr operator/(const ExpressionPtr &lhs, const ExpressionPtr &rh
     // If denominator is constant, multiply by reciprocal (flatten-friendly)
     double bv;
     if (is_const(b, &bv)) [[likely]] {
-        if (bv == 1.0) [[unlikely]] return std::make_shared<Expression>(a, g);
+        if (bv == 1.0) [[unlikely]]
+            return std::make_shared<Expression>(a, g);
         if (bv == 0.0) [[unlikely]] {
             // Keep an explicit Divide node instead of folding to 0.0
             auto out = std::make_shared<ADNode>();
@@ -261,13 +282,15 @@ inline ExpressionPtr operator/(const ExpressionPtr &lhs, const ExpressionPtr &rh
         // a / c -> a * (1/c)
         const double inv = 1.0 / bv;
         std::vector<ADNodePtr> ins;
-        ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) + 1);
+        ins.reserve(
+            (a && a->type == Operator::Multiply ? a->inputs.size() : 1) + 1);
         flatten_into(Operator::Multiply, a, ins);
         ins.push_back(make_cte(g, inv));
         combine_constants_in_nary(Operator::Multiply, ins, g);
         light_canon_for_cse(ins);
-        if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-        return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+        if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+        return std::make_shared<Expression>(
+            build_nary_node(g, Operator::Multiply, std::move(ins)), g);
     }
 
     // Non-constant denominator: keep Divide node
@@ -284,8 +307,9 @@ inline ExpressionPtr operator/(const ExpressionPtr &lhs, const ExpressionPtr &rh
 // ============================================================================
 
 [[gnu::hot]]
-inline ExpressionPtr operator+(const ExpressionPtr &expr, double scalar) {
-    if (scalar == 0.0) [[unlikely]] return expr;
+inline ExpressionPtr operator+(const ExpressionPtr& expr, double scalar) {
+    if (scalar == 0.0) [[unlikely]]
+        return expr;
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto a = attach_input(expr, g);
 
@@ -296,13 +320,15 @@ inline ExpressionPtr operator+(const ExpressionPtr &expr, double scalar) {
 
     combine_constants_in_nary(Operator::Add, ins, g);
     light_canon_for_cse(ins);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Add, std::move(ins)), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Add, std::move(ins)), g);
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator-(const ExpressionPtr &expr, double scalar) {
-    if (scalar == 0.0) [[unlikely]] return expr;
+inline ExpressionPtr operator-(const ExpressionPtr& expr, double scalar) {
+    if (scalar == 0.0) [[unlikely]]
+        return expr;
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto a = attach_input(expr, g);
     auto c = make_cte(g, scalar);
@@ -316,30 +342,35 @@ inline ExpressionPtr operator-(const ExpressionPtr &expr, double scalar) {
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator*(const ExpressionPtr &expr, double scalar) {
+inline ExpressionPtr operator*(const ExpressionPtr& expr, double scalar) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
-    if (scalar == 0.0) [[unlikely]] return std::make_shared<Expression>(make_cte(g, 0.0), g);
-    if (scalar == 1.0) [[unlikely]] return expr;
+    if (scalar == 0.0) [[unlikely]]
+        return std::make_shared<Expression>(make_cte(g, 0.0), g);
+    if (scalar == 1.0) [[unlikely]]
+        return expr;
 
     auto a = attach_input(expr, g);
 
     std::vector<ADNodePtr> ins;
-    ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) + 1);
+    ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) +
+                1);
     flatten_into(Operator::Multiply, a, ins);
     ins.push_back(make_cte(g, scalar));
 
     combine_constants_in_nary(Operator::Multiply, ins, g);
     light_canon_for_cse(ins);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Multiply, std::move(ins)), g);
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator/(const ExpressionPtr &expr, double scalar) {
+inline ExpressionPtr operator/(const ExpressionPtr& expr, double scalar) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto a = attach_input(expr, g);
 
-    if (scalar == 1.0) [[unlikely]] return expr;
+    if (scalar == 1.0) [[unlikely]]
+        return expr;
 
     if (scalar == 0.0) [[unlikely]] {
         // Keep explicit Divide node; do not fold to 0.0
@@ -355,14 +386,16 @@ inline ExpressionPtr operator/(const ExpressionPtr &expr, double scalar) {
     // Multiply by reciprocal
     const double inv = 1.0 / scalar;
     std::vector<ADNodePtr> ins;
-    ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) + 1);
+    ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) +
+                1);
     flatten_into(Operator::Multiply, a, ins);
     ins.push_back(make_cte(g, inv));
 
     combine_constants_in_nary(Operator::Multiply, ins, g);
     light_canon_for_cse(ins);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Multiply, std::move(ins)), g);
 }
 
 // ============================================================================
@@ -370,25 +403,27 @@ inline ExpressionPtr operator/(const ExpressionPtr &expr, double scalar) {
 // ============================================================================
 
 [[gnu::always_inline]]
-inline ExpressionPtr operator+(double scalar, const ExpressionPtr &expr) {
+inline ExpressionPtr operator+(double scalar, const ExpressionPtr& expr) {
     return expr + scalar;
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator-(double scalar, const ExpressionPtr &expr) {
+inline ExpressionPtr operator-(double scalar, const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto b = attach_input(expr, g);
 
     if (scalar == 0.0) [[unlikely]] {
         // 0 - b => (-1)*b, flatten-friendly
         std::vector<ADNodePtr> ins;
-        ins.reserve((b && b->type == Operator::Multiply ? b->inputs.size() : 1) + 1);
+        ins.reserve(
+            (b && b->type == Operator::Multiply ? b->inputs.size() : 1) + 1);
         flatten_into(Operator::Multiply, b, ins);
         ins.push_back(make_cte(g, -1.0));
         combine_constants_in_nary(Operator::Multiply, ins, g);
         light_canon_for_cse(ins);
-        if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-        return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+        if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+        return std::make_shared<Expression>(
+            build_nary_node(g, Operator::Multiply, std::move(ins)), g);
     }
 
     auto c = make_cte(g, scalar);
@@ -401,12 +436,12 @@ inline ExpressionPtr operator-(double scalar, const ExpressionPtr &expr) {
 }
 
 [[gnu::always_inline]]
-inline ExpressionPtr operator*(double scalar, const ExpressionPtr &expr) {
+inline ExpressionPtr operator*(double scalar, const ExpressionPtr& expr) {
     return expr * scalar;
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator/(double scalar, const ExpressionPtr &expr) {
+inline ExpressionPtr operator/(double scalar, const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto b = attach_input(expr, g);
 
@@ -435,17 +470,30 @@ inline ExpressionPtr wrap_with_graph(const ADNodePtr& node) {
     return std::make_shared<Expression>(node, g);
 }
 
-[[gnu::always_inline]] inline ExpressionPtr operator+(const ADNodePtr &node, double s) { return wrap_with_graph(node) + s; }
-[[gnu::always_inline]] inline ExpressionPtr operator-(const ADNodePtr &node, double s) { return wrap_with_graph(node) - s; }
-[[gnu::always_inline]] inline ExpressionPtr operator*(const ADNodePtr &node, double s) { return wrap_with_graph(node) * s; }
-[[gnu::always_inline]] inline ExpressionPtr operator/(const ADNodePtr &node, double s) { return wrap_with_graph(node) / s; }
+[[gnu::always_inline]] inline ExpressionPtr operator+(const ADNodePtr& node,
+                                                      double s) {
+    return wrap_with_graph(node) + s;
+}
+[[gnu::always_inline]] inline ExpressionPtr operator-(const ADNodePtr& node,
+                                                      double s) {
+    return wrap_with_graph(node) - s;
+}
+[[gnu::always_inline]] inline ExpressionPtr operator*(const ADNodePtr& node,
+                                                      double s) {
+    return wrap_with_graph(node) * s;
+}
+[[gnu::always_inline]] inline ExpressionPtr operator/(const ADNodePtr& node,
+                                                      double s) {
+    return wrap_with_graph(node) / s;
+}
 
 // ============================================================================
 // VariablePtr ⊕ ExpressionPtr
 // ============================================================================
 
 [[gnu::hot]]
-inline ExpressionPtr operator+(const VariablePtr &var, const ExpressionPtr &expr) {
+inline ExpressionPtr operator+(const VariablePtr& var,
+                               const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto v = std::make_shared<Expression>(var, 1.0, g);
     auto a = attach_input(v, g);
@@ -453,8 +501,8 @@ inline ExpressionPtr operator+(const VariablePtr &var, const ExpressionPtr &expr
 
     const bool a_is_add = (a && a->type == Operator::Add);
     const bool b_is_add = (b && b->type == Operator::Add);
-    const size_t est_sz  = (a_is_add ? a->inputs.size() : 1) +
-                           (b_is_add ? b->inputs.size() : 1);
+    const size_t est_sz =
+        (a_is_add ? a->inputs.size() : 1) + (b_is_add ? b->inputs.size() : 1);
     std::vector<ADNodePtr> ins;
     ins.reserve(est_sz + 2);
 
@@ -464,13 +512,15 @@ inline ExpressionPtr operator+(const VariablePtr &var, const ExpressionPtr &expr
     combine_constants_in_nary(Operator::Add, ins, g);
     light_canon_for_cse(ins);
 
-    if (ins.empty())   return std::make_shared<Expression>(make_cte(g, 0.0), g);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Add, std::move(ins)), g);
+    if (ins.empty()) return std::make_shared<Expression>(make_cte(g, 0.0), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Add, std::move(ins)), g);
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator-(const VariablePtr &var, const ExpressionPtr &expr) {
+inline ExpressionPtr operator-(const VariablePtr& var,
+                               const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto v = std::make_shared<Expression>(var, 1.0, g);
     auto a = attach_input(v, g);
@@ -485,7 +535,8 @@ inline ExpressionPtr operator-(const VariablePtr &var, const ExpressionPtr &expr
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator*(const VariablePtr &var, const ExpressionPtr &expr) {
+inline ExpressionPtr operator*(const VariablePtr& var,
+                               const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto v = std::make_shared<Expression>(var, 1.0, g);
     auto a = attach_input(v, g);
@@ -493,8 +544,8 @@ inline ExpressionPtr operator*(const VariablePtr &var, const ExpressionPtr &expr
 
     const bool a_is_mul = (a && a->type == Operator::Multiply);
     const bool b_is_mul = (b && b->type == Operator::Multiply);
-    const size_t est_sz  = (a_is_mul ? a->inputs.size() : 1) +
-                           (b_is_mul ? b->inputs.size() : 1);
+    const size_t est_sz =
+        (a_is_mul ? a->inputs.size() : 1) + (b_is_mul ? b->inputs.size() : 1);
     std::vector<ADNodePtr> ins;
     ins.reserve(est_sz + 2);
 
@@ -504,13 +555,15 @@ inline ExpressionPtr operator*(const VariablePtr &var, const ExpressionPtr &expr
     combine_constants_in_nary(Operator::Multiply, ins, g);
     light_canon_for_cse(ins);
 
-    if (ins.empty())   return std::make_shared<Expression>(make_cte(g, 1.0), g);
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+    if (ins.empty()) return std::make_shared<Expression>(make_cte(g, 1.0), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Multiply, std::move(ins)), g);
 }
 
 [[gnu::hot]]
-inline ExpressionPtr operator/(const VariablePtr &var, const ExpressionPtr &expr) {
+inline ExpressionPtr operator/(const VariablePtr& var,
+                               const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto v = std::make_shared<Expression>(var, 1.0, g);
     auto a = attach_input(v, g);
@@ -529,20 +582,22 @@ inline ExpressionPtr operator/(const VariablePtr &var, const ExpressionPtr &expr
 // ============================================================================
 
 [[gnu::hot]]
-inline ExpressionPtr operator-(const ExpressionPtr &expr) {
+inline ExpressionPtr operator-(const ExpressionPtr& expr) {
     auto g = pick_graph(expr ? expr->graph : nullptr);
     auto a = attach_input(expr, g);
 
     std::vector<ADNodePtr> ins;
-    ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) + 1);
+    ins.reserve((a && a->type == Operator::Multiply ? a->inputs.size() : 1) +
+                1);
     flatten_into(Operator::Multiply, a, ins);
     ins.push_back(make_cte(g, -1.0));
 
     combine_constants_in_nary(Operator::Multiply, ins, g);
     light_canon_for_cse(ins);
 
-    if (ins.size()==1) return std::make_shared<Expression>(ins[0], g);
-    return std::make_shared<Expression>(build_nary_node(g, Operator::Multiply, std::move(ins)), g);
+    if (ins.size() == 1) return std::make_shared<Expression>(ins[0], g);
+    return std::make_shared<Expression>(
+        build_nary_node(g, Operator::Multiply, std::move(ins)), g);
 }
 
 // ============================================================================
@@ -550,12 +605,14 @@ inline ExpressionPtr operator-(const ExpressionPtr &expr) {
 // ============================================================================
 
 [[gnu::hot]]
-inline ExpressionPtr maximum(const ExpressionPtr &lhs, const ExpressionPtr &rhs) {
+inline ExpressionPtr maximum(const ExpressionPtr& lhs,
+                             const ExpressionPtr& rhs) {
     auto g = pick_graph(lhs ? lhs->graph : nullptr, rhs ? rhs->graph : nullptr);
     auto a = attach_input(lhs, g);
     auto b = attach_input(rhs, g);
 
-    if (a.get() == b.get()) [[unlikely]] return std::make_shared<Expression>(a, g);
+    if (a.get() == b.get()) [[unlikely]]
+        return std::make_shared<Expression>(a, g);
 
     double av, bv;
     if (is_const(a, &av) && is_const(b, &bv)) [[unlikely]]

@@ -1,0 +1,966 @@
+#pragma once
+// Optimized C++23 KKT core (HYKKT + LDL) with Eigen
+// AVX guard fixed; ILU removed; Schur solves use CG + (Jacobi|SSOR).
+
+#include <Eigen/Cholesky>
+#include <Eigen/Core>
+#include <Eigen/OrderingMethods>
+#include <Eigen/SparseCholesky>
+#include <Eigen/SparseCore>
+#include <Eigen/SparseLU>
+#include <algorithm>
+#include <cmath>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "../model.h"
+
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
+#include "../amd.h"
+#include "../qp/QDLDL.h"
+#include "kkt_helper.h"
+
+#include <pybind11/pybind11.h>
+#include <pybind11/eigen.h>
+#include <pybind11/stl.h>
+#include <pybind11/functional.h>
+
+namespace py = pybind11;
+
+
+namespace kkt {
+
+// ------------------------------ typedefs ------------------------------
+using dvec  = Eigen::VectorXd;
+using dmat  = Eigen::MatrixXd;
+using spmat = Eigen::SparseMatrix<double, Eigen::ColMajor, int>;
+// ------------------------------ HYKKT ---------------------------------
+class HYKKTStrategy final : public KKTStrategy {
+public:
+    HYKKTStrategy() { name = "hykkt"; }
+    ModelC *model = nullptr; // To access model parameters if needed
+
+    std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>>
+    factor_and_solve(ModelC *model_in, const spmat &W, const std::optional<spmat> &Gopt, const dvec &r1,
+                     const std::optional<dvec> &r2opt, const ChompConfig &cfg, std::optional<double> /*regularizer*/,
+                     std::unordered_map<std::string, dvec> &cache, double delta, std::optional<double> gamma_user,
+                     bool assemble_schur_if_m_small, bool use_prec) override {
+        if (!Gopt || !r2opt) throw std::invalid_argument("HYKKT requires equality constraints");
+        model = model_in; // store model pointer
+        const auto &G = *Gopt;
+        const spmat Gt = G.transpose(); // Compute transpose once
+        const auto &r2 = *r2opt;
+        const int n = W.rows(), m = G.rows();
+
+        // Preallocate work buffers
+        wk_.ensure(n, m);
+
+        // ---------- gamma selection (same logic you had) ----------
+        const double gamma = [&] {
+            if (gamma_user) return *gamma_user;
+            if (!cfg.adaptive_gamma) return compute_gamma_heuristic(W, G, delta);
+            const std::string key = "gamma_" + std::to_string(n) + "_" + std::to_string(m);
+            if (auto it = cache.find(key); it != cache.end()) return it->second[0];
+            double g = compute_adaptive_gamma(W, G, delta);
+            cache[key] = dvec::Constant(1, g);
+            return g;
+        }();
+
+        const bool use_smw = should_use_smw_direct(G, gamma, delta);
+        if (use_smw) { return solve_with_smw(W, G, Gt, r1, r2, delta, gamma, cfg); }
+
+        // ---------- δ₁ loop: make Hδ SPD or at least factorizable ----------
+        double delta1 = delta;
+        if (delta1 == 0.0) delta1 = std::max(1e-12, cfg.delta_min); // gentle start
+
+        std::function<dvec(const dvec &)> Ks; // K^{-1}(.)
+        bool used_llt = false;
+        spmat K_final;
+
+        // Build base K without delta1
+        spmat K_base = build_augmented_system_inplace(W, G, Gt, 0.0, gamma);
+
+        for (int tries = 0; tries < 10; ++tries) {
+            // Create K by adding delta1 to diagonal
+            spmat K = K_base;
+            for (int i = 0; i < n; ++i) {
+                K.coeffRef(i, i) += delta1;
+            }
+            auto [solver_fn, is_spd] = create_or_refactor_solver_qdldl(K, cfg);
+            if (solver_fn) {
+                Ks = std::move(solver_fn);
+                used_llt = is_spd;
+                if (!cfg.use_hvp || !model) {
+                    K_final = std::move(K); // Move instead of rebuilding
+                }
+                break;
+            }
+            delta1 = std::min(cfg.delta_max, std::max(2.0 * delta1, 1e-9));
+        }
+        if (!Ks) { throw std::runtime_error("HYKKT: failed to factor H_delta after δ₁ ramp."); }
+
+        // ---------- Schur RHS ----------
+        // s = r1 + γ Gᵀ r2
+        dvec s = r1;
+        multiply_Gt_v_inplace(Gt, r2, s, gamma); // s += gamma * Gt * r2
+
+        // rhs for Schur: rhs_s = G K^{-1} s − r2
+        const dvec rhs_s = G * Ks(s) - r2;
+
+        // ---------- Solve Schur (dense for small m, else iterative) ----------
+        dvec dy;
+        const bool small_m = assemble_schur_if_m_small && (m <= std::max(1, int(cfg.schur_dense_cutoff * n)));
+        if (small_m) {
+            dy = solve_schur_dense_with_delta2(G, Gt, Ks, rhs_s, cfg);
+        } else {
+            dy = solve_schur_iterative_with_delta2(G, Gt, Ks, rhs_s, K_final, cfg, use_prec);
+        }
+
+        // ---------- Back-substitution ----------
+        dvec Gt_dy = dvec::Zero(n);
+        multiply_Gt_v_inplace(Gt, dy, Gt_dy, 1.0);
+        const dvec dx = Ks(s - Gt_dy);
+
+        // ---------- reusable wrapper ----------
+        auto reusable = create_reusable_solver(G, Gt, Ks, gamma, cfg);
+        return std::make_tuple(dx, dy, reusable);
+    }
+
+    void multiply_Gt_v_inplace(const spmat &Gt, const dvec &v, dvec &result, double alpha) const {
+        result.noalias() += alpha * (Gt * v);
+    }
+
+private:
+    std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>> solve_with_smw(const spmat &W, const spmat &G, const spmat &Gt,
+                                                                         const dvec &r1, const dvec &r2, double delta,
+                                                                         double gamma, const ChompConfig &cfg) const {
+        const int n = W.rows(), m = G.rows();
+
+        // Build base system H = W + δI (well-conditioned)
+        spmat H = W;
+        H.makeCompressed();
+        for (int i = 0; i < n; ++i) { H.coeffRef(i, i) += delta; }
+
+        // Factor base system with QDLDL
+        auto H_solver = create_or_refactor_solver_qdldl(H, cfg).first;
+        if (!H_solver) { throw std::runtime_error("SMW: Failed to factor base system"); }
+
+        // SMW: (H + γG^T*G)^{-1} = H^{-1} - H^{-1}*G^T*(I/γ + G*H^{-1}*G^T)^{-1}*G*H^{-1}
+        // Step 1: Compute Z = H^{-1} * G^T (n×m matrix)
+        dmat Z(n, m);
+        for (int j = 0; j < m; ++j) {
+            dvec ej = dvec::Zero(n);
+            // Extract column j of G^T (row j of G)
+            for (spmat::InnerIterator it(G, j); it; ++it) { ej[it.col()] = it.value(); }
+            Z.col(j) = H_solver(ej);
+        }
+
+        // Step 2: Build small system S = I/γ + G*Z (m×m matrix)
+        dmat S = dmat::Identity(m, m) / gamma + (G * Z);
+
+        // Step 3: Factor small system with dense LDLT
+        Eigen::LDLT<dmat> S_ldlt(S);
+        if (S_ldlt.info() != Eigen::Success) { throw std::runtime_error("SMW: Failed to factor small system"); }
+
+        // Step 4: SMW solver function
+        auto smw_solve = [H_solver, &G, &Z, &S_ldlt, gamma](const dvec &b) -> dvec {
+            dvec Hb = H_solver(b); // H^{-1} * b
+            dvec GHb = G * Hb; // G * H^{-1} * b
+            dvec y = S_ldlt.solve(GHb); // S^{-1} * G * H^{-1} * b
+            return Hb - Z * y; // H^{-1}*b - H^{-1}*G^T*S^{-1}*G*H^{-1}*b
+        };
+
+        // Step 5: Solve main system
+        dvec s = r1;
+        multiply_Gt_v_inplace(Gt, r2, s, gamma); // s = r1 + γ*G^T*r2
+        dvec dx = smw_solve(s);
+
+        // Step 6: Solve for multipliers
+        dvec dy = (G * dx - r2) / gamma;
+
+        // Step 7: Create reusable solver
+        auto reusable = std::make_shared<SMWReusable>(G, Gt, H_solver, Z, S_ldlt, gamma);
+        return std::make_tuple(dx, dy, reusable);
+    }
+
+    bool should_use_smw_direct(const spmat &G, double gamma, double delta) const {
+        const int m = G.rows(), n = G.cols();
+        // Use SMW when:
+        // 1. Much fewer constraints than variables
+        // 2. Good base conditioning (delta provides stability)
+        // 3. Reasonable gamma (not too large)
+        // 4. Sparse constraint matrix
+        return (m < n / 6) && // At least 6:1 variable to constraint ratio
+               (delta > 1e-10) && // Base system is well-regularized
+               (gamma < 1000.0) && // Gamma not too large
+               (G.nonZeros() < 2 * n); // Sparse constraints
+    }
+
+    struct SMWReusable final : KKTReusable {
+        spmat G, Gt;
+        std::function<dvec(const dvec &)> H_solver;
+        dmat Z;
+        Eigen::LDLT<dmat> S_ldlt;
+        double gamma;
+
+        SMWReusable(spmat G_in, spmat Gt_in, std::function<dvec(const dvec &)> H_in, dmat Z_in, Eigen::LDLT<dmat> S_in,
+                    double gamma_in)
+            : G(std::move(G_in)), Gt(std::move(Gt_in)), H_solver(std::move(H_in)), Z(std::move(Z_in)), S_ldlt(std::move(S_in)),
+              gamma(gamma_in) {}
+
+        std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double /*tol*/,
+                                    int /*maxit*/) override {
+            if (!r2n) throw std::invalid_argument("SMW reuse needs r2");
+            // Build RHS
+            dvec s = r1n;
+            multiply_Gt_v_inplace_static(Gt, *r2n, s, gamma);
+            // SMW solve
+            dvec Hs = H_solver(s);
+            dvec GHs = G * Hs;
+            dvec y = S_ldlt.solve(GHs);
+            dvec dx = Hs - Z * y;
+            dvec dy = (G * dx - *r2n) / gamma;
+            return {dx, dy};
+        }
+
+    private:
+        static void multiply_Gt_v_inplace_static(const spmat &Gt, const dvec &v, dvec &result, double alpha) {
+            result.noalias() += alpha * (Gt * v);
+        }
+    };
+
+    // ======================= symbolic cache ==========================
+    struct QDLDLCache {
+        int n{-1};
+        bool use_amd{false};
+        // ordering
+        qdldl23::Ordering<int32_t> ord; // identity or AMD
+        bool have_ord{false};
+        // symbolic (for permuted matrix)
+        qdldl23::Symb32 Sperm;
+        bool have_S{false};
+        // numeric factors for permuted matrix
+        qdldl23::LDL32 F;
+        bool have_F{false};
+    };
+    mutable std::optional<QDLDLCache> qcache_;
+
+    // ======================= heuristics (yours) ======================
+    static double rowsum_inf_norm(const spmat &A) {
+        double mx = 0.0;
+        for (int j = 0; j < A.outerSize(); ++j)
+            for (spmat::InnerIterator it(A, j); it; ++it) mx = std::max(mx, std::abs(it.value()));
+        return mx;
+    }
+
+    double compute_adaptive_gamma(const spmat &W, const spmat &G, double delta) const {
+        // Cache norms if possible, but for now assume single call
+        const double Wn = rowsum_inf_norm(W) + delta;
+        const double Gn = rowsum_inf_norm(G);
+        const double cond_est = estimate_condition_number(W, delta);
+        double g = std::max(1.0, Wn / std::max(1.0, Gn * Gn));
+        if (cond_est > 1e12)
+            g *= 10.0;
+        else if (cond_est < 1e6)
+            g *= 0.1;
+        return g;
+    }
+
+    struct Work {
+        dvec v, Kv, Gv, Gtv, z, p, rhs, tmpn;
+
+        Work(int max_n = 0, int max_m = 0) {
+            if (max_n > 0) {
+                v.resize(max_n);
+                Kv.resize(max_n);
+                z.resize(max_n);
+                p.resize(max_n);
+                tmpn.resize(max_n);
+                rhs.resize(max_n);
+            }
+            if (max_m > 0) {
+                Gv.resize(max_m);
+                Gtv.resize(max_m);
+            }
+        }
+
+        void ensure(int n, int m) {
+            if (v.size() < n) {
+                v.resize(n);
+                Kv.resize(n);
+                z.resize(n);
+                p.resize(n);
+                tmpn.resize(n);
+                rhs.resize(n);
+            }
+            if (Gv.size() < m) {
+                Gv.resize(m);
+                Gtv.resize(m);
+            }
+        }
+    };
+    mutable Work wk_;
+
+    std::pair<std::function<dvec(const dvec &)>, bool> create_or_refactor_solver_qdldl(const spmat &K,
+                                                                                      const ChompConfig &cfg) const {
+        using namespace qdldl23;
+        const int n = K.rows();
+        const bool use_eigen_amd = (cfg.sym_ordering == "amd");
+        const bool use_my_amd = (cfg.sym_ordering == "amd_custom");
+
+        // (Re)alloc cache on size/order change
+        if (!qcache_ || qcache_->n != n || qcache_->use_amd != (use_eigen_amd || use_my_amd)) {
+            qcache_.emplace();
+            qcache_->n = n;
+            qcache_->use_amd = (use_eigen_amd || use_my_amd);
+            qcache_->have_ord = false;
+            qcache_->have_S = false;
+            qcache_->have_F = false;
+        }
+
+        // Convert to upper CSC for qdldl
+        SparseD32 A = eigen_to_upper_csc(K);
+
+        // ---------- Ordering: your AMD (preferred), Eigen AMD, or identity ----------
+        if (!qcache_->have_ord) {
+            if (use_my_amd) {
+                qcache_->ord = qdldl_order_from_my_amd(K,
+                                                       /*symmetrize_union=*/true,
+                                                       /*dense_cutoff=*/
+                                                       (cfg.amd_dense_cutoff_has_value ? cfg.amd_dense_cutoff : -1));
+            } else if (use_eigen_amd) {
+                Eigen::AMDOrdering<int> amd;
+                Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> P(n);
+                P.setIdentity(n);
+                amd(K, P);
+                std::vector<int32_t> perm_old2new((size_t)n);
+                for (int i = 0; i < n; ++i) perm_old2new[(size_t)P.indices()[i]] = i;
+                qcache_->ord = Ordering<int32_t>::from_perm(std::move(perm_old2new));
+            } else {
+                qcache_->ord = Ordering<int32_t>::identity((int32_t)n);
+            }
+            qcache_->have_ord = true;
+        }
+
+        // Analyze once on permuted structure
+        if (!qcache_->have_S) {
+            const auto B = permute_symmetric_upper(A, qcache_->ord);
+            qcache_->Sperm = analyze_fast(B);
+            qcache_->have_S = true;
+        }
+
+        // Numeric refactorization with current values
+        qcache_->F = refactorize_with_ordering(A, qcache_->Sperm, qcache_->ord);
+        qcache_->have_F = true;
+
+        // Solve closure using the cached factors + ordering
+        auto f = [F = qcache_->F, ord = qcache_->ord](const dvec &b) -> dvec {
+            dvec x = b;
+            qdldl23::solve_with_ordering(F, ord, x.data());
+            return x;
+        };
+        return {f, false};
+    }
+
+    // =================== Original Schur methods ===============
+    dvec solve_schur_dense_with_delta2(const spmat &G, const spmat &Gt, const std::function<dvec(const dvec &)> &Ks,
+                                       const dvec &rhs_s, const ChompConfig &cfg) const {
+        const int n = G.cols(), m = G.rows();
+        dmat Z(n, m);
+        Z.setZero();
+        dvec rhs(n);
+
+        // Solve K Z = Gᵀ by columns
+        for (int j = 0; j < m; ++j) {
+            rhs.setZero();
+            for (spmat::InnerIterator it(Gt, j); it; ++it) rhs[it.row()] = it.value();
+            Z.col(j) = Ks(rhs);
+        }
+        dmat S = (G * Z).selfadjointView<Eigen::Lower>();
+
+        // Try LLT; add δ₂ I if needed
+        double delta2 = 0.0;
+        for (int tries = 0; tries < 5; ++tries) {
+            if (delta2 > 0.0) S.diagonal().array() += delta2;
+            Eigen::LLT<dmat> llt(S.selfadjointView<Eigen::Lower>());
+            if (llt.info() == Eigen::Success) { return llt.solve(rhs_s); }
+            // bump δ₂
+            delta2 =
+                (delta2 == 0.0) ? std::max(1e-12, cfg.schur_delta2_min) : std::min(cfg.schur_delta2_max, 10.0 * delta2);
+        }
+        throw std::runtime_error("HYKKT: dense Schur LLT failed even with δ₂.");
+    }
+
+    // ============== Schur (iterative) with δ₂ & optional prec =========
+    dvec solve_schur_iterative_with_delta2(const spmat &G, const spmat &Gt, const std::function<dvec(const dvec &)> &Ks,
+                                           const dvec &rhs_s, const spmat &K, const ChompConfig &cfg,
+                                           bool use_prec) const {
+        const int m = G.rows();
+        // Base operator: S y = G K^{-1} Gᵀ y
+        LinOp S_op{m, [&](const dvec &y, dvec &out) { out = G * Ks(Gt * y); }};
+
+        std::optional<dvec> JacobiMinv;
+        std::optional<SSORPrecond> ssor;
+        if (use_prec) {
+            // Build preconditioner for Ŝ = G * diag(K^{-1}) * Gᵀ
+            // 1) approximate diag(K^{-1}) via 1 / max(diag(K), eps)
+            dvec diagK = K.diagonal();
+            for (int i = 0; i < diagK.size(); ++i) diagK[i] = 1.0 / std::max(std::abs(diagK[i]), 1e-12);
+            if (cfg.prec_type == "jacobi") {
+                // Jacobi on Ŝ -> M^{-1} = diag(Ŝ)^{-1}
+                dvec dS = schur_diag_hat(G, diagK);
+                for (int i = 0; i < dS.size(); ++i) dS[i] = 1.0 / std::max(dS[i], 1e-18);
+                JacobiMinv = std::move(dS);
+            } else if (cfg.prec_type == "ssor") {
+                // SSOR on Ŝ
+                spmat S_hat = build_S_hat(G, diagK);
+                ssor.emplace(S_hat, cfg.ssor_omega);
+            }
+            // else "none" -> no preconditioner
+        }
+
+        // First CG attempt
+        auto [y, info] = cg(S_op, rhs_s, JacobiMinv, cfg.cg_tol, cfg.cg_maxit, std::nullopt, ssor, cfg.use_simd);
+        if (info.converged) return y;
+
+        // δ₂ shift and retry: (S + δ₂ I) y = rhs
+        double delta2 = std::max(1e-12, cfg.schur_delta2_min);
+        for (int tries = 0; tries < 5; ++tries) {
+            LinOp Sshift{m, [&](const dvec &v, dvec &out) {
+                out = G * Ks(Gt * v);
+                out.noalias() += delta2 * v;
+            }};
+            std::tie(y, info) =
+                cg(Sshift, rhs_s, JacobiMinv, cfg.cg_tol, cfg.cg_maxit2, std::nullopt, ssor, cfg.use_simd);
+            if (info.converged) return y;
+            delta2 = std::min(cfg.schur_delta2_max, 10.0 * delta2);
+        }
+        throw std::runtime_error("HYKKT: CG on Schur failed even with δ₂.");
+    }
+
+    // ==================== reusable wrapper ================
+    std::shared_ptr<KKTReusable> create_reusable_solver(const spmat &G, const spmat &Gt, const std::function<dvec(const dvec &)> &Ks,
+                                                        double gamma, const ChompConfig &cfg) const {
+        struct Reuse final : KKTReusable {
+            spmat G, Gt;
+            std::function<dvec(const dvec &)> Ks;
+            double gamma;
+            ChompConfig cfg;
+            ModelC *model_ptr;
+
+            Reuse(spmat Gin, spmat Gtin, std::function<dvec(const dvec &)> Ksin, double g, ChompConfig c, ModelC *m)
+                : G(std::move(Gin)), Gt(std::move(Gtin)), Ks(std::move(Ksin)), gamma(g), cfg(std::move(c)), model_ptr(m) {}
+
+            std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double tol,
+                                        int maxit) override {
+                if (!r2n) throw std::invalid_argument("HYKKT::Reuse needs r2");
+                const dvec s = r1n + gamma * (Gt * (*r2n));
+                const dvec rhs_s = G * Ks(s) - (*r2n);
+
+                // Use more relaxed tolerances for the reusable path
+                double reuse_tol = std::max(tol, 1e-8);
+                int reuse_maxit = std::max(maxit, 100);
+                LinOp S_op{static_cast<int>(G.rows()),
+                           [&](const dvec &y, dvec &out) { out = G * Ks(Gt * y); }};
+                auto [dy, info] =
+                    cg(S_op, rhs_s, std::nullopt, reuse_tol, reuse_maxit, std::nullopt, std::nullopt, cfg.use_simd);
+                if (info.converged) {
+                    const dvec dx = Ks(s - Gt * dy);
+                    return {dx, dy};
+                }
+
+                // First fallback: try with even more relaxed tolerance
+                reuse_tol = std::max(reuse_tol * 10, 1e-6);
+                std::tie(dy, info) =
+                    cg(S_op, rhs_s, std::nullopt, reuse_tol, reuse_maxit * 2, std::nullopt, std::nullopt, cfg.use_simd);
+                if (info.converged) {
+                    const dvec dx = Ks(s - Gt * dy);
+                    return {dx, dy};
+                }
+
+                // Second fallback: δ₂ shift with relaxed tolerance
+                double d2 = std::max(1e-10, cfg.schur_delta2_min);
+                for (int shift_tries = 0; shift_tries < 3; ++shift_tries) {
+                    LinOp Sshift{static_cast<int>(G.rows()), [&](const dvec &v, dvec &out) {
+                        out = G * Ks(Gt * v);
+                        out.noalias() += d2 * v;
+                    }};
+                    std::tie(dy, info) = cg(Sshift, rhs_s, std::nullopt, reuse_tol, reuse_maxit, std::nullopt,
+                                            std::nullopt, cfg.use_simd);
+                    if (info.converged) {
+                        const dvec dx = Ks(s - Gt * dy);
+                        return {dx, dy};
+                    }
+                    d2 *= 100.0; // Increase regularization more aggressively
+                    reuse_tol *= 10.0; // Further relax tolerance
+                }
+
+                // Final fallback: try direct dense solve if problem is small
+                const int m = G.rows();
+                if (m <= 500) { // Only for reasonably small problems
+                    try {
+                        // Build Schur complement explicitly
+                        dmat Z(G.cols(), m);
+                        dvec temp(G.cols());
+                        for (int j = 0; j < m; ++j) {
+                            temp.setZero();
+                            for (spmat::InnerIterator it(Gt, j); it; ++it) { temp[it.row()] = it.value(); }
+                            Z.col(j) = Ks(temp);
+                        }
+                        dmat S = (G * Z).selfadjointView<Eigen::Lower>();
+                        S.diagonal().array() += std::max(d2, 1e-8); // Add regularization
+                        Eigen::LDLT<dmat> ldlt(S);
+                        if (ldlt.info() == Eigen::Success) {
+                            dy = ldlt.solve(rhs_s);
+                            const dvec dx = Ks(s - Gt * dy);
+                            return {dx, dy};
+                        }
+                    } catch (...) {
+                        // Dense fallback failed, continue to error
+                    }
+                }
+                throw std::runtime_error("HYKKT::Reuse failed after all fallback attempts. "
+                                         "Try increasing tolerances or disabling HVP optimization.");
+            }
+        };
+        return std::make_shared<Reuse>(G, Gt, Ks, gamma, cfg, model);
+    }
+};
+// ------------------------------ LDL (QDLDL) ---------------------------
+// ------------------------------ LDL (QDLDL) ---------------------------
+class LDLStrategy final : public KKTStrategy {
+public:
+    LDLStrategy() { name = "ldl"; }
+
+    // Optional knobs (could be pulled from ChompConfig)
+    struct Options {
+        bool use_symbolic_cache = true;
+        bool use_ordering       = false; // set true if you have/compute a perm
+        int  refine_iters       = 0;     // 0 = off, 1-2 usually enough
+    } opts;
+
+    // Lightweight cache keyed by sparsity pattern of U (Ap/Ai)
+    struct PatternKey {
+        std::size_t h1{0}, h2{0};
+        bool        operator==(const PatternKey &o) const noexcept { return h1 == o.h1 && h2 == o.h2; }
+    };
+    struct PatternKeyHasher {
+        std::size_t operator()(const PatternKey &k) const noexcept {
+            // simple mix
+            return k.h1 ^ (k.h2 + 0x9e3779b97f4a7c15ULL + (k.h1 << 6) + (k.h1 >> 2));
+        }
+    };
+
+    struct CachedSymb {
+        qdldl23::Symb32                           S; // symbolic (on possibly permuted pattern)
+        std::optional<qdldl23::Ordering<int32_t>> ord;
+        int                                       n{0};
+    };
+
+    // tiny LRU-ish (size <= 4) implemented as an unordered_map + clock
+    std::unordered_map<PatternKey, CachedSymb, PatternKeyHasher> symb_cache_;
+    std::deque<PatternKey>                                       cache_order_; // maintain recency
+    static constexpr size_t                                      kCacheCap = 4;
+
+    ModelC *model = nullptr;
+
+    static PatternKey make_key(const qdldl23::SparseD32 &U) {
+        // Hash Ap and first/last few Ai to be cheap yet robust.
+        // For rock-solid uniqueness, hash the whole Ai; adjust as you like.
+        auto mix = [](std::size_t seed, uint64_t v) {
+            v ^= v >> 33;
+            v *= 0xff51afd7ed558ccdULL;
+            v ^= v >> 33;
+            v *= 0xc4ceb9fe1a85ec53ULL;
+            v ^= v >> 33;
+            return seed ^ v;
+        };
+        std::size_t hAp = 0;
+        for (int i = 0; i < static_cast<int>(U.Ap.size()); ++i)
+            hAp = mix(hAp, static_cast<uint64_t>(U.Ap[static_cast<size_t>(i)]) + 0x9e37U * i);
+
+        std::size_t  hAi  = 0;
+        const size_t nnz  = U.Ai.size();
+        const int    take = 64; // sample
+        for (int i = 0; i < std::min<int>(take, (int)nnz); ++i)
+            hAi = mix(hAi, static_cast<uint64_t>(U.Ai[static_cast<size_t>(i)]) + 0x85ebU * i);
+        for (int i = (int)nnz - 1, k = 0; i >= 0 && k < take; --i, ++k)
+            hAi = mix(hAi, static_cast<uint64_t>(U.Ai[static_cast<size_t>(i)]) + 0xc2b2U * k);
+        return {hAp, hAi};
+    }
+
+    void touch_key_(const PatternKey &k) {
+        // move to back; drop old if > cap
+        auto it = std::find(cache_order_.begin(), cache_order_.end(), k);
+        if (it != cache_order_.end()) cache_order_.erase(it);
+        cache_order_.push_back(k);
+        while (cache_order_.size() > kCacheCap) {
+            auto victim = cache_order_.front();
+            cache_order_.pop_front();
+            symb_cache_.erase(victim);
+        }
+    }
+
+    // Hook point: provide a symmetric ordering if you have one (AMD, RCM, etc.)
+    // Return std::nullopt for identity.
+    std::optional<qdldl23::Ordering<int32_t>> maybe_build_ordering_(const qdldl23::SparseD32 & /*U*/,
+                                                                    bool enable) const {
+        if (!enable) return std::nullopt;
+        // Example placeholder: identity
+        // return qdldl23::Ordering<int32_t>::identity((int32_t)/*U.n*/ U.n);
+    }
+
+    std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>>
+    factor_and_solve(ModelC *model_in, const spmat &W, const std::optional<spmat> &Gopt, const dvec &r1,
+                     const std::optional<dvec> &r2opt, const ChompConfig &cfg, std::optional<double> /*regularizer*/,
+                     std::unordered_map<std::string, dvec> & /*cache*/, double delta, std::optional<double> /*gamma*/,
+                     bool /*assemble_schur_if_m_small*/, bool /*use_prec*/) override {
+        (void)cfg;
+        bool  hasE = false;
+        spmat K    = assemble_KKT(W, delta, Gopt, &hasE);
+
+        const int n = W.rows();
+        const int m = hasE ? Gopt->rows() : 0;
+        const int N = hasE ? (n + m) : n;
+
+        dvec rhs(N);
+        if (hasE) {
+            if (!r2opt) throw std::runtime_error("LDLStrategy: missing r2");
+            rhs.head(n) = r1;
+            rhs.tail(m) = *r2opt;
+        } else {
+            rhs = r1;
+        }
+
+        // Convert to strict upper CSC for qdldl23
+        // Prefer to enforce diagonal in K assembly; if not, keep small
+        // diag_eps.
+        auto U = eigen_to_upper_csc(K, 1e-12);
+
+        // ---- Symbolic (and optional ordering) reuse path ----
+        qdldl23::LDL32                            F;
+        qdldl23::Symb32                           S;
+        std::optional<qdldl23::Ordering<int32_t>> ord;
+
+        const PatternKey key                  = make_key(U);
+        bool             used_cached_symbolic = false;
+
+        if (opts.use_symbolic_cache) {
+            auto it = symb_cache_.find(key);
+            if (it != symb_cache_.end()) {
+                // Found cached symbolic (already matches ordering choice)
+                const auto &C = it->second;
+                if (C.n == U.n) {
+                    S                    = C.S;
+                    ord                  = C.ord;
+                    used_cached_symbolic = true;
+                    touch_key_(key);
+                }
+            }
+        }
+
+        if (!used_cached_symbolic) {
+            // Decide ordering
+            ord = maybe_build_ordering_(U, opts.use_ordering);
+            if (ord) {
+                // Analyze permuted pattern once
+                auto Up = qdldl23::permute_symmetric_upper(U, *ord);
+                S       = qdldl23::analyze_fast(Up);
+                // Numeric on permuted A
+                F = qdldl23::refactorize(Up, S);
+            } else {
+                // No ordering
+                S = qdldl23::analyze_fast(U);
+                F = qdldl23::refactorize(U, S);
+            }
+
+            if (opts.use_symbolic_cache) {
+                CachedSymb C;
+                C.S              = S;
+                C.ord            = ord;
+                C.n              = U.n;
+                symb_cache_[key] = C;
+                touch_key_(key);
+            }
+        } else {
+            // Have S (and maybe ord). Just numeric refactorize on the same
+            // pattern.
+            if (ord) {
+                auto Up = qdldl23::permute_symmetric_upper(U, *ord);
+                F       = qdldl23::refactorize(Up, S);
+            } else {
+                F = qdldl23::refactorize(U, S);
+            }
+        }
+
+        // Solve
+        dvec x = rhs;
+        if (ord) {
+            qdldl23::solve_with_ordering(F, *ord, x.data());
+        } else {
+            qdldl23::solve(F, x.data());
+        }
+
+        // if (opts.refine_iters > 0) {
+        //     // Refinement expects the same matrix that was factorized
+        //     if (ord) {
+        //         // Build permuted U for residual (same as used in
+        //         factorization) auto Up = qdldl23::permute_symmetric_upper(U,
+        //         *ord); qdldl23::refine(Up, F, x.data(), rhs.data(),
+        //         opts.refine_iters, &(*ord));
+        //     } else {
+        //         qdldl23::refine(U, F, x.data(), rhs.data(),
+        //         opts.refine_iters, nullptr);
+        //     }
+        // }
+
+        dvec dx, dy;
+        if (hasE) {
+            dx = x.head(n);
+            dy = x.tail(m);
+        } else {
+            dx = x;
+            dy.resize(0);
+        }
+
+        // Reusable object: keep U, S, ord, and F for fast multi-RHS solves
+        struct Reuse final : KKTReusable {
+            qdldl23::SparseD32                        U;
+            qdldl23::Symb32                           S;
+            std::optional<qdldl23::Ordering<int32_t>> ord;
+            qdldl23::LDL32                            F;
+            int                                       n, m;
+            int                                       refine_iters{0};
+
+            Reuse(qdldl23::SparseD32 U_, qdldl23::Symb32 S_, std::optional<qdldl23::Ordering<int32_t>> ord_,
+                  qdldl23::LDL32 F_, int n_, int m_, int refine_it)
+                : U(std::move(U_)), S(std::move(S_)), ord(std::move(ord_)), F(std::move(F_)), n(n_), m(m_),
+                  refine_iters(refine_it) {}
+
+            std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double /*cg_tol*/,
+                                        int /*cg_maxit*/) override {
+                const int N = n + m;
+                dvec      rhs(N);
+
+                if (m > 0) {
+                    if (!r2n) throw std::runtime_error("LDL::Reuse: missing r2");
+                    rhs.head(n) = r1n;
+                    rhs.tail(m) = *r2n;
+                } else {
+                    rhs = r1n;
+                }
+
+                if (ord) {
+                    qdldl23::solve_with_ordering(F, *ord, rhs.data());
+                } else {
+                    qdldl23::solve(F, rhs.data());
+                }
+                // if (refine_iters > 0) {
+                //     if (ord) {
+                //         auto Up = qdldl23::permute_symmetric_upper(U, *ord);
+                //         qdldl23::refine(Up, F, rhs.data(), rhs.data(),
+                //         refine_iters, &(*ord));
+                //     } else {
+                //         qdldl23::refine(U, F, rhs.data(), rhs.data(),
+                //         refine_iters, nullptr);
+                //     }
+                // }
+
+                if (m > 0) return {rhs.head(n), rhs.tail(m)};
+                return {rhs, dvec()};
+            }
+        };
+
+        auto res = std::make_shared<Reuse>(qdldl23::SparseD32(U), S, ord, F, n, m, opts.refine_iters);
+        return std::make_tuple(dx, dy, res);
+    }
+};
+
+
+
+// Forward declaration of Python solver interface
+class PyNASOQSolver;
+
+class NASOQStrategy final : public KKTStrategy {
+public:
+    NASOQStrategy() { name = "nasoq"; }
+    
+    // Python solver instance (imported at runtime)
+    std::shared_ptr<PyNASOQSolver> py_solver;
+    
+    std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>>
+    factor_and_solve(ModelC *model_in, const spmat &W, const std::optional<spmat> &Gopt,
+                     const dvec &r1, const std::optional<dvec> &r2opt,
+                     const ChompConfig &cfg, std::optional<double> regularizer,
+                     std::unordered_map<std::string, dvec> &cache,
+                     double delta, std::optional<double> gamma_user,
+                     bool assemble_schur_if_m_small, bool use_prec) override;
+};
+
+// Wrapper class for Python NASOQ solver
+class PyNASOQSolver {
+public:
+    PyNASOQSolver(py::object py_solver_obj) : solver_obj(py_solver_obj) {}
+    
+    // Call Python methods
+    void symbolic_analysis(const spmat &H, const spmat &A, const std::optional<spmat> &C) {
+        py::gil_scoped_acquire acquire;
+        
+        if (C) {
+            solver_obj.attr("symbolic_analysis")();
+        } else {
+            // Handle no inequality constraints case
+            solver_obj.attr("symbolic_analysis")();
+        }
+    }
+    
+    void initial_factorization(bool equality_only = true) {
+        py::gil_scoped_acquire acquire;
+        solver_obj.attr("initial_factorization")(equality_only);
+    }
+    
+    void add_constraint(int constraint_idx) {
+        py::gil_scoped_acquire acquire;
+        solver_obj.attr("add_constraint")(constraint_idx);
+    }
+    
+    std::pair<dvec, dvec> solve(const dvec &rhs) {
+        py::gil_scoped_acquire acquire;
+        
+        // Call Python solve method
+        py::array_t<double> rhs_array(rhs.size(), rhs.data());
+        py::object result = solver_obj.attr("solve")(rhs_array);
+        
+        // Convert result back to Eigen
+        py::array_t<double> result_array = result.cast<py::array_t<double>>();
+        auto r = result_array.unchecked<1>();
+        
+        int n = solver_obj.attr("n").cast<int>();
+        int m = solver_obj.attr("m").cast<int>();
+        
+        dvec dx(n), dy(m);
+        for (int i = 0; i < n; ++i) dx[i] = r(i);
+        for (int i = 0; i < m; ++i) dy[i] = r(n + i);
+        
+        return {dx, dy};
+    }
+    
+private:
+    py::object solver_obj;
+};
+
+// Implementation of NASOQStrategy::factor_and_solve
+std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>>
+NASOQStrategy::factor_and_solve(ModelC *model_in, const spmat &W, 
+                                const std::optional<spmat> &Gopt,
+                                const dvec &r1, const std::optional<dvec> &r2opt,
+                                const ChompConfig &cfg, std::optional<double> /*regularizer*/,
+                                std::unordered_map<std::string, dvec> &/*cache*/,
+                                double /*delta*/, std::optional<double> /*gamma_user*/,
+                                bool /*assemble_schur_if_m_small*/, bool /*use_prec*/) {
+    
+    if (!Gopt || !r2opt) {
+        throw std::invalid_argument("NASOQ requires equality constraints");
+    }
+    
+    const auto &G = *Gopt;
+    const auto &r2 = *r2opt;
+    const int n = W.rows(), m = G.rows();
+    
+    // Initialize Python solver if not already done
+    if (!py_solver) {
+        py::gil_scoped_acquire acquire;
+        
+        // Import the Python module
+        py::module_ nasoq_module = py::module_::import("nasoq_solver");
+        
+        // Convert Eigen matrices to Python
+        py::object H_py = py::cast(W);
+        py::object A_py = py::cast(G);
+        
+        // Create solver instance
+        py::object solver_obj = nasoq_module.attr("NASOQSolver")(H_py, A_py);
+        py_solver = std::make_shared<PyNASOQSolver>(solver_obj);
+        
+        // Symbolic analysis
+        py_solver->symbolic_analysis(W, G, std::nullopt);
+    }
+    
+    // Initial factorization
+    py_solver->initial_factorization(true);
+    
+    // Build RHS
+    dvec rhs(n + m);
+    rhs.head(n) = r1;
+    rhs.tail(m) = r2;
+    
+    // Solve
+    auto [dx, dy] = py_solver->solve(rhs);
+    
+    // Create reusable solver
+    struct Reuse final : KKTReusable {
+        std::shared_ptr<PyNASOQSolver> solver;
+        int n, m;
+        
+        Reuse(std::shared_ptr<PyNASOQSolver> s, int n_, int m_)
+            : solver(s), n(n_), m(m_) {}
+        
+        std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n,
+                                   double /*tol*/, int /*maxit*/) override {
+            if (!r2n) throw std::invalid_argument("NASOQ reuse needs r2");
+            
+            dvec rhs(n + m);
+            rhs.head(n) = r1n;
+            rhs.tail(m) = *r2n;
+            
+            return solver->solve(rhs);
+        }
+    };
+    
+    auto reusable = std::make_shared<Reuse>(py_solver, n, m);
+    return std::make_tuple(dx, dy, reusable);
+}
+
+// ------------------------------ registry ------------------------------
+class KKTSolverRegistry {
+    std::unordered_map<std::string, std::shared_ptr<KKTStrategy>> strategies_;
+
+public:
+    void register_strategy(std::shared_ptr<KKTStrategy> s) { strategies_[s->name] = std::move(s); }
+
+    [[nodiscard]] std::shared_ptr<KKTStrategy> get(std::string_view name) const {
+        auto it = strategies_.find(std::string(name));
+        if (it == strategies_.end()) { throw std::runtime_error("Unknown KKT strategy: " + std::string(name)); }
+        return it->second;
+    }
+
+    [[nodiscard]] const auto &all() const noexcept { return strategies_; }
+};
+
+[[nodiscard]] inline KKTSolverRegistry &default_registry() {
+    static KKTSolverRegistry registry;
+    static std::once_flag    init_flag;
+
+    std::call_once(init_flag, []() {
+        registry.register_strategy(std::make_shared<HYKKTStrategy>());
+        registry.register_strategy(std::make_shared<LDLStrategy>());
+        registry.register_strategy(std::make_shared<kkt::NASOQStrategy>());
+    });
+
+    return registry;
+}
+
+} // namespace kkt

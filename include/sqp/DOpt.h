@@ -1,5 +1,5 @@
 #pragma once
-// dopt_stabilizer.hpp
+// SQP D-opt stabilizer
 // Gill–Saunders-style residual shifting for QP linearizations.
 //   JE p = -(cE + rE),  JI p <= -(cI + rI)
 // rE, rI are small, scaled shifts to stabilize multipliers / rank issues.
@@ -28,22 +28,22 @@ struct DOptConfig {
     double dopt_sigma_I = 1e-2;  // inequality linear pull
 
     // Caps / thresholds
-    double dopt_max_shift   = 1e2;     // absolute cap for |rE_i| and rI_i
-    double dopt_active_tol  = 1e-8;    // cI >= -tol considered near-active
-    double dopt_mu_target   = 1e-4;    // target complementarity μ
+    double dopt_max_shift = 1e2;    // absolute cap for |rE_i| and rI_i
+    double dopt_active_tol = 1e-8;  // cI >= -tol considered near-active
+    double dopt_mu_target = 1e-4;   // target complementarity μ
 };
 
 struct DOptMeta {
-    double ce_scale = 1.0;   // median column-2-norm proxy (equalities)
-    double ci_scale = 1.0;   // median column-2-norm proxy (inequalities)
-    double sE       = 1.0;   // row-equilibration scale (equalities)
-    double sI       = 1.0;   // row-equilibration scale (inequalities)
-    double sigmaE   = 0.0;   // effective equality sigma used
-    double sigmaI   = 0.0;   // effective inequality sigma used
+    double ce_scale = 1.0;  // median column-2-norm proxy (equalities)
+    double ci_scale = 1.0;  // median column-2-norm proxy (inequalities)
+    double sE = 1.0;        // row-equilibration scale (equalities)
+    double sI = 1.0;        // row-equilibration scale (inequalities)
+    double sigmaE = 0.0;    // effective equality sigma used
+    double sigmaI = 0.0;    // effective inequality sigma used
 };
 
 class DOptStabilizer {
-public:
+   public:
     explicit DOptStabilizer(DOptConfig cfg = {}) : cfg_(cfg) {}
 
     // Inputs (pass empty matrices/vectors when absent):
@@ -57,13 +57,8 @@ public:
     //  - rI (opt): inequality shift (same size as cI) or std::nullopt if mI=0
     //  - meta     : diagnostics/scales used
     std::tuple<std::optional<dvec>, std::optional<dvec>, DOptMeta>
-    compute_shifts(const dmat& JE,
-                   const dmat& JI,
-                   const dvec& cE,
-                   const dvec& cI,
-                   const dvec& lam,
-                   const dvec& /*nu*/) const
-    {
+    compute_shifts(const dmat& JE, const dmat& JI, const dvec& cE,
+                   const dvec& cI, const dvec& lam, const dvec& /*nu*/) const {
         DOptMeta meta{};
         std::optional<dvec> rE, rI;
 
@@ -75,9 +70,10 @@ public:
             }
             meta.sE = sE;
 
-            const double ce_scale = (cfg_.dopt_scaling == ScaleMode::Ruiz && JE.size() > 0)
-                                        ? colnorms_median_(JE / sE)
-                                        : colnorms_median_(JE);
+            const double ce_scale =
+                (cfg_.dopt_scaling == ScaleMode::Ruiz && JE.size() > 0)
+                    ? colnorms_median_(JE / sE)
+                    : colnorms_median_(JE);
             meta.ce_scale = ce_scale;
 
             const double sigmaE = cfg_.dopt_sigma_E * std::max(1.0, ce_scale);
@@ -96,9 +92,10 @@ public:
             }
             meta.sI = sI;
 
-            const double ci_scale = (cfg_.dopt_scaling == ScaleMode::Ruiz && JI.size() > 0)
-                                        ? colnorms_median_(JI / sI)
-                                        : colnorms_median_(JI);
+            const double ci_scale =
+                (cfg_.dopt_scaling == ScaleMode::Ruiz && JI.size() > 0)
+                    ? colnorms_median_(JI / sI)
+                    : colnorms_median_(JI);
             meta.ci_scale = ci_scale;
 
             const double sigmaI = cfg_.dopt_sigma_I * std::max(1.0, ci_scale);
@@ -136,7 +133,7 @@ public:
         return {rE, rI, meta};
     }
 
-private:
+   private:
     DOptConfig cfg_;
 
     // Median column 2-norm as a magnitude proxy; returns 1.0 if J empty.
@@ -156,7 +153,8 @@ private:
             }
             norms.push_back(std::sqrt(std::max(s, 1e-16)));
         }
-        std::nth_element(norms.begin(), norms.begin() + norms.size() / 2, norms.end());
+        std::nth_element(norms.begin(), norms.begin() + norms.size() / 2,
+                         norms.end());
         return norms[norms.size() / 2];
     }
 
@@ -174,17 +172,20 @@ private:
             }
             norms.push_back(std::sqrt(std::max(s, 1e-16)));
         }
-        std::nth_element(norms.begin(), norms.begin() + norms.size() / 2, norms.end());
+        std::nth_element(norms.begin(), norms.begin() + norms.size() / 2,
+                         norms.end());
         const double med = norms[norms.size() / 2];
         return (std::isfinite(med) && med > 0.0) ? med : 1.0;
     }
 
     static void clip_inplace_(dvec& v, double lo, double hi) {
         for (Eigen::Index i = 0; i < v.size(); ++i) {
-            if (v(i) < lo) v(i) = lo;
-            else if (v(i) > hi) v(i) = hi;
+            if (v(i) < lo)
+                v(i) = lo;
+            else if (v(i) > hi)
+                v(i) = hi;
         }
     }
 };
 
-} // namespace dopt
+}  // namespace dopt

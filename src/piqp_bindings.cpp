@@ -1,16 +1,16 @@
-#include "../include/piqp.h"
 #include <pybind11/eigen.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "../include/qp/PIQP.h"
+
 namespace py = pybind11;
 using namespace piqp;
 
 // Convert Python (NumPy or SciPy sparse) to Eigen::SparseMatrix<double>
-static SparseMatrix py_to_sparse(const py::object &obj) {
-    if (obj.is_none())
-        return SparseMatrix(0, 0);
+static SparseMatrix py_to_sparse(const py::object& obj) {
+    if (obj.is_none()) return SparseMatrix(0, 0);
 
     // If it looks like a SciPy sparse matrix, use .tocoo() to pull triplets
     if (py::hasattr(obj, "tocoo")) {
@@ -32,9 +32,9 @@ static SparseMatrix py_to_sparse(const py::object &obj) {
         auto c = col.cast<py::array_t<long long, py::array::c_style |
                                                      py::array::forcecast>>();
 
-        const double *dptr = d.data();
-        const long long *rptr = r.data();
-        const long long *cptr = c.data();
+        const double* dptr = d.data();
+        const long long* rptr = r.data();
+        const long long* cptr = c.data();
         ssize_t nnz = d.shape(0);
         for (ssize_t k = 0; k < nnz; ++k) {
             trips.emplace_back(static_cast<int>(rptr[k]),
@@ -73,7 +73,7 @@ PYBIND11_MODULE(piqp_cpp, m) {
         .def_readwrite("ruiz_iters", &PIQPSettings::ruiz_iters)
         .def_readwrite("scale_eps", &PIQPSettings::scale_eps)
         .def_readwrite("cost_scaling", &PIQPSettings::cost_scaling)
-        .def("__repr__", [](const PIQPSettings &s) {
+        .def("__repr__", [](const PIQPSettings& s) {
             return "<PIQPSettings(eps_abs=" + std::to_string(s.eps_abs) +
                    ", eps_rel=" + std::to_string(s.eps_rel) +
                    ", max_iter=" + std::to_string(s.max_iter) + ")>";
@@ -91,12 +91,12 @@ PYBIND11_MODULE(piqp_cpp, m) {
         .def_readonly("status", &PIQPResult::status)
         .def_readonly("iterations", &PIQPResult::iterations)
         .def_readonly("x", &PIQPResult::x)
-        .def_readonly("s", &PIQPResult::s) // if s is also non-optional
-        .def_readonly("y", &PIQPResult::y) // λ (equalities)
-        .def_readonly("z", &PIQPResult::z) // μ (inequalities)
+        .def_readonly("s", &PIQPResult::s)  // if s is also non-optional
+        .def_readonly("y", &PIQPResult::y)  // λ (equalities)
+        .def_readonly("z", &PIQPResult::z)  // μ (inequalities)
         .def_readonly("obj_val", &PIQPResult::obj_val)
         .def_readonly("residuals", &PIQPResult::residuals)
-        .def("__repr__", [](const PIQPResult &r) {
+        .def("__repr__", [](const PIQPResult& r) {
             return "<PIQPResult(status='" + r.status +
                    "', iterations=" + std::to_string(r.iterations) +
                    ", obj_val=" + std::to_string(r.obj_val) + ")>";
@@ -104,24 +104,20 @@ PYBIND11_MODULE(piqp_cpp, m) {
 
     py::class_<PIQPSolver>(m, "PIQPSolver")
         .def(py::init<>())
-        .def(py::init<const PIQPSettings &>())
+        .def(py::init<const PIQPSettings&>())
         .def(
             "setup",
-            [](PIQPSolver &solver, const py::object &P,
-               const Eigen::Ref<const Vector> &q, const py::object &A,
-               const py::object &b, const py::object &G,
-               const py::object &h) -> PIQPSolver & {
+            [](PIQPSolver& solver, const py::object& P,
+               const Eigen::Ref<const Vector>& q, const py::object& A,
+               const py::object& b, const py::object& G,
+               const py::object& h) -> PIQPSolver& {
                 SparseMatrix Ps = py_to_sparse(P);
                 std::optional<SparseMatrix> As, Gs;
                 std::optional<Vector> bs, hs;
-                if (!A.is_none())
-                    As = py_to_sparse(A);
-                if (!b.is_none())
-                    bs = b.cast<Eigen::Ref<const Vector>>();
-                if (!G.is_none())
-                    Gs = py_to_sparse(G);
-                if (!h.is_none())
-                    hs = h.cast<Eigen::Ref<const Vector>>();
+                if (!A.is_none()) As = py_to_sparse(A);
+                if (!b.is_none()) bs = b.cast<Eigen::Ref<const Vector>>();
+                if (!G.is_none()) Gs = py_to_sparse(G);
+                if (!h.is_none()) hs = h.cast<Eigen::Ref<const Vector>>();
                 return solver.setup(Ps, q, As, bs, Gs, hs);
             },
             py::arg("P"), py::arg("q"), py::arg("A") = py::none(),
@@ -145,17 +141,13 @@ PYBIND11_MODULE(piqp_cpp, m) {
         // Warm start: x,y,z,s (+ optional prox centers)
         .def(
             "warm_start",
-            [](PIQPSolver &solver, py::object x, py::object y, py::object z,
-               py::object s, bool copy_to_prox_centers) -> PIQPSolver & {
+            [](PIQPSolver& solver, py::object x, py::object y, py::object z,
+               py::object s, bool copy_to_prox_centers) -> PIQPSolver& {
                 std::optional<Vector> xo, yo, zo, so;
-                if (!x.is_none())
-                    xo = x.cast<Eigen::VectorXd>();
-                if (!y.is_none())
-                    yo = y.cast<Eigen::VectorXd>();
-                if (!z.is_none())
-                    zo = z.cast<Eigen::VectorXd>();
-                if (!s.is_none())
-                    so = s.cast<Eigen::VectorXd>();
+                if (!x.is_none()) xo = x.cast<Eigen::VectorXd>();
+                if (!y.is_none()) yo = y.cast<Eigen::VectorXd>();
+                if (!z.is_none()) zo = z.cast<Eigen::VectorXd>();
+                if (!s.is_none()) so = s.cast<Eigen::VectorXd>();
                 return solver.warm_start(xo, yo, zo, so, copy_to_prox_centers);
             },
             py::arg("x") = py::none(), py::arg("y") = py::none(),
@@ -166,15 +158,12 @@ PYBIND11_MODULE(piqp_cpp, m) {
         // Prox centers only
         .def(
             "set_prox_centers",
-            [](PIQPSolver &solver, py::object xi, py::object lambda,
-               py::object nu) -> PIQPSolver & {
+            [](PIQPSolver& solver, py::object xi, py::object lambda,
+               py::object nu) -> PIQPSolver& {
                 std::optional<Vector> xio, lo, nuo;
-                if (!xi.is_none())
-                    xio = xi.cast<Eigen::VectorXd>();
-                if (!lambda.is_none())
-                    lo = lambda.cast<Eigen::VectorXd>();
-                if (!nu.is_none())
-                    nuo = nu.cast<Eigen::VectorXd>();
+                if (!xi.is_none()) xio = xi.cast<Eigen::VectorXd>();
+                if (!lambda.is_none()) lo = lambda.cast<Eigen::VectorXd>();
+                if (!nu.is_none()) nuo = nu.cast<Eigen::VectorXd>();
                 return solver.set_prox_centers(xio, lo, nuo);
             },
             py::arg("xi") = py::none(), py::arg("lambda") = py::none(),
@@ -193,20 +182,16 @@ PYBIND11_MODULE(piqp_cpp, m) {
         // Fast numeric update (pattern-stable by default)
         .def(
             "update_values",
-            [](PIQPSolver &solver, py::object P,
-               const Eigen::Ref<const Vector> &q, py::object A, py::object b,
-               py::object G, py::object h, bool same_pattern) -> PIQPSolver & {
+            [](PIQPSolver& solver, py::object P,
+               const Eigen::Ref<const Vector>& q, py::object A, py::object b,
+               py::object G, py::object h, bool same_pattern) -> PIQPSolver& {
                 SparseMatrix Ps = py_to_sparse(P);
                 std::optional<SparseMatrix> As, Gs;
                 std::optional<Vector> bs, hs;
-                if (!A.is_none())
-                    As = py_to_sparse(A);
-                if (!b.is_none())
-                    bs = b.cast<Eigen::Ref<const Vector>>();
-                if (!G.is_none())
-                    Gs = py_to_sparse(G);
-                if (!h.is_none())
-                    hs = h.cast<Eigen::Ref<const Vector>>();
+                if (!A.is_none()) As = py_to_sparse(A);
+                if (!b.is_none()) bs = b.cast<Eigen::Ref<const Vector>>();
+                if (!G.is_none()) Gs = py_to_sparse(G);
+                if (!h.is_none()) hs = h.cast<Eigen::Ref<const Vector>>();
                 return solver.update_values(Ps, q, As, bs, Gs, hs,
                                             same_pattern);
             },
@@ -217,21 +202,17 @@ PYBIND11_MODULE(piqp_cpp, m) {
     // One-shot convenience
     m.def(
         "solve",
-        [](const py::object &P, const Eigen::Ref<const Vector> &q,
-           const py::object &A, const py::object &b, const py::object &G,
-           const py::object &h, const PIQPSettings &settings) -> PIQPResult {
+        [](const py::object& P, const Eigen::Ref<const Vector>& q,
+           const py::object& A, const py::object& b, const py::object& G,
+           const py::object& h, const PIQPSettings& settings) -> PIQPResult {
             PIQPSolver solver(settings);
             SparseMatrix Ps = py_to_sparse(P);
             std::optional<SparseMatrix> As, Gs;
             std::optional<Vector> bs, hs;
-            if (!A.is_none())
-                As = py_to_sparse(A);
-            if (!b.is_none())
-                bs = b.cast<Eigen::Ref<const Vector>>();
-            if (!G.is_none())
-                Gs = py_to_sparse(G);
-            if (!h.is_none())
-                hs = h.cast<Eigen::Ref<const Vector>>();
+            if (!A.is_none()) As = py_to_sparse(A);
+            if (!b.is_none()) bs = b.cast<Eigen::Ref<const Vector>>();
+            if (!G.is_none()) Gs = py_to_sparse(G);
+            if (!h.is_none()) hs = h.cast<Eigen::Ref<const Vector>>();
             solver.setup(Ps, q, As, bs, Gs, hs);
             return solver.solve();
         },

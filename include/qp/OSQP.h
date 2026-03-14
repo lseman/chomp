@@ -1,4 +1,4 @@
-// include/osqp.h
+// include/qp/OSQP.h
 #pragma once
 
 #include <Eigen/Core>
@@ -21,25 +21,23 @@ using SpMat = Eigen::SparseMatrix<Scalar, Eigen::ColMajor, int>;
 using Triplet = Eigen::Triplet<Scalar>;
 
 // -------- Efficient in-place column/row scaling for SpMat --------
-inline void scale_cols_inplace(SpMat &M, const Vec &s) {
+inline void scale_cols_inplace(SpMat& M, const Vec& s) {
     const int n = M.cols();
     for (int j = 0; j < n; ++j) {
         Scalar sj = (j < s.size() ? s[j] : 1.0);
-        if (sj == 1.0)
-            continue;
+        if (sj == 1.0) continue;
         for (SpMat::InnerIterator it(M, j); it; ++it) {
-            it.valueRef() *= sj; // scale column j
+            it.valueRef() *= sj;  // scale column j
         }
     }
 }
-inline void scale_rows_inplace(SpMat &M, const Vec &s) {
+inline void scale_rows_inplace(SpMat& M, const Vec& s) {
     const int n = M.cols();
     for (int j = 0; j < n; ++j) {
         for (SpMat::InnerIterator it(M, j); it; ++it) {
             int i = it.row();
             Scalar si = (i < s.size() ? s[i] : 1.0);
-            if (si != 1.0)
-                it.valueRef() *= si; // scale row i
+            if (si != 1.0) it.valueRef() *= si;  // scale row i
         }
     }
 }
@@ -47,16 +45,15 @@ inline void scale_rows_inplace(SpMat &M, const Vec &s) {
 // ---------- Division-free LDLᵀ solve wrapper for Eigen::SimplicialLDLT
 struct LDLtDivFree {
     Eigen::SimplicialLDLT<SpMat> ldlt;
-    Vec invD; // diag(D)^{-1}
+    Vec invD;  // diag(D)^{-1}
     Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> P;
-    SpMat L; // unit-lower
+    SpMat L;  // unit-lower
     bool factorized = false;
 
-    void compute(const SpMat &M) {
+    void compute(const SpMat& M) {
         ldlt.compute(M);
         factorized = (ldlt.info() == Eigen::Success);
-        if (!factorized)
-            return;
+        if (!factorized) return;
         P = ldlt.permutationP();
         L = SpMat(ldlt.matrixL());
         Eigen::VectorXd D = ldlt.vectorD();
@@ -64,11 +61,11 @@ struct LDLtDivFree {
     }
 
     // x = M^{-1} b
-    inline Vec solve(const Vec &b) const {
+    inline Vec solve(const Vec& b) const {
         Vec pb = P * b;
         Vec y = pb;
         L.template triangularView<Eigen::Lower>().solveInPlace(y);
-        Vec z = invD.cwiseProduct(y); // division-free middle step
+        Vec z = invD.cwiseProduct(y);  // division-free middle step
         Vec w = z;
         L.transpose().template triangularView<Eigen::Upper>().solveInPlace(w);
         return P.transpose() * w;
@@ -76,7 +73,7 @@ struct LDLtDivFree {
 
     // X = M^{-1} B  (apply to multiple RHS columns)
     template <typename DenseMat>
-    inline DenseMat solveMat(const DenseMat &B) const {
+    inline DenseMat solveMat(const DenseMat& B) const {
         DenseMat PB = P * B;
         DenseMat Y = PB;
         // forward
@@ -98,14 +95,13 @@ struct LDLtDivFree {
 // ---------- Fast KKT solver with cached factorizations and efficient rho
 // updates ----------
 class KKTQuasiDef {
-public:
+   public:
     // Build from P, A, rho, sigma - initial setup
-    bool build(const SpMat &P, const SpMat &A, const Vec &rho, Scalar sigma,
+    bool build(const SpMat& P, const SpMat& A, const Vec& rho, Scalar sigma,
                Scalar diag_reg) {
         n_ = int(P.rows());
         m_ = int(A.rows());
-        if (P.cols() != n_ || A.cols() != n_ || rho.size() != m_)
-            return false;
+        if (P.cols() != n_ || A.cols() != n_ || rho.size() != m_) return false;
 
         A_ = A;
         rho_base_ = rho;
@@ -118,28 +114,25 @@ public:
 
         // Cache H factorization (this won't change)
         H_.compute(H);
-        if (!H_.factorized)
-            return false;
+        if (!H_.factorized) return false;
 
         // Precompute and cache A H^{-1} A^T (the expensive part)
-        if (!build_AHA_cache())
-            return false;
+        if (!build_AHA_cache()) return false;
 
         // Build initial Schur complement with current rho
         return update_schur_complement(rho);
     }
 
     // Fast update when only rho changes (no refactorization of H needed)
-    bool update_rho(const Vec &new_rho) {
-        if (new_rho.size() != m_)
-            return false;
+    bool update_rho(const Vec& new_rho) {
+        if (new_rho.size() != m_) return false;
         return update_schur_complement(new_rho);
     }
 
     // Solve K [x; y] = [rhs1; rhs2]
-    std::pair<Vec, Vec> solve(const Vec &rhs1, const Vec &rhs2) const {
-        Vec t = H_.solve(rhs1);  // t = H^{-1} rhs1
-        Vec At = A_times_vec(t); // At = A t
+    std::pair<Vec, Vec> solve(const Vec& rhs1, const Vec& rhs2) const {
+        Vec t = H_.solve(rhs1);   // t = H^{-1} rhs1
+        Vec At = A_times_vec(t);  // At = A t
         Vec rhs_y = At - rhs2;
         Vec y = S_.solve(rhs_y);
         Vec ATy = AT_times_vec(y);
@@ -147,7 +140,7 @@ public:
         return {x, y};
     }
 
-private:
+   private:
     int n_{0}, m_{0};
     SpMat A_;
     Vec rho_base_;
@@ -155,7 +148,7 @@ private:
 
     // Cached A H^{-1} A^T computation
     std::vector<std::vector<std::pair<int, Scalar>>>
-        AHA_sparse_; // sparse storage
+        AHA_sparse_;  // sparse storage
     bool analyzed_ = false;
 
     bool build_AHA_cache() {
@@ -173,8 +166,7 @@ private:
                 ai[it.row()] = it.value();
             }
 
-            if (ai.norm() < 1e-15)
-                continue; // skip empty rows
+            if (ai.norm() < 1e-15) continue;  // skip empty rows
 
             // Solve H * yi = ai
             Vec yi = H_.solve(ai);
@@ -193,14 +185,14 @@ private:
         return true;
     }
 
-    bool update_schur_complement(const Vec &rho) {
+    bool update_schur_complement(const Vec& rho) {
         // Build S = cached_AHA + diag(1/rho) using cached sparse structure
         std::vector<Triplet> S_triplets;
         S_triplets.reserve(m_ * 20);
 
         // Add cached A H^{-1} A^T entries
         for (int i = 0; i < m_; ++i) {
-            for (const auto &entry : AHA_sparse_[i]) {
+            for (const auto& entry : AHA_sparse_[i]) {
                 int j = entry.first;
                 Scalar val = entry.second;
                 S_triplets.emplace_back(i, j, val);
@@ -222,7 +214,7 @@ private:
         if (prev_rho.size() == rho.size()) {
             for (int i = 0; i < rho.size(); ++i) {
                 if (std::abs(rho[i] / prev_rho[i] - 1.0) >
-                    0.5) { // 50% change threshold
+                    0.5) {  // 50% change threshold
                     rho_changed_significantly = true;
                     break;
                 }
@@ -233,7 +225,7 @@ private:
         prev_rho = rho;
 
         if (rho_changed_significantly) {
-            analyzed_ = false; // Force new symbolic analysis
+            analyzed_ = false;  // Force new symbolic analysis
         }
 
         if (!analyzed_) {
@@ -242,8 +234,7 @@ private:
         }
 
         S_.ldlt.factorize(S);
-        if (S_.ldlt.info() != Eigen::Success)
-            return false;
+        if (S_.ldlt.info() != Eigen::Success) return false;
 
         // Update cached components
         S_.P = S_.ldlt.permutationP();
@@ -254,19 +245,18 @@ private:
         return true;
     }
 
-    inline Vec A_times_vec(const Vec &v) const {
+    inline Vec A_times_vec(const Vec& v) const {
         Vec out = Vec::Zero(m_);
         for (int j = 0; j < A_.outerSize(); ++j) {
             const Scalar vj = v[j];
-            if (std::abs(vj) < 1e-15)
-                continue;
+            if (std::abs(vj) < 1e-15) continue;
             for (SpMat::InnerIterator it(A_, j); it; ++it)
                 out[it.row()] += it.value() * vj;
         }
         return out;
     }
 
-    inline Vec AT_times_vec(const Vec &w) const {
+    inline Vec AT_times_vec(const Vec& w) const {
         Vec out = Vec::Zero(n_);
         for (int j = 0; j < A_.outerSize(); ++j)
             for (SpMat::InnerIterator it(A_, j); it; ++it)
@@ -276,9 +266,8 @@ private:
 };
 
 // -------- create sqrt(rho) * A (scale rows) --------
-inline SpMat create_scaled_A(const SpMat &A, const Vec &rho) {
-    if (A.rows() == 0)
-        return A;
+inline SpMat create_scaled_A(const SpMat& A, const Vec& rho) {
+    if (A.rows() == 0) return A;
     SpMat scaled = A;
     Vec sqrt_rho = rho.cwiseSqrt();
     scale_rows_inplace(scaled, sqrt_rho);
@@ -286,23 +275,23 @@ inline SpMat create_scaled_A(const SpMat &A, const Vec &rho) {
     return scaled;
 }
 // ============================ Small utilities ============================
-inline Scalar inf_norm(const Vec &v) {
+inline Scalar inf_norm(const Vec& v) {
     return (v.size() ? v.lpNorm<Eigen::Infinity>() : 0.0);
 }
 
 // ---------- Fast Normal-Equations cache with symbolic reuse ----------
 struct NEFast {
     // M(w) = H + w * G
-    SpMat H;          // constant while P, sigma, diag_reg unchanged
-    SpMat G;          // A^T diag(rho0) A built once using the *base* rho
-    SpMat M;          // working matrix = H + w * G
-    LDLtDivFree ldlt; // division-free LDLᵀ wrapper
+    SpMat H;           // constant while P, sigma, diag_reg unchanged
+    SpMat G;           // A^T diag(rho0) A built once using the *base* rho
+    SpMat M;           // working matrix = H + w * G
+    LDLtDivFree ldlt;  // division-free LDLᵀ wrapper
     bool analyzed = false;
     int n = 0;
 
     // Build H and G once. rho_base is your current rho vector.
-    bool build_once(const SpMat &P_sym, Scalar sigma, Scalar diag_reg,
-                    const SpMat &A, const Vec &rho_base) {
+    bool build_once(const SpMat& P_sym, Scalar sigma, Scalar diag_reg,
+                    const SpMat& A, const Vec& rho_base) {
         n = int(P_sym.rows());
         if (P_sym.cols() != n || A.cols() != n || rho_base.size() != A.rows())
             return false;
@@ -315,7 +304,7 @@ struct NEFast {
         H.makeCompressed();
 
         // G = A^T diag(rho_base) A
-        SpMat As = create_scaled_A(A, rho_base); // scales rows by sqrt(rho)
+        SpMat As = create_scaled_A(A, rho_base);  // scales rows by sqrt(rho)
         G = As.transpose() * As;
         G.makeCompressed();
 
@@ -335,16 +324,13 @@ struct NEFast {
 
     // Change weight w: M = H + w * G (numeric refactor only)
     bool refactor_with_weight(Scalar w) {
-        if (!analyzed)
-            return false;
+        if (!analyzed) return false;
         // Rebuild values: M = H + w*G (pattern doesn't change)
         M = H;
-        if (w != Scalar(0))
-            M += w * G;
+        if (w != Scalar(0)) M += w * G;
         M.makeCompressed();
-        ldlt.ldlt.factorize(M); // numeric-only refactor
-        if (ldlt.ldlt.info() != Eigen::Success)
-            return false;
+        ldlt.ldlt.factorize(M);  // numeric-only refactor
+        if (ldlt.ldlt.info() != Eigen::Success) return false;
 
         // refresh cached pieces for division-free solves
         ldlt.P = ldlt.ldlt.permutationP();
@@ -354,21 +340,21 @@ struct NEFast {
         return true;
     }
 
-    Vec solve(const Vec &rhs) const { return ldlt.solve(rhs); }
+    Vec solve(const Vec& rhs) const { return ldlt.solve(rhs); }
 };
 
 // =============================== Settings ===============================
 struct Settings {
     // ---- Algorithm params (OSQP-style defaults) ----
-    Scalar sigma = 1e-6; // x-regularization
-    Scalar alpha = 1.6;  // over-relaxation
-    Scalar rho0 = 1e-1;  // base rho for inequalities
+    Scalar sigma = 1e-6;  // x-regularization
+    Scalar alpha = 1.6;   // over-relaxation
+    Scalar rho0 = 1e-1;   // base rho for inequalities
 
     // Back-compat with bindings (mirror fields)
     Scalar rho =
-        1e-1; // DEPRECATED: kept for pybind repr/API; used to init rho0
+        1e-1;  // DEPRECATED: kept for pybind repr/API; used to init rho0
 
-    Scalar rho_eq_scale = 1e3; // multiplier for equality rows (l==u)
+    Scalar rho_eq_scale = 1e3;  // multiplier for equality rows (l==u)
     bool adaptive_rho = true;
 
     // Termination (OSQP Sec. 3.4)
@@ -384,8 +370,8 @@ struct Settings {
     int check_every = 5;
 
     // Numerical tolerances
-    Scalar diag_reg = 1e-12; // tiny I added to SPD system
-    Scalar eq_tol = 1e-9;    // equality detect |l-u| <= eq_tol
+    Scalar diag_reg = 1e-12;  // tiny I added to SPD system
+    Scalar eq_tol = 1e-9;     // equality detect |l-u| <= eq_tol
     bool verbose = false;
 
     // Polishing
@@ -398,21 +384,21 @@ struct Settings {
     Scalar rho_max = 1e6;
     Scalar explode_refactor = 1e3;
 
-    Scalar max_refactor = 3; // UNUSED internally; kept for API compatibility
+    Scalar max_refactor = 3;  // UNUSED internally; kept for API compatibility
 
     // --------- Ruiz scaling (optional; disabled by default) ---------
-    bool enable_ruiz = true;    // enable modified Ruiz equilibration
-    int ruiz_max_iter = 20;     // max iterations (few tens typical)
-    Scalar ruiz_tol = 1e-3;     // convergence of per-iter deltas
-    bool check_unscaled = true; // check stopping on original problem
+    bool enable_ruiz = true;     // enable modified Ruiz equilibration
+    int ruiz_max_iter = 20;      // max iterations (few tens typical)
+    Scalar ruiz_tol = 1e-3;      // convergence of per-iter deltas
+    bool check_unscaled = true;  // check stopping on original problem
 
     Settings() = default;
 };
 
 // =============================== Results ===============================
 struct Residuals {
-    Scalar pri_inf = 0.0; // ||Ax - z||_inf
-    Scalar dua_inf = 0.0; // ||Px + q + A^T y||_inf
+    Scalar pri_inf = 0.0;  // ||Ax - z||_inf
+    Scalar dua_inf = 0.0;  // ||Px + q + A^T y||_inf
 };
 
 struct Result {
@@ -425,14 +411,14 @@ struct Result {
     // Infeasibility certificates (optional)
     bool primal_infeasible = false;
     bool dual_infeasible = false;
-    Vec y_cert, x_cert; // dy and dx direction certificates
+    Vec y_cert, x_cert;  // dy and dx direction certificates
 
     // Optional polished x
     std::optional<Vec> x_polish;
 };
 
 // -------- build M = P + sigma*I + A^T diag(rho) A --------
-inline SpMat build_M(const SpMat &P, const SpMat &A, const Vec &rho,
+inline SpMat build_M(const SpMat& P, const SpMat& A, const Vec& rho,
                      Scalar sigma, Scalar diag_reg) {
     const int n = static_cast<int>(P.rows());
     SpMat M = Scalar(0.5) * (P + SpMat(P.transpose()));
@@ -456,9 +442,9 @@ struct Termination {
     Scalar eps_dua = 0.0;
 };
 
-inline Termination compute_thresholds(const SpMat &P, const SpMat &A,
-                                      const Vec &x, const Vec &z, const Vec &q,
-                                      const Vec &y, const Settings &cfg) {
+inline Termination compute_thresholds(const SpMat& P, const SpMat& A,
+                                      const Vec& x, const Vec& z, const Vec& q,
+                                      const Vec& y, const Settings& cfg) {
     Vec Ax, ATy, Pxq;
     if (A.rows() > 0) {
         Ax = A * x;
@@ -476,8 +462,8 @@ inline Termination compute_thresholds(const SpMat &P, const SpMat &A,
     return {eps_pri, eps_dua};
 }
 
-inline Residuals compute_residuals(const SpMat &P, const SpMat &A, const Vec &x,
-                                   const Vec &z, const Vec &q, const Vec &y) {
+inline Residuals compute_residuals(const SpMat& P, const SpMat& A, const Vec& x,
+                                   const Vec& z, const Vec& q, const Vec& y) {
     Vec r_p, ATy;
     if (A.rows() > 0) {
         r_p = A * x - z;
@@ -493,8 +479,8 @@ inline Residuals compute_residuals(const SpMat &P, const SpMat &A, const Vec &x,
 // =============================== Ruiz scaling ===============================
 struct Scaling {
     // x̄ = D^{-1} x,  z̄ = E z,  ȳ = c E^{-1} y
-    Vec Dx; // length n (positive)
-    Vec Ez; // length m (positive)
+    Vec Dx;  // length n (positive)
+    Vec Ez;  // length m (positive)
     Scalar c = 1.0;
     bool enabled = false;
 
@@ -506,28 +492,27 @@ struct Scaling {
     }
 };
 
-inline Scalar col_inf_norm(const SpMat &M, int j) {
+inline Scalar col_inf_norm(const SpMat& M, int j) {
     Scalar v = 0.0;
     for (SpMat::InnerIterator it(M, j); it; ++it)
         v = std::max(v, std::abs(it.value()));
     return v;
 }
 
-inline Scalar row_inf_norm(const SpMat &M, int i) {
+inline Scalar row_inf_norm(const SpMat& M, int i) {
     Scalar v = 0.0;
     for (int k = 0; k < M.outerSize(); ++k)
         for (SpMat::InnerIterator it(M, k); it; ++it)
-            if (it.row() == i)
-                v = std::max(v, std::abs(it.value()));
+            if (it.row() == i) v = std::max(v, std::abs(it.value()));
     return v;
 }
 
 // Modified Ruiz equilibration (block-wise; paper Alg. 2)
-inline void ruiz_equilibrate_modified(const SpMat &P, const Vec &q,
-                                      const SpMat &A, const Vec &l,
-                                      const Vec &u, int max_iter, Scalar tol,
-                                      SpMat &Pbar, Vec &qbar, SpMat &Abar,
-                                      Vec &lbar, Vec &ubar, Scaling &S) {
+inline void ruiz_equilibrate_modified(const SpMat& P, const Vec& q,
+                                      const SpMat& A, const Vec& l,
+                                      const Vec& u, int max_iter, Scalar tol,
+                                      SpMat& Pbar, Vec& qbar, SpMat& Abar,
+                                      Vec& lbar, Vec& ubar, Scaling& S) {
     const int n = int(P.rows());
     const int m = int(A.rows());
 
@@ -571,10 +556,8 @@ inline void ruiz_equilibrate_modified(const SpMat &P, const Vec &q,
         // qbar
         qbar = delta_x.cwiseProduct(qbar);
         // bounds
-        if (lbar.size())
-            lbar = delta_z.cwiseProduct(lbar);
-        if (ubar.size())
-            ubar = delta_z.cwiseProduct(ubar);
+        if (lbar.size()) lbar = delta_z.cwiseProduct(lbar);
+        if (ubar.size()) ubar = delta_z.cwiseProduct(ubar);
 
         // Accumulate
         S.Dx = S.Dx.cwiseProduct(delta_x);
@@ -584,54 +567,43 @@ inline void ruiz_equilibrate_modified(const SpMat &P, const Vec &q,
         Scalar meanPcol = 0.0;
         if (n) {
             Scalar sum = 0.0;
-            for (int j = 0; j < n; ++j)
-                sum += col_inf_norm(Pbar, j);
+            for (int j = 0; j < n; ++j) sum += col_inf_norm(Pbar, j);
             meanPcol = sum / n;
         }
         Scalar qinf = (qbar.size() ? qbar.lpNorm<Eigen::Infinity>() : 1.0);
         Scalar gamma = 1.0 / std::max(meanPcol, qinf);
-        if (!std::isfinite(gamma) || gamma <= 0)
-            gamma = 1.0;
+        if (!std::isfinite(gamma) || gamma <= 0) gamma = 1.0;
 
         Pbar *= gamma;
         qbar *= gamma;
         S.c *= gamma;
 
-        if (max_dev <= tol)
-            break;
+        if (max_dev <= tol) break;
     }
 
     S.enabled = true;
 }
 
 // Map initial guesses to scaled space
-inline void map_initial_to_scaled(const Scaling &S, Vec &x0, Vec &z0, Vec &y0) {
-    if (!S.enabled)
-        return;
-    if (x0.size())
-        x0 = x0.cwiseQuotient(S.Dx); // x̄0 = D^{-1} x0
-    if (z0.size())
-        z0 = S.Ez.cwiseProduct(z0); // z̄0 = E z0
-    if (y0.size())
-        y0 = (S.c) * y0.cwiseQuotient(S.Ez); // ȳ0 = c E^{-1} y0
+inline void map_initial_to_scaled(const Scaling& S, Vec& x0, Vec& z0, Vec& y0) {
+    if (!S.enabled) return;
+    if (x0.size()) x0 = x0.cwiseQuotient(S.Dx);          // x̄0 = D^{-1} x0
+    if (z0.size()) z0 = S.Ez.cwiseProduct(z0);           // z̄0 = E z0
+    if (y0.size()) y0 = (S.c) * y0.cwiseQuotient(S.Ez);  // ȳ0 = c E^{-1} y0
 }
 
 // Map solution back to original space
-inline void map_solution_from_scaled(const Scaling &S, Vec &x, Vec &z, Vec &y) {
-    if (!S.enabled)
-        return;
-    if (x.size())
-        x = S.Dx.cwiseProduct(x); // x = D x̄
-    if (z.size())
-        z = z.cwiseQuotient(S.Ez); // z = E^{-1} z̄
-    if (y.size())
-        y = (1.0 / S.c) * S.Ez.cwiseProduct(y); // y = c^{-1} E ȳ
+inline void map_solution_from_scaled(const Scaling& S, Vec& x, Vec& z, Vec& y) {
+    if (!S.enabled) return;
+    if (x.size()) x = S.Dx.cwiseProduct(x);                // x = D x̄
+    if (z.size()) z = z.cwiseQuotient(S.Ez);               // z = E^{-1} z̄
+    if (y.size()) y = (1.0 / S.c) * S.Ez.cwiseProduct(y);  // y = c^{-1} E ȳ
 }
 
 // Unscaled thresholds from scaled iterates (paper §5.1)
 inline Termination compute_thresholds_unscaled(
-    const SpMat &Pbar, const SpMat &Abar, const Vec &xbar, const Vec &zbar,
-    const Vec &qbar, const Vec &ybar, const Scaling &S, const Settings &cfg) {
+    const SpMat& Pbar, const SpMat& Abar, const Vec& xbar, const Vec& zbar,
+    const Vec& qbar, const Vec& ybar, const Scaling& S, const Settings& cfg) {
     Vec Ax_bar = (Abar.rows() ? Abar * xbar : Vec());
     Scalar term_pri = 0.0;
     if (zbar.size()) {
@@ -661,10 +633,10 @@ inline Termination compute_thresholds_unscaled(
 }
 
 // Unscaled residuals from scaled vars (paper §5.1)
-inline Residuals compute_residuals_unscaled(const SpMat &Pbar,
-                                            const SpMat &Abar, const Vec &xbar,
-                                            const Vec &zbar, const Vec &qbar,
-                                            const Vec &ybar, const Scaling &S) {
+inline Residuals compute_residuals_unscaled(const SpMat& Pbar,
+                                            const SpMat& Abar, const Vec& xbar,
+                                            const Vec& zbar, const Vec& qbar,
+                                            const Vec& ybar, const Scaling& S) {
     Vec r_p, r_d;
     if (Abar.rows()) {
         Vec tmp = Abar * xbar - zbar;
@@ -675,12 +647,9 @@ inline Residuals compute_residuals_unscaled(const SpMat &Pbar,
     Vec Px = (Pbar.rows() ? Pbar * xbar : Vec());
     Vec ATy = (Abar.rows() ? Abar.transpose() * ybar : Vec());
     Vec sum = Vec::Zero(xbar.size());
-    if (Px.size())
-        sum += Px;
-    if (qbar.size())
-        sum += qbar;
-    if (ATy.size())
-        sum += ATy;
+    if (Px.size()) sum += Px;
+    if (qbar.size()) sum += qbar;
+    if (ATy.size()) sum += ATy;
     r_d = (1.0 / S.c) * sum.cwiseQuotient(S.Dx);
 
     return {inf_norm(r_p), inf_norm(r_d)};
@@ -688,7 +657,7 @@ inline Residuals compute_residuals_unscaled(const SpMat &Pbar,
 
 // ======================= Main Sparse OSQP-like Solver =======================
 class SparseOSQPSolver {
-public:
+   public:
     explicit SparseOSQPSolver(Settings s = Settings{}) : cfg_(s) {
         // back-compat: if user set Settings.rho (deprecated), propagate to rho0
         cfg_.rho0 = cfg_.rho;
@@ -697,19 +666,16 @@ public:
     // Solve:
     //   minimize 0.5 x^T P x + q^T x
     //   s.t.     l <= A x <= u
-    Result solve(const SpMat &P, const Vec &q, const SpMat &A, const Vec &l,
-                 const Vec &u, const Vec *x0 = nullptr, const Vec *z0 = nullptr,
-                 const Vec *y0 = nullptr) {
+    Result solve(const SpMat& P, const Vec& q, const SpMat& A, const Vec& l,
+                 const Vec& u, const Vec* x0 = nullptr, const Vec* z0 = nullptr,
+                 const Vec* y0 = nullptr) {
         const int n = static_cast<int>(P.rows());
         const int m = static_cast<int>(A.rows());
 
         // ---- Dimension checks
-        if (P.cols() != n)
-            throw std::invalid_argument("P must be square");
-        if (q.size() != n)
-            throw std::invalid_argument("q dimension mismatch");
-        if (A.cols() != n)
-            throw std::invalid_argument("A column dim mismatch");
+        if (P.cols() != n) throw std::invalid_argument("P must be square");
+        if (q.size() != n) throw std::invalid_argument("q dimension mismatch");
+        if (A.cols() != n) throw std::invalid_argument("A column dim mismatch");
         if (l.size() != m || u.size() != m)
             throw std::invalid_argument("l,u dim mismatch");
 
@@ -735,13 +701,11 @@ public:
         Vec zbar, ybar;
 
         if (S.enabled) {
-            if (xbar.size())
-                xbar = xbar.cwiseQuotient(S.Dx); // x̄0 = D^{-1} x0
+            if (xbar.size()) xbar = xbar.cwiseQuotient(S.Dx);  // x̄0 = D^{-1} x0
         }
         if (z0 && z0->size() == m) {
             zbar = *z0;
-            if (S.enabled)
-                zbar = S.Ez.cwiseProduct(zbar); // z̄0 = E z0
+            if (S.enabled) zbar = S.Ez.cwiseProduct(zbar);  // z̄0 = E z0
             zbar = project_box(zbar, l_use, u_use);
         } else {
             if (m > 0)
@@ -752,7 +716,7 @@ public:
         if (y0 && y0->size() == m) {
             ybar = *y0;
             if (S.enabled)
-                ybar = (S.c) * ybar.cwiseQuotient(S.Ez); // ȳ0 = c E^{-1} y0
+                ybar = (S.c) * ybar.cwiseQuotient(S.Ez);  // ȳ0 = c E^{-1} y0
         } else {
             ybar = (m ? Vec::Zero(m) : Vec());
         }
@@ -763,7 +727,7 @@ public:
         out.iters = 0;
 
         auto map_finalize_and_return =
-            [&](const std::string &status) -> Result {
+            [&](const std::string& status) -> Result {
             Vec x_ret = xbar, z_ret = zbar, y_ret = ybar;
             map_solution_from_scaled(S, x_ret, z_ret, y_ret);
             out.x = x_ret;
@@ -789,8 +753,8 @@ public:
         // ---- Choose linear system path
         // If KKT was slower for your workloads, feel free to set use_kkt =
         // false;
-        const bool use_kkt = false; // (m > 0) && (n > 80 || m > 80); //
-                                   // heuristic; tune or force false
+        const bool use_kkt = false;  // (m > 0) && (n > 80 || m > 80); //
+                                     // heuristic; tune or force false
 
         // Builders / factorizations
         int refactor_count = 0;
@@ -798,7 +762,7 @@ public:
         // ---------- Normal-Equations fast cache ----------
         NEFast NEF;
         Scalar rho_weight =
-            1.0; // cumulative scaling of rho since NEF.build_once(...)
+            1.0;  // cumulative scaling of rho since NEF.build_once(...)
 
         // Precompute symmetric P once (for H)
         SpMat P_sym = Scalar(0.5) * (P_use + SpMat(P_use.transpose()));
@@ -855,7 +819,8 @@ public:
                 if (m > 0)
                     rhs1 += A_use.transpose() * (rho.cwiseProduct(zbar) - ybar);
                 Vec rhs2 = (m > 0 ? zbar : Vec());
-                x_new = KKT.solve(rhs1, rhs2).first; // keep ADMM y-update below
+                x_new =
+                    KKT.solve(rhs1, rhs2).first;  // keep ADMM y-update below
             } else {
                 Vec rhs = -q_use + cfg.sigma * xbar;
                 if (m > 0)
@@ -864,16 +829,16 @@ public:
 #if 1
                 Vec r_lin = rhs - NEF.M * x_new;
                 if (r_lin.lpNorm<Eigen::Infinity>() > 0) {
-                    x_new += NEF.solve(r_lin); // 1 correction step
+                    x_new += NEF.solve(r_lin);  // 1 correction step
                 }
 #endif
             }
 
             // ===== Over-relaxation and (z,y) updates (scaled)
-            Vec zt = (m > 0 ? A_use * x_new : Vec()); // Ā x̄^{k+1}
+            Vec zt = (m > 0 ? A_use * x_new : Vec());  // Ā x̄^{k+1}
             Vec x_hat = cfg.alpha * x_new + (1.0 - cfg.alpha) * xbar;
 
-            Vec v; // for z update
+            Vec v;  // for z update
             if (m > 0) {
                 v = cfg.alpha * zt + (1.0 - cfg.alpha) * zbar +
                     ybar.cwiseQuotient(rho.cwiseMax(kRhoFloor));
@@ -894,8 +859,7 @@ public:
             // ===== Check termination / certificates / adaptive rho
             const bool do_check =
                 ((k % cfg.check_every) == 0) || (k == cfg.max_iter - 1);
-            if (!do_check)
-                continue;
+            if (!do_check) continue;
 
             Residuals r;
             Termination t;
@@ -928,8 +892,7 @@ public:
                 out.y = y_ret;
                 out.res = compute_residuals(P, A, out.x, out.z, q, out.y);
                 out.obj_val = 0.5 * out.x.dot(P * out.x) + q.dot(out.x);
-                if (cfg.polish)
-                    try_polish(out, P, q, A, l, u);
+                if (cfg.polish) try_polish(out, P, q, A, l, u);
                 out.primal_infeasible = primal_inf_flag;
                 out.dual_infeasible = dual_inf_flag;
                 out.y_cert = dy_cert;
@@ -949,7 +912,7 @@ public:
             if (bad_numeric || stall_cnt >= 3) {
                 // Soft restart: boost rho, reset dual, recenter z, cheap
                 // refactor
-                const Scalar rho_boost = 2.0; // tune 1.5–5.0
+                const Scalar rho_boost = 2.0;  // tune 1.5–5.0
                 if (m > 0) {
                     rho *= rho_boost;
                     rho = rho.cwiseMax(cfg.rho_min).cwiseMin(cfg.rho_max);
@@ -978,14 +941,14 @@ public:
 
                         // Rebuild once with higher reg using CURRENT rho as new
                         // base
-                        if (!NEF.build_once(P_sym, cfg.sigma,
-                                            cfg.diag_reg *
-                                                std::pow(10.0, refactor_count),
-                                            A_use, rho)) {
-                            continue; // try larger bump
+                        if (!NEF.build_once(
+                                P_sym, cfg.sigma,
+                                cfg.diag_reg * std::pow(10.0, refactor_count),
+                                A_use, rho)) {
+                            continue;  // try larger bump
                         }
                         rho_weight =
-                            1.0; // reset because G now reflects current rho
+                            1.0;  // reset because G now reflects current rho
                         break;
                     }
                 } else {
@@ -1005,8 +968,8 @@ public:
                     }
                 }
 
-                stall_cnt = 0; // reset window
-                continue; // skip certs/ρ update this check and iterate again
+                stall_cnt = 0;  // reset window
+                continue;  // skip certs/ρ update this check and iterate again
             }
 
             // ---- Infeasibility certificates (ORIGINAL space)
@@ -1061,12 +1024,12 @@ public:
                                 dinf3 = false;
                                 break;
                             }
-                        } else if (!std::isfinite(u[i])) { // only lower bound
+                        } else if (!std::isfinite(u[i])) {  // only lower bound
                             if (Adx[i] < -cfg.eps_dinf * dx_norm) {
                                 dinf3 = false;
                                 break;
                             }
-                        } else if (!std::isfinite(l[i])) { // only upper bound
+                        } else if (!std::isfinite(l[i])) {  // only upper bound
                             if (Adx[i] > cfg.eps_dinf * dx_norm) {
                                 dinf3 = false;
                                 break;
@@ -1114,9 +1077,9 @@ public:
                     npri = r.pri_inf / denom_pri;
                     ndua = r.dua_inf / denom_dua;
                 } else {
-                    const Scalar denom_pri =
-                        std::max<Scalar>(1e-30, std::max(inf_norm(A_use * xbar),
-                                                         inf_norm(zbar)));
+                    const Scalar denom_pri = std::max<Scalar>(
+                        1e-30,
+                        std::max(inf_norm(A_use * xbar), inf_norm(zbar)));
                     Vec Pxq = P_use * xbar + q_use;
                     const Scalar denom_dua = std::max<Scalar>(
                         1e-30, std::max(inf_norm(Pxq),
@@ -1170,9 +1133,9 @@ public:
                                         cfg.diag_reg *
                                             std::pow(10.0, refactor_count),
                                         A_use, rho)) {
-                                    continue; // try larger bump
+                                    continue;  // try larger bump
                                 }
-                                rho_weight = 1.0; // base reset
+                                rho_weight = 1.0;  // base reset
                                 break;
                             }
                         }
@@ -1194,11 +1157,11 @@ public:
         }
     }
 
-private:
+   private:
     Settings cfg_;
 
-    Result &finalize(Result &out, const SpMat &P, const SpMat &A,
-                     const Vec &q) const {
+    Result& finalize(Result& out, const SpMat& P, const SpMat& A,
+                     const Vec& q) const {
         out.res = compute_residuals(P, A, out.x, out.z, q, out.y);
         out.obj_val = 0.5 * out.x.dot(P * out.x) + q.dot(out.x);
         return out;
@@ -1207,20 +1170,18 @@ private:
     // -------- Polishing: quasi-definite KKT with delta, solve via SparseLU +
     // refinement
     // -------- Polishing: reduced KKT with active-set detection + refinement
-    void try_polish(Result &out, const SpMat &P, const Vec &q, const SpMat &A,
-                    const Vec &l, const Vec &u) const {
+    void try_polish(Result& out, const SpMat& P, const Vec& q, const SpMat& A,
+                    const Vec& l, const Vec& u) const {
         const int n = int(P.rows());
         const int m = int(A.rows());
-        if (m == 0)
-            return;
-        if (out.x.size() != n || out.z.size() != m || out.y.size() != m)
-            return;
+        if (m == 0) return;
+        if (out.x.size() != n || out.z.size() != m || out.y.size() != m) return;
 
         // ---- Active set selection
         // Include a row in L if: y_i < 0 OR (z_i is near l_i)
         // Include a row in U if: y_i > 0 OR (z_i is near u_i)
         // Note: if both sides hit (rare, due to eq rows), prefer sign(y).
-        const Scalar tau_act = 1e-6; // proximity tolerance to bounds
+        const Scalar tau_act = 1e-6;  // proximity tolerance to bounds
         std::vector<int> L, U;
         L.reserve(m);
         U.reserve(m);
@@ -1245,19 +1206,17 @@ private:
             }
         }
 
-        if (L.empty() && U.empty())
-            return; // nothing to polish
+        if (L.empty() && U.empty()) return;  // nothing to polish
 
         // ---- Helper: take selected rows from A (keeps sparse structure)
-        auto take_rows = [&](const SpMat &Mx,
-                             const std::vector<int> &idx) -> SpMat {
-            if (idx.empty())
-                return SpMat(0, Mx.cols());
+        auto take_rows = [&](const SpMat& Mx,
+                             const std::vector<int>& idx) -> SpMat {
+            if (idx.empty()) return SpMat(0, Mx.cols());
             std::vector<int> sorted = idx;
             std::sort(sorted.begin(), sorted.end());
             SpMat R(int(sorted.size()), Mx.cols());
             std::vector<Triplet> T;
-            T.reserve(size_t(Mx.nonZeros()) * 1u); // rough upper bound
+            T.reserve(size_t(Mx.nonZeros()) * 1u);  // rough upper bound
             for (int k = 0; k < Mx.outerSize(); ++k) {
                 for (SpMat::InnerIterator it(Mx, k); it; ++it) {
                     int r = it.row();
@@ -1306,11 +1265,11 @@ private:
                 T.emplace_back(it.row(), it.col(), it.value());
 
         // Top-right: A_L^T at (0, n), A_U^T at (0, n+nL)
-        auto add_block_AT = [&](const SpMat &B, int row_off, int col_off) {
+        auto add_block_AT = [&](const SpMat& B, int row_off, int col_off) {
             for (int k = 0; k < B.outerSize(); ++k)
                 for (SpMat::InnerIterator it(B, k); it; ++it)
                     T.emplace_back(row_off + it.col(), col_off + it.row(),
-                                   it.value()); // B^T
+                                   it.value());  // B^T
         };
         const int offL = n;
         const int offU = n + nL;
@@ -1321,15 +1280,13 @@ private:
         for (int k = 0; k < AL.outerSize(); ++k)
             for (SpMat::InnerIterator it(AL, k); it; ++it)
                 T.emplace_back(offL + it.row(), it.col(), it.value());
-        for (int i = 0; i < nL; ++i)
-            T.emplace_back(offL + i, offL + i, -delta);
+        for (int i = 0; i < nL; ++i) T.emplace_back(offL + i, offL + i, -delta);
 
         // Bottom-left: A_U at (n+nL,0) and -delta*I at (n+nL, n+nL)
         for (int k = 0; k < AU.outerSize(); ++k)
             for (SpMat::InnerIterator it(AU, k); it; ++it)
                 T.emplace_back(offU + it.row(), it.col(), it.value());
-        for (int i = 0; i < nU; ++i)
-            T.emplace_back(offU + i, offU + i, -delta);
+        for (int i = 0; i < nU; ++i) T.emplace_back(offU + i, offU + i, -delta);
 
         SpMat KKT(nK, nK);
         KKT.setFromTriplets(T.begin(), T.end());
@@ -1339,34 +1296,27 @@ private:
         Vec rhs(nK);
         rhs.setZero();
         rhs.head(n) = -q;
-        for (int i = 0; i < nL; ++i)
-            rhs[offL + i] = l[Ls[i]];
-        for (int i = 0; i < nU; ++i)
-            rhs[offU + i] = u[Us[i]];
+        for (int i = 0; i < nL; ++i) rhs[offL + i] = l[Ls[i]];
+        for (int i = 0; i < nU; ++i) rhs[offU + i] = u[Us[i]];
 
         // ---- Factor & solve (SparseLU is robust for quasi-definite with small
         // -delta)
         Eigen::SparseLU<SpMat> slu;
         slu.analyzePattern(KKT);
         slu.factorize(KKT);
-        if (slu.info() != Eigen::Success)
-            return;
+        if (slu.info() != Eigen::Success) return;
 
         Vec sol = slu.solve(rhs);
-        if (slu.info() != Eigen::Success || !sol.allFinite())
-            return;
+        if (slu.info() != Eigen::Success || !sol.allFinite()) return;
 
         // ---- Iterative refinement (a few steps)
         for (int t = 0; t < cfg_.polish_refine_steps; ++t) {
             Vec r = rhs - KKT * sol;
-            if (!r.allFinite())
-                break;
+            if (!r.allFinite()) break;
             const Scalar r_inf = r.lpNorm<Eigen::Infinity>();
-            if (r_inf <= 1e-12)
-                break;
+            if (r_inf <= 1e-12) break;
             Vec d = slu.solve(r);
-            if (slu.info() != Eigen::Success || !d.allFinite())
-                break;
+            if (slu.info() != Eigen::Success || !d.allFinite()) break;
             sol += d;
         }
 
@@ -1393,18 +1343,15 @@ private:
     }
 
     // -------- box projection --------
-    static Vec project_box(const Vec &v, const Vec &l, const Vec &u) {
-        if (v.size() == 0)
-            return v;
+    static Vec project_box(const Vec& v, const Vec& l, const Vec& u) {
+        if (v.size() == 0) return v;
         Vec out = v;
         for (int i = 0; i < out.size(); ++i) {
-            if (std::isfinite(l[i]))
-                out[i] = std::max(out[i], l[i]);
-            if (std::isfinite(u[i]))
-                out[i] = std::min(out[i], u[i]);
+            if (std::isfinite(l[i])) out[i] = std::max(out[i], l[i]);
+            if (std::isfinite(u[i])) out[i] = std::min(out[i], u[i]);
         }
         return out;
     }
 };
 
-} // namespace sosqp
+}  // namespace sosqp

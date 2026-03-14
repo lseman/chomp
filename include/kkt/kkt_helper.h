@@ -9,7 +9,7 @@
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
 
-#include "qdldl.h"
+#include "../qp/QDLDL.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,12 +27,10 @@
 
 // --- tiny CSR builder from Eigen (pattern-only)
 static CSR eigen_to_csr_pattern(const spmat &A) {
-    const int n = A.rows();
+    const int                     n = A.rows();
     std::vector<std::vector<i32>> rows(n);
     for (int j = 0; j < A.outerSize(); ++j) {
-        for (spmat::InnerIterator it(A, j); it; ++it) {
-            rows[it.row()].push_back(it.col());
-        }
+        for (spmat::InnerIterator it(A, j); it; ++it) { rows[it.row()].push_back(it.col()); }
     }
     CSR C(n);
     C.indptr[0] = 0;
@@ -44,27 +42,24 @@ static CSR eigen_to_csr_pattern(const spmat &A) {
     }
     C.indices.resize(C.indptr.back());
     for (int i = 0, w = 0; i < n; ++i)
-        for (int v : rows[i])
-            C.indices[(size_t)w++] = (i32)v;
+        for (int v : rows[i]) C.indices[(size_t)w++] = (i32)v;
     return C;
 }
 
 // --- build qdldl23::Ordering from your AMD
-static qdldl23::Ordering<int32_t>
-qdldl_order_from_my_amd(const spmat &K, bool symmetrize_union = true,
-                        int dense_cutoff = -1) {
+static qdldl23::Ordering<int32_t> qdldl_order_from_my_amd(const spmat &K, bool symmetrize_union = true,
+                                                          int dense_cutoff = -1) {
     // 1) pattern to CSR
     CSR A = eigen_to_csr_pattern(K);
 
     // 2) run your AMD → p_new2old
     AMDReorderingArray my_amd(/*aggressive_absorption=*/true, dense_cutoff);
-    std::vector<i32> p_new2old =
-        my_amd.amd_order(A, /*symmetrize=*/symmetrize_union);
+    std::vector<i32>   p_new2old = my_amd.amd_order(A, /*symmetrize=*/symmetrize_union);
 
     // 3) invert to old->new as qdldl expects
     std::vector<int32_t> perm_old2new(p_new2old.size());
     for (int32_t newi = 0; newi < (int32_t)p_new2old.size(); ++newi) {
-        int32_t oldi = p_new2old[(size_t)newi];
+        int32_t oldi               = p_new2old[(size_t)newi];
         perm_old2new[(size_t)oldi] = newi;
     }
 
@@ -76,28 +71,25 @@ namespace kkt {
 // inserts.
 // ====================== assemble_KKT (row-major right block)
 // ======================
-[[nodiscard]] inline spmat assemble_KKT(const spmat& W_in,
-                                        double delta,
-                                        const std::optional<spmat>& Gopt,
-                                        bool* out_hasE)
-{
-    using T = Eigen::Triplet<double,int>;
-    if (W_in.rows() != W_in.cols())
-        throw std::invalid_argument("assemble_KKT: W not square");
+[[nodiscard]] inline spmat assemble_KKT(const spmat &W_in, double delta, const std::optional<spmat> &Gopt,
+                                        bool *out_hasE) {
+    using T = Eigen::Triplet<double, int>;
+    if (W_in.rows() != W_in.cols()) throw std::invalid_argument("assemble_KKT: W not square");
 
-    spmat W = W_in; W.makeCompressed();
+    spmat W = W_in;
+    W.makeCompressed();
 
     const bool hasE = (Gopt && Gopt->rows() > 0 && Gopt->cols() > 0);
     if (out_hasE) *out_hasE = hasE;
 
     const int n = W.rows();
-    int m = 0;
+    int       m = 0;
     if (!hasE) {
         // Just W + delta I
-        std::vector<T> trips; trips.reserve(W.nonZeros() + n);
+        std::vector<T> trips;
+        trips.reserve(W.nonZeros() + n);
         for (int j = 0; j < W.outerSize(); ++j)
-            for (spmat::InnerIterator it(W, j); it; ++it)
-                trips.emplace_back(it.row(), it.col(), it.value());
+            for (spmat::InnerIterator it(W, j); it; ++it) trips.emplace_back(it.row(), it.col(), it.value());
         if (delta != 0.0)
             for (int i = 0; i < n; ++i) trips.emplace_back(i, i, delta);
         spmat K(n, n);
@@ -106,20 +98,19 @@ namespace kkt {
         return K;
     }
 
-    const spmat& Gc = *Gopt;
-    if (Gc.cols() != n)
-        throw std::invalid_argument("assemble_KKT: G.cols != n");
-    spmat G = Gc; G.makeCompressed();
-    m = G.rows();
+    const spmat &Gc = *Gopt;
+    if (Gc.cols() != n) throw std::invalid_argument("assemble_KKT: G.cols != n");
+    spmat G = Gc;
+    G.makeCompressed();
+    m           = G.rows();
     const int N = n + m;
 
     std::vector<T> trips;
-    trips.reserve(W.nonZeros() + (delta != 0.0 ? n : 0) + 2*G.nonZeros());
+    trips.reserve(W.nonZeros() + (delta != 0.0 ? n : 0) + 2 * G.nonZeros());
 
     // W block
     for (int j = 0; j < W.outerSize(); ++j)
-        for (spmat::InnerIterator it(W, j); it; ++it)
-            trips.emplace_back(it.row(), it.col(), it.value());
+        for (spmat::InnerIterator it(W, j); it; ++it) trips.emplace_back(it.row(), it.col(), it.value());
 
     if (delta != 0.0)
         for (int i = 0; i < n; ++i) trips.emplace_back(i, i, delta);
@@ -127,11 +118,11 @@ namespace kkt {
     // G blocks: top-right (Gᵀ) and bottom-left (G)
     for (int j = 0; j < G.outerSize(); ++j)
         for (spmat::InnerIterator it(G, j); it; ++it) {
-            const int i = it.row();     // 0..m-1
-            const int k = it.col();     // 0..n-1
+            const int    i = it.row(); // 0..m-1
+            const int    k = it.col(); // 0..n-1
             const double v = it.value();
-            trips.emplace_back(k, n + i, v);   // top-right Gᵀ
-            trips.emplace_back(n + i, k, v);   // bottom-left G
+            trips.emplace_back(k, n + i, v); // top-right Gᵀ
+            trips.emplace_back(n + i, k, v); // bottom-left G
         }
 
     spmat K(N, N);
@@ -141,18 +132,16 @@ namespace kkt {
 }
 
 // ------------------------------ QDLDL helpers -------------------------
-[[nodiscard]] inline qdldl23::SparseD32
-eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
+[[nodiscard]] inline qdldl23::SparseD32 eigen_to_upper_csc(const spmat &A, double diag_eps = 0.0) {
     const int n = A.rows();
-    if (A.cols() != n)
-        throw std::invalid_argument("eigen_to_upper_csc: matrix must be square");
+    if (A.cols() != n) throw std::invalid_argument("eigen_to_upper_csc: matrix must be square");
 
     // We assume caller gave a compressed matrix. If not, make a compressed copy.
     spmat Ac = A;
     Ac.makeCompressed();
 
     // Pass 1: count upper-triangular nnz per column, track diagonal presence
-    std::vector<int> Ap(static_cast<size_t>(n) + 1, 0);
+    std::vector<int>  Ap(static_cast<size_t>(n) + 1, 0);
     std::vector<char> has_diag(static_cast<size_t>(n), 0);
 
     for (int j = 0; j < n; ++j) {
@@ -174,10 +163,9 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
     }
 
     // Prefix sum to get column pointers
-    for (int j = 0; j < n; ++j)
-        Ap[j + 1] += Ap[j];
+    for (int j = 0; j < n; ++j) Ap[j + 1] += Ap[j];
 
-    const int nnz = Ap[n];
+    const int           nnz = Ap[n];
     std::vector<int>    Ai(static_cast<size_t>(nnz));
     std::vector<double> Ax(static_cast<size_t>(nnz));
 
@@ -190,8 +178,8 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
             const int i = it.row();
             if (i <= j) {
                 const int p = next[j]++;
-                Ai[p] = i;
-                Ax[p] = it.value();
+                Ai[p]       = i;
+                Ax[p]       = it.value();
                 if (i == j) has_diag[j] = 2; // mark “already written diag”
             }
         }
@@ -202,8 +190,8 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
         for (int j = 0; j < n; ++j) {
             if (has_diag[j] == 0) { // no diagonal was present/written
                 const int p = next[j]++;
-                Ai[p] = j;
-                Ax[p] = diag_eps;
+                Ai[p]       = j;
+                Ax[p]       = diag_eps;
             }
         }
     }
@@ -214,13 +202,11 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
     return qdldl23::SparseD32(n, std::move(Ap), std::move(Ai), std::move(Ax));
 }
 
-
 // ------------------------------ SIMD optimized helpers ----------------
 #if defined(__AVX2__)
-[[nodiscard]] inline double simd_dot_product(const double *a, const double *b,
-                                             size_t n) noexcept {
+[[nodiscard]] inline double simd_dot_product(const double *a, const double *b, size_t n) noexcept {
     __m256d acc = _mm256_setzero_pd();
-    size_t i = 0;
+    size_t  i   = 0;
 
     for (; i + 4 <= n; i += 4) {
         __m256d va = _mm256_loadu_pd(a + i);
@@ -232,21 +218,19 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
 #endif
     }
 
-    __m128d lo = _mm256_castpd256_pd128(acc);
-    __m128d hi = _mm256_extractf128_pd(acc, 1);
+    __m128d lo     = _mm256_castpd256_pd128(acc);
+    __m128d hi     = _mm256_extractf128_pd(acc, 1);
     __m128d sum128 = _mm_add_pd(lo, hi);
-    __m128d hi64 = _mm_unpackhi_pd(sum128, sum128);
-    double s = _mm_cvtsd_f64(_mm_add_sd(sum128, hi64));
+    __m128d hi64   = _mm_unpackhi_pd(sum128, sum128);
+    double  s      = _mm_cvtsd_f64(_mm_add_sd(sum128, hi64));
 
-    for (; i < n; ++i)
-        s += a[i] * b[i];
+    for (; i < n; ++i) s += a[i] * b[i];
     return s;
 }
 
-[[nodiscard]] inline void simd_axpy(double alpha, const double *x, double *y,
-                                    size_t n) noexcept {
+[[nodiscard]] inline void simd_axpy(double alpha, const double *x, double *y, size_t n) noexcept {
     __m256d va = _mm256_set1_pd(alpha);
-    size_t i = 0;
+    size_t  i  = 0;
     for (; i + 4 <= n; i += 4) {
         __m256d vx = _mm256_loadu_pd(x + i);
         __m256d vy = _mm256_loadu_pd(y + i);
@@ -257,8 +241,7 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
 #endif
         _mm256_storeu_pd(y + i, r);
     }
-    for (; i < n; ++i)
-        y[i] += alpha * x[i];
+    for (; i < n; ++i) y[i] += alpha * x[i];
 }
 #endif
 
@@ -267,9 +250,7 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
     double mx = 0.0;
     for (int j = 0; j < A.outerSize(); ++j) {
         double col = 0.0;
-        for (spmat::InnerIterator it(A, j); it; ++it) {
-            col += std::abs(it.value());
-        }
+        for (spmat::InnerIterator it(A, j); it; ++it) { col += std::abs(it.value()); }
         mx = std::max(mx, col);
     }
     return mx;
@@ -289,8 +270,7 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
 [[nodiscard]] inline spmat build_S_hat(const spmat &G, const dvec &diagKinv) {
     const int m = G.rows();
     const int n = G.cols();
-    if (diagKinv.size() != n)
-        throw std::invalid_argument("build_S_hat: diagKinv size mismatch");
+    if (diagKinv.size() != n) throw std::invalid_argument("build_S_hat: diagKinv size mismatch");
 
     spmat Gs = G; // copy structure+values
     Gs.makeCompressed();
@@ -298,10 +278,8 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
     // Scale each column j by s = sqrt(max(1e-18, diagKinv[j]))
     for (int j = 0; j < Gs.outerSize(); ++j) {
         const double s = std::sqrt(std::max(1e-18, diagKinv[j]));
-        if (s == 1.0)
-            continue;
-        for (spmat::InnerIterator it(Gs, j); it; ++it)
-            it.valueRef() *= s;
+        if (s == 1.0) continue;
+        for (spmat::InnerIterator it(Gs, j); it; ++it) it.valueRef() *= s;
     }
 
     spmat S = (Gs * Gs.transpose()).pruned();
@@ -309,11 +287,9 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
     return S;
 }
 
-[[nodiscard]] inline double estimate_condition_number(const spmat &A,
-                                                      double reg = 0.0) {
+[[nodiscard]] inline double estimate_condition_number(const spmat &A, double reg = 0.0) {
     const int n = A.rows();
-    if (n == 0)
-        return 1.0;
+    if (n == 0) return 1.0;
 
     dvec v = dvec::Random(n).normalized();
     dvec Av(n);
@@ -322,16 +298,14 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
     double lambda_max = 0.0;
     for (int i = 0; i < 5; ++i) {
         Av = A * v;
-        if (reg != 0.0)
-            Av += reg * v;
-        lambda_max = v.dot(Av);
+        if (reg != 0.0) Av += reg * v;
+        lambda_max        = v.dot(Av);
         const double norm = Av.norm();
-        if (norm > 1e-16)
-            v = Av / norm;
+        if (norm > 1e-16) v = Av / norm;
     }
 
     // crude lower bound via diagonal
-    const dvec diag = A.diagonal().array().abs();
+    const dvec   diag       = A.diagonal().array().abs();
     const double lambda_min = std::max(diag.minCoeff() + reg, 1e-16);
 
     return std::abs(lambda_max) / lambda_min;
@@ -339,7 +313,7 @@ eigen_to_upper_csc(const spmat& A, double diag_eps = 0.0) {
 
 // ------------------------- linear operator & CG -----------------------
 struct LinOp {
-    int n = 0;
+    int                                       n = 0;
     std::function<void(const dvec &, dvec &)> mv;
 
     void apply(const dvec &x, dvec &y) const {
@@ -349,14 +323,14 @@ struct LinOp {
 };
 
 struct CGInfo {
-    int iters = 0;
-    bool converged = false;
+    int    iters          = 0;
+    bool   converged      = false;
     double final_residual = 0.0;
 };
 class SSORPrecond {
 private:
-    spmat Lw, Uw; // (D + ωL), (D + ωU)
-    dvec D;       // diag(S_hat) clamped
+    spmat  Lw, Uw; // (D + ωL), (D + ωU)
+    dvec   D;      // diag(S_hat) clamped
     double scale = 1.0;
 
 public:
@@ -365,10 +339,9 @@ public:
 
     void compute(const spmat &S_hat, double omega) {
         // Clamp ω to (0, 2)
-        omega = std::clamp(omega, 1e-6, 2.0 - 1e-6);
+        omega       = std::clamp(omega, 1e-6, 2.0 - 1e-6);
         const int m = S_hat.rows();
-        if (S_hat.cols() != m)
-            throw std::invalid_argument("SSORPrecond: S not square");
+        if (S_hat.cols() != m) throw std::invalid_argument("SSORPrecond: S not square");
 
         // Diagonal (guarded)
         D = S_hat.diagonal().cwiseMax(1e-18);
@@ -407,7 +380,7 @@ public:
         for (int j = 0; j < S_hat.outerSize(); ++j) {
             bool wrote_diag = false;
             for (spmat::InnerIterator it(S_hat, j); it; ++it) {
-                const int i = it.row();
+                const int    i = it.row();
                 const double v = it.value();
 
                 if (i == j) {
@@ -462,24 +435,20 @@ public:
     }
 };
 // Helper to pick dot path once
-inline double maybe_simd_dot(const double *a, const double *b, int n,
-                             bool use_simd) {
+inline double maybe_simd_dot(const double *a, const double *b, int n, bool use_simd) {
 #if defined(__AVX2__)
-    if (use_simd && n >= 4)
-        return simd_dot_product(a, b, n);
+    if (use_simd && n >= 4) return simd_dot_product(a, b, n);
 #endif
     return Eigen::Map<const dvec>(a, n).dot(Eigen::Map<const dvec>(b, n));
 }
 
 // Optimized CG for SPD with symmetric preconditioning (Jacobi / SSOR)
 [[nodiscard]] inline std::pair<dvec, CGInfo>
-cg(const LinOp &A, const dvec &b,
-   const std::optional<dvec> &JacobiMinvDiag = std::nullopt, double tol = 1e-10,
-   int maxit = 200, const std::optional<dvec> &x0 = std::nullopt,
-   const std::optional<SSORPrecond> &ssor = std::nullopt,
+cg(const LinOp &A, const dvec &b, const std::optional<dvec> &JacobiMinvDiag = std::nullopt, double tol = 1e-10,
+   int maxit = 200, const std::optional<dvec> &x0 = std::nullopt, const std::optional<SSORPrecond> &ssor = std::nullopt,
    bool use_simd = true) {
     const int n = A.n;
-    dvec x = x0.value_or(dvec::Zero(n));
+    dvec      x = x0.value_or(dvec::Zero(n));
 
     dvec r(n), z(n), p(n), Ap(n);
 
@@ -499,16 +468,16 @@ cg(const LinOp &A, const dvec &b,
 
     p = z;
 
-    const double b2 = b.squaredNorm();
+    const double b2        = b.squaredNorm();
     const double rel_stop2 = std::max(tol * tol * b2, 1e-32);
 
     CGInfo info{};
-    info.iters = 0;
+    info.iters          = 0;
     info.final_residual = r.norm();
 
-    double rz = maybe_simd_dot(r.data(), z.data(), n, use_simd);
-    double prev_r2 = r.squaredNorm();
-    int stagnation_count = 0;
+    double rz               = maybe_simd_dot(r.data(), z.data(), n, use_simd);
+    double prev_r2          = r.squaredNorm();
+    int    stagnation_count = 0;
 
     // Early exit
     if ((ssor || JacobiMinvDiag) ? (rz <= rel_stop2) : (prev_r2 <= rel_stop2)) {
@@ -520,8 +489,8 @@ cg(const LinOp &A, const dvec &b,
         // Ap = A p
         A.apply(p, Ap);
 
-        double pAp = maybe_simd_dot(p.data(), Ap.data(), n, use_simd);
-        pAp = std::max(pAp, 1e-300);
+        double pAp         = maybe_simd_dot(p.data(), Ap.data(), n, use_simd);
+        pAp                = std::max(pAp, 1e-300);
         const double alpha = rz / pAp;
 
 #if defined(__AVX2__)
@@ -537,7 +506,7 @@ cg(const LinOp &A, const dvec &b,
         r.noalias() -= alpha * Ap;
 #endif
 
-        const double r2 = r.squaredNorm();
+        const double r2     = r.squaredNorm();
         info.final_residual = std::sqrt(r2);
 
         // Recompute z only if needed for test / next step
@@ -546,29 +515,29 @@ cg(const LinOp &A, const dvec &b,
             const double rMr = maybe_simd_dot(r.data(), z.data(), n, use_simd);
             if (rMr <= rel_stop2) {
                 info.converged = true;
-                info.iters = k;
+                info.iters     = k;
                 return {x, info};
             }
         } else if (JacobiMinvDiag) {
-            z = r.cwiseProduct(*JacobiMinvDiag);
+            z                = r.cwiseProduct(*JacobiMinvDiag);
             const double rMr = maybe_simd_dot(r.data(), z.data(), n, use_simd);
             if (rMr <= rel_stop2) {
                 info.converged = true;
-                info.iters = k;
+                info.iters     = k;
                 return {x, info};
             }
         } else {
             if (r2 <= rel_stop2) {
                 info.converged = true;
-                info.iters = k;
+                info.iters     = k;
                 return {x, info};
             }
             z = r; // no preconditioner
         }
 
         const double rz_new = maybe_simd_dot(r.data(), z.data(), n, use_simd);
-        const double beta = rz_new / std::max(rz, 1e-300);
-        rz = rz_new;
+        const double beta   = rz_new / std::max(rz, 1e-300);
+        rz                  = rz_new;
 
         // p = z + β p
         p.noalias() = z + beta * p;
@@ -576,14 +545,14 @@ cg(const LinOp &A, const dvec &b,
         // Mild stagnation guard
         if (k > 5 && r2 >= 0.9604 * prev_r2) { // 0.98^2
             if (++stagnation_count > 5) {
-                p = z; // restart
+                p                = z; // restart
                 stagnation_count = 0;
             }
         } else {
             stagnation_count = 0;
         }
 
-        prev_r2 = r2;
+        prev_r2    = r2;
         info.iters = k;
     }
 
@@ -591,40 +560,40 @@ cg(const LinOp &A, const dvec &b,
 }
 
 // K = W + δI + γ GᵀG  (values only; sparsity same as W + GᵀG)
-inline spmat build_augmented_system_inplace(const spmat &W, const spmat &G,
-                                            double delta, double gamma) {
+// =================== build K = W + δI + γ GᵀG ====================
+inline spmat build_augmented_system_inplace(const spmat &W, const spmat &G, const spmat &Gt, double delta,
+                                            double gamma) {
     spmat K = W;
     K.makeCompressed();
 
-    if (delta != 0.0) {
-        // add to diagonal without building I
-        for (int i = 0; i < K.rows(); ++i)
-            K.coeffRef(i, i) += delta;
+    if (std::abs(delta) > 0.0) {
+        for (int i = 0; i < K.rows(); ++i) K.coeffRef(i, i) += delta;
     }
 
-    if (gamma != 0.0) {
-        spmat GtG = (G.transpose() * G).eval();
+    if (std::abs(gamma) > 0.0) {
+        // Use the precomputed Gt for efficiency, but keep the math correct
+        spmat GtG = (Gt * G).eval(); // This is G^T * G
         GtG.makeCompressed();
         K += (gamma * GtG).pruned();
     }
+
     K.prune(1e-300);
     K.makeCompressed();
     return K;
 }
 
-inline double compute_gamma_heuristic(const spmat &W, const spmat &G,
-                                      double delta) {
+inline double compute_gamma_heuristic(const spmat &W, const spmat &G, double delta) {
     const double Wn = rowsum_inf_norm(W) + delta;
     const double Gn = rowsum_inf_norm(G);
     return std::max(1.0, Wn / std::max(1.0, Gn * Gn));
 }
 
 inline dvec schur_diag_hat(const spmat &G, const dvec &d) {
-    const int m = G.rows();
-    dvec diag = dvec::Zero(m);
+    const int m    = G.rows();
+    dvec      diag = dvec::Zero(m);
     for (int j = 0; j < G.outerSize(); ++j) {
         for (spmat::InnerIterator it(G, j); it; ++it) {
-            const int i = it.row();
+            const int    i   = it.row();
             const double gij = it.value();
             diag[i] += (gij * gij) * d[j];
         }
@@ -633,9 +602,9 @@ inline dvec schur_diag_hat(const spmat &G, const dvec &d) {
 }
 
 // ------------------------------ Small Dense Solvers -------------------
-template <int N> struct SmallDenseSolver {
-    static dvec solve(const Eigen::Matrix<double, N, N> &A,
-                      const Eigen::Matrix<double, N, 1> &b) {
+template <int N>
+struct SmallDenseSolver {
+    static dvec solve(const Eigen::Matrix<double, N, N> &A, const Eigen::Matrix<double, N, 1> &b) {
         if constexpr (N <= 4) {
             return A.llt().solve(b); // Very fast for tiny systems
         } else if constexpr (N <= 12) {
@@ -647,7 +616,8 @@ template <int N> struct SmallDenseSolver {
 };
 
 // Specialization for 2x2
-template <> struct SmallDenseSolver<2> {
+template <>
+struct SmallDenseSolver<2> {
     static dvec solve(const Eigen::Matrix2d &A, const Eigen::Vector2d &b) {
         const double det = A(0, 0) * A(1, 1) - A(0, 1) * A(1, 0);
         if (std::abs(det) < 1e-16) {
@@ -662,7 +632,8 @@ template <> struct SmallDenseSolver<2> {
 };
 
 // Specialization for 3x3
-template <> struct SmallDenseSolver<3> {
+template <>
+struct SmallDenseSolver<3> {
     static dvec solve(const Eigen::Matrix3d &A, const Eigen::Vector3d &b) {
         const double det = A(0, 0) * (A(1, 1) * A(2, 2) - A(1, 2) * A(2, 1)) -
                            A(0, 1) * (A(1, 0) * A(2, 2) - A(1, 2) * A(2, 0)) +
@@ -673,16 +644,13 @@ template <> struct SmallDenseSolver<3> {
         }
 
         dvec x(3);
-        x(0) = (b(0) * (A(1, 1) * A(2, 2) - A(1, 2) * A(2, 1)) -
-                A(0, 1) * (b(1) * A(2, 2) - A(1, 2) * b(2)) +
+        x(0) = (b(0) * (A(1, 1) * A(2, 2) - A(1, 2) * A(2, 1)) - A(0, 1) * (b(1) * A(2, 2) - A(1, 2) * b(2)) +
                 A(0, 2) * (b(1) * A(2, 1) - A(1, 1) * b(2))) /
                det;
-        x(1) = (A(0, 0) * (b(1) * A(2, 2) - A(1, 2) * b(2)) -
-                b(0) * (A(1, 0) * A(2, 2) - A(1, 2) * A(2, 0)) +
+        x(1) = (A(0, 0) * (b(1) * A(2, 2) - A(1, 2) * b(2)) - b(0) * (A(1, 0) * A(2, 2) - A(1, 2) * A(2, 0)) +
                 A(0, 2) * (A(1, 0) * b(2) - b(1) * A(2, 0))) /
                det;
-        x(2) = (A(0, 0) * (A(1, 1) * b(2) - b(1) * A(2, 1)) -
-                A(0, 1) * (A(1, 0) * b(2) - b(1) * A(2, 0)) +
+        x(2) = (A(0, 0) * (A(1, 1) * b(2) - b(1) * A(2, 1)) - A(0, 1) * (A(1, 0) * b(2) - b(1) * A(2, 0)) +
                 b(0) * (A(1, 0) * A(2, 1) - A(1, 1) * A(2, 0))) /
                det;
         return x;

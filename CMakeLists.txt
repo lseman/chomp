@@ -23,8 +23,8 @@ option(AD_ENABLE_L1CORE   "Build l1core Python bindings"      OFF)
 option(AD_ENABLE_CHOLMOD  "Enable HYKKT via SuiteSparse"      OFF)
 option(AD_ENABLE_SPECTRA  "Fetch and enable Spectra via CPM"  OFF)
 option(AD_ENABLE_GUROBI   "Enable GUROBI linkage"             OFF)
-option(AD_ENABLE_STDEXEC "Enable stdexec usage"               OFF)
-option(AD_ENABLE_FORETREE "Build foretree Python bindings"   OFF)
+option(AD_ENABLE_STDEXEC "Enable stdexec usage"               ON)
+# option(AD_ENABLE_FORETREE "Build foretree Python bindings"   OFF)
 
 # ------------------------------------------------------------------
 # CPM bootstrap (before any CPMAddPackage)
@@ -335,7 +335,7 @@ endif()
 
 if(AD_ENABLE_FORETREE)
 # foretree (pybind11)
-ad_add_pybind_module(foretree src/foretree_pybind.cpp)
+ad_add_pybind_module(foretree tree/src/foretree_pybind.cpp)
 target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
 find_package(TBB QUIET COMPONENTS tbb)
 if(TARGET TBB::tbb)
@@ -360,8 +360,10 @@ if(AD_ENABLE_L1CORE)
     l1penalty/src/l1Fun.cpp
     l1penalty/src/TRModel.cpp
   )
-  ad_add_pybind_module(simplex_core src/simplex_bindings.cpp)
 endif()
+
+  ad_add_pybind_module(simplex_core src/simplex_bindings.cpp)
+
 
 if(AD_ENABLE_PIQP)
   ad_add_pybind_module(piqp_cpp src/piqp_bindings.cpp)
@@ -381,6 +383,10 @@ endif()
 
 # target_include_directories(ad PRIVATE ${stdexec_SOURCE_DIR}/include)
 # target_include_directories(chomp PRIVATE ${stdexec_SOURCE_DIR}/include)
+
+# ad_add_pybind_module(foreforest tree/src/foreforest.cpp)
+# target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
+# target_link_libraries(foreforest PRIVATE stdexec)
 
 # ------------------------------------------------------------------
 # Summary

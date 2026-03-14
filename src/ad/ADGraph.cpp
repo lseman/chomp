@@ -193,6 +193,8 @@ void ADGraph::addNode(const ADNodePtr &node) {
         const int p = ensure_id_(in.get());
         link_edge_(p, u);
     }
+    uses_valid_ = false;
+    simplification_needed_ = true;
     markDirty_(node.get());
 }
 
@@ -232,6 +234,8 @@ void ADGraph::deleteNode(const ADNodePtr &node) {
     }
 
     nodes.erase(std::remove(nodes.begin(), nodes.end(), node), nodes.end());
+    uses_valid_ = false;
+    simplification_needed_ = true;
     markDirty_();
 }
 
@@ -691,10 +695,29 @@ double ADGraph::evaluate(const ADNodePtr &expr) {
 }
 
 void ADGraph::initializeNodeVariables() {
-    int order = 0;
-    for (auto &kv : nodeVariables)
+    std::vector<std::pair<std::string, ADNodePtr>> vars;
+    vars.reserve(nodeVariables.size());
+    for (auto &kv : nodeVariables) {
         if (kv.second)
-            kv.second->order = order++;
+            vars.emplace_back(kv.first, kv.second);
+    }
+
+    std::stable_sort(vars.begin(), vars.end(),
+                     [](const auto &lhs, const auto &rhs) {
+                         const int lo = lhs.second ? lhs.second->order : -1;
+                         const int ro = rhs.second ? rhs.second->order : -1;
+                         const bool lvalid = lo >= 0;
+                         const bool rvalid = ro >= 0;
+                         if (lvalid != rvalid)
+                             return lvalid;
+                         if (lvalid && lo != ro)
+                             return lo < ro;
+                         return lhs.first < rhs.first;
+                     });
+
+    int order = 0;
+    for (auto &kv : vars)
+        kv.second->order = order++;
 }
 
 std::vector<double> ADGraph::getGradientVector(const ADNodePtr &expr) {
@@ -712,69 +735,9 @@ std::vector<double> ADGraph::getGradientVector(const ADNodePtr &expr) {
 
 // ------------------------- Multi-RHS HVP (lanes)
 // -----------------------------
-// void ADGraph::hessianMultiVectorProduct(const ADNodePtr &y, const double *V,
-//                                         size_t ldV, double *Y, size_t ldY,
-//                                         size_t k) {
-//     if (!y || k == 0)
-//         return;
-//     if (cache_.dirty)
-//         rebuildCache_();
-//     initializeNodeVariables();
-//     const size_t n = nodeVariables.size();
-//     if (n == 0)
-//         return;
-
-//     set_num_lanes(k);
-//     ensureLaneBuffers_();
-
-//     // 1) zero lanes and load V into variable rows
-//     std::fill(lanes_.dot.begin(), lanes_.dot.end(), 0.0);
-//     std::fill(lanes_.gdot.begin(), lanes_.gdot.end(), 0.0);
-//     for (const auto &kv : nodeVariables) {
-//         const auto &var = kv.second;
-//         if (!var)
-//             continue;
-//         const int ord = var->order;
-//         if (ord < 0)
-//             continue;
-//         const size_t vbase = lanes_.base(var->id);
-//         for (size_t l = 0; l < k; ++l)
-//             lanes_.dot[vbase + l] = V[size_t(ord) * ldV + l];
-//     }
-
-//     // 2) fused scalar forward + lane forward
-//     resetForwardPass();
-//     computeForwardPassAndDotLanesTogether();
-
-//     // 3) scalar reverse to get w = ∂y/∂x
-//     resetGradients();
-//     set_epoch_value(y->gradient, y->grad_epoch, cur_grad_epoch_, 1.0);
-//     initiateBackwardPassFused();
-
-//     // 4) lane reverse using w and per-lane dots
-//     resetGradDotAll();
-//     initiateBackwardPassFusedLanes();
-
-//     // 5) gather Y
-//     for (const auto &kv : nodeVariables) {
-//         const auto &var = kv.second;
-//         if (!var)
-//             continue;
-//         const int ord = var->order;
-//         if (ord < 0)
-//             continue;
-//         const size_t gbase = lanes_.base(var->id);
-//         for (size_t l = 0; l < k; ++l)
-//             Y[size_t(ord) * ldY + l] = lanes_.gdot[gbase + l];
-//     }
-// }
-
-// --- (Optional) refit your existing method to call the reuse path safely ---
 void ADGraph::hessianMultiVectorProduct(const ADNodePtr &y, const double *V,
                                         size_t ldV, double *Y, size_t ldY,
                                         size_t k) {
-    // Keep the original behavior for first call,
-    // then all subsequent calls can use the reuseScalar API.
     hessianMultiVectorProductReuseScalar(y, V, ldV, Y, ldY, k);
 }
 
@@ -947,7 +910,8 @@ std::vector<ADNodePtr> ADGraph::findRootNodes() const {
     std::vector<ADNodePtr> roots;
     roots.reserve(nodes.size());
 
-    // O(N): any node whose indegree is zero is a root.
+    // O(N): outputs are nodes with no outgoing edges in the parent->child
+    // adjacency.
     for (const auto &n : nodes) {
         if (!n)
             continue;
@@ -955,7 +919,7 @@ std::vector<ADNodePtr> ADGraph::findRootNodes() const {
                      ? n->id
                      : const_cast<ADGraph *>(this)->ensure_id_(n.get());
         // guard: cache_ vectors sized during rebuild
-        if (id >= 0 && id < (int)cache_.indeg.size() && cache_.indeg[id] == 0) {
+        if (id >= 0 && id < (int)cache_.adj.size() && cache_.adj[id].empty()) {
             roots.push_back(n);
         }
     }

@@ -1,56 +1,56 @@
 #pragma once
 #include <optional>
 #include <vector>
-// Advanced Second-Order Correction (SOC) Class
+// Advanced second-order correction (SOC) class
 // Designed to integrate with existing MehrotraGondzioSolver
 // Advanced Second-Order Correction (SOC) Class
 // Designed to integrate with existing MehrotraGondzioSolver
 class AdvancedSOC {
-public:
+   public:
     enum class Strategy {
-        Basic,                // Standard SOC
-        FeasibilityRestoring, // Target constraint violations
-        OptimalityImproving,  // Target complementarity errors
-        Hybrid,               // Adaptive combination
-        TrustRegion,          // Trust-region limited
-        HigherOrder           // Third-order corrections
+        Basic,                 // Standard SOC
+        FeasibilityRestoring,  // Target constraint violations
+        OptimalityImproving,   // Target complementarity errors
+        Hybrid,                // Adaptive combination
+        TrustRegion,           // Trust-region limited
+        HigherOrder            // Third-order corrections
     };
 
     enum class TriggerMode {
-        ThresholdBased,   // Simple alpha threshold
-        ViolationBased,   // Constraint violation magnitude
-        StagnationBased,  // Progress detection
-        AdaptiveComposite // Multiple criteria
+        ThresholdBased,    // Simple alpha threshold
+        ViolationBased,    // Constraint violation magnitude
+        StagnationBased,   // Progress detection
+        AdaptiveComposite  // Multiple criteria
     };
     struct Config {
-        double alpha_threshold = 0.3; // Less frequent SOC triggering
-        int max_soc_iterations = 3;   // Fewer iterations to avoid overuse
-        double min_improvement = 0.1; // Stricter improvement requirement
+        double alpha_threshold = 0.3;  // Less frequent SOC triggering
+        int max_soc_iterations = 3;    // Fewer iterations to avoid overuse
+        double min_improvement = 0.1;  // Stricter improvement requirement
 
         TriggerMode trigger_mode = TriggerMode::AdaptiveComposite;
-        double violation_tolerance = 1e-5;       // Relaxed tolerance
-        double complementarity_tolerance = 1e-7; // Relaxed tolerance
+        double violation_tolerance = 1e-5;        // Relaxed tolerance
+        double complementarity_tolerance = 1e-7;  // Relaxed tolerance
         double stagnation_threshold = 0.9;
         int stagnation_lookback = 5;
 
         std::vector<Strategy> strategy_sequence = {
             Strategy::Basic, Strategy::FeasibilityRestoring,
-            Strategy::Hybrid};  // Exclude HigherOrder, TrustRegion for now
-        int max_candidates = 2; // Fewer candidates
+            Strategy::Hybrid};   // Exclude HigherOrder, TrustRegion for now
+        int max_candidates = 2;  // Fewer candidates
 
-        double trust_radius_initial = 2.0; // Larger initial radius
+        double trust_radius_initial = 2.0;  // Larger initial radius
         double trust_radius_max = 20.0;
         double trust_shrink_factor = 0.7;
         double trust_expand_factor = 1.5;
 
-        double acceptance_threshold = 0.2; // Stricter acceptance
+        double acceptance_threshold = 0.2;  // Stricter acceptance
         double merit_improvement_threshold = 0.05;
-        bool use_filter = false; // Disable filter temporarily
+        bool use_filter = false;  // Disable filter temporarily
         int filter_max_size = 10;
 
         double alpha_weight = 0.3;
         double complementarity_weight = 0.3;
-        double feasibility_weight = 0.4; // Prioritize feasibility
+        double feasibility_weight = 0.4;  // Prioritize feasibility
     };
 
     struct Analysis {
@@ -85,7 +85,7 @@ public:
 
         // Convert to your StepData format
         template <typename StepData>
-        void fill_step_data(StepData &step, double mu_target) const {
+        void fill_step_data(StepData& step, double mu_target) const {
             step.dx = dx;
             step.dnu = dnu;
             step.ds = ds;
@@ -102,22 +102,21 @@ public:
 
     AdvancedSOC() : config_(), trust_radius_(config_.trust_radius_initial) {}
 
-    explicit AdvancedSOC(const Config &config)
+    explicit AdvancedSOC(const Config& config)
         : config_(config), trust_radius_(config.trust_radius_initial) {}
 
     // Main interface - integrate this into your solver
     template <typename StepData, typename Bounds, typename Sigmas>
     bool apply_soc(
-        StepData &step, const spmat &W, const std::optional<spmat> &JE,
-        const std::optional<spmat> &JI, const dvec &s, const dvec &lam,
-        const dvec &zL, const dvec &zU, const Bounds &B, double alpha_aff,
+        StepData& step, const spmat& W, const std::optional<spmat>& JE,
+        const std::optional<spmat>& JI, const dvec& s, const dvec& lam,
+        const dvec& zL, const dvec& zU, const Bounds& B, double alpha_aff,
         double mu_target, bool use_shifted, double tau_shift,
-        double bound_shift, const Sigmas &Sg,
-        std::function<KKTResult(const spmat &, const dvec &,
-                                const std::optional<spmat> &,
-                                const std::optional<dvec> &, std::string_view)>
+        double bound_shift, const Sigmas& Sg,
+        std::function<KKTResult(const spmat&, const dvec&,
+                                const std::optional<spmat>&,
+                                const std::optional<dvec>&, std::string_view)>
             solve_kkt) {
-
         // Check if SOC should be triggered
         if (!should_trigger_soc(step, alpha_aff, s, lam, zL, zU, B,
                                 mu_target)) {
@@ -149,17 +148,17 @@ public:
     // Getters for diagnostics
     double get_trust_radius() const { return trust_radius_; }
     int get_stagnation_count() const { return stagnation_counter_; }
-    const std::vector<double> &get_progress_history() const {
+    const std::vector<double>& get_progress_history() const {
         return progress_history_;
     }
 
     template <typename StepData, typename Bounds>
-    Analysis
-    analyze_current_state(const StepData &step, const dvec &s, const dvec &lam,
-                          const dvec &zL, const dvec &zU, const Bounds &B,
-                          double alpha_aff, double mu_target, bool use_shifted,
-                          double tau_shift, double bound_shift) const {
-
+    Analysis analyze_current_state(const StepData& step, const dvec& s,
+                                   const dvec& lam, const dvec& zL,
+                                   const dvec& zU, const Bounds& B,
+                                   double alpha_aff, double mu_target,
+                                   bool use_shifted, double tau_shift,
+                                   double bound_shift) const {
         Analysis analysis;
         const int mI = s.size();
         const int n = zL.size();
@@ -170,8 +169,7 @@ public:
 
             for (int i = 0; i < mI; ++i) {
                 double s_pred = s[i] + alpha_aff * step.ds[i];
-                if (use_shifted)
-                    s_pred += tau_shift;
+                if (use_shifted) s_pred += tau_shift;
 
                 double violation = std::min(s_pred, 0.0);
                 analysis.violation_magnitudes[i] = std::abs(violation);
@@ -202,10 +200,8 @@ public:
         // Analyze complementarity errors
         int total_pairs = mI;
         for (int i = 0; i < n; ++i) {
-            if (B.hasL[i])
-                total_pairs++;
-            if (B.hasU[i])
-                total_pairs++;
+            if (B.hasL[i]) total_pairs++;
+            if (B.hasU[i]) total_pairs++;
         }
 
         analysis.complementarity_errors.resize(total_pairs);
@@ -216,8 +212,7 @@ public:
         for (int i = 0; i < mI; ++i) {
             double s_pred = s[i] + alpha_aff * step.ds[i];
             double l_pred = lam[i] + alpha_aff * step.dlam[i];
-            if (use_shifted)
-                s_pred += tau_shift;
+            if (use_shifted) s_pred += tau_shift;
 
             double comp_product = s_pred * l_pred;
             double error = std::abs(comp_product - mu_target);
@@ -232,8 +227,7 @@ public:
             if (B.hasL[i]) {
                 double sL_pred = B.sL[i] + alpha_aff * step.dx[i];
                 double zL_pred = zL[i] + alpha_aff * step.dzL[i];
-                if (use_shifted)
-                    sL_pred += bound_shift;
+                if (use_shifted) sL_pred += bound_shift;
 
                 double comp_product = sL_pred * zL_pred;
                 double error = std::abs(comp_product - mu_target);
@@ -247,8 +241,7 @@ public:
             if (B.hasU[i]) {
                 double sU_pred = B.sU[i] - alpha_aff * step.dx[i];
                 double zU_pred = zU[i] + alpha_aff * step.dzU[i];
-                if (use_shifted)
-                    sU_pred += bound_shift;
+                if (use_shifted) sU_pred += bound_shift;
 
                 double comp_product = sU_pred * zU_pred;
                 double error = std::abs(comp_product - mu_target);
@@ -282,7 +275,7 @@ public:
         return analysis;
     }
 
-private:
+   private:
     Config config_;
 
     // State tracking
@@ -290,50 +283,50 @@ private:
     mutable int stagnation_counter_ = 0;
     mutable double trust_radius_;
     mutable std::vector<std::pair<double, double>>
-        filter_; // (violation, objective) pairs
+        filter_;  // (violation, objective) pairs
 
     template <typename StepData, typename Bounds>
-    bool should_trigger_soc(const StepData &step, double alpha_aff,
-                            const dvec &s, const dvec &lam, const dvec &zL,
-                            const dvec &zU, const Bounds &B,
+    bool should_trigger_soc(const StepData& step, double alpha_aff,
+                            const dvec& s, const dvec& lam, const dvec& zL,
+                            const dvec& zU, const Bounds& B,
                             double mu_target) const {
-
         switch (config_.trigger_mode) {
-        case TriggerMode::ThresholdBased:
-            return alpha_aff < config_.alpha_threshold;
+            case TriggerMode::ThresholdBased:
+                return alpha_aff < config_.alpha_threshold;
 
-        case TriggerMode::ViolationBased: {
-            double violation_norm = compute_violation_norm(s, B);
-            return violation_norm > config_.violation_tolerance;
-        }
-
-        case TriggerMode::StagnationBased: {
-            if (progress_history_.size() >= config_.stagnation_lookback) {
-                double current_progress =
-                    std::min(step.alpha_pri, step.alpha_dual);
-                double avg_recent = 0.0;
-                for (int i = 0; i < config_.stagnation_lookback; ++i) {
-                    avg_recent +=
-                        progress_history_[progress_history_.size() - 1 - i];
-                }
-                avg_recent /= config_.stagnation_lookback;
-                return current_progress <
-                       config_.stagnation_threshold * avg_recent;
+            case TriggerMode::ViolationBased: {
+                double violation_norm = compute_violation_norm(s, B);
+                return violation_norm > config_.violation_tolerance;
             }
-            return alpha_aff < config_.alpha_threshold;
-        }
 
-        case TriggerMode::AdaptiveComposite: {
-            bool threshold_trigger = alpha_aff < config_.alpha_threshold;
-            double violation_norm = compute_violation_norm(s, B);
-            bool violation_trigger =
-                violation_norm > config_.violation_tolerance;
-            double comp_error =
-                compute_complementarity_error(s, lam, zL, zU, B, mu_target);
-            bool comp_trigger = comp_error > config_.complementarity_tolerance;
+            case TriggerMode::StagnationBased: {
+                if (progress_history_.size() >= config_.stagnation_lookback) {
+                    double current_progress =
+                        std::min(step.alpha_pri, step.alpha_dual);
+                    double avg_recent = 0.0;
+                    for (int i = 0; i < config_.stagnation_lookback; ++i) {
+                        avg_recent +=
+                            progress_history_[progress_history_.size() - 1 - i];
+                    }
+                    avg_recent /= config_.stagnation_lookback;
+                    return current_progress <
+                           config_.stagnation_threshold * avg_recent;
+                }
+                return alpha_aff < config_.alpha_threshold;
+            }
 
-            return threshold_trigger || violation_trigger || comp_trigger;
-        }
+            case TriggerMode::AdaptiveComposite: {
+                bool threshold_trigger = alpha_aff < config_.alpha_threshold;
+                double violation_norm = compute_violation_norm(s, B);
+                bool violation_trigger =
+                    violation_norm > config_.violation_tolerance;
+                double comp_error =
+                    compute_complementarity_error(s, lam, zL, zU, B, mu_target);
+                bool comp_trigger =
+                    comp_error > config_.complementarity_tolerance;
+
+                return threshold_trigger || violation_trigger || comp_trigger;
+            }
         }
 
         return alpha_aff < config_.alpha_threshold;
@@ -341,22 +334,20 @@ private:
 
     template <typename StepData, typename Bounds, typename Sigmas>
     std::vector<Candidate> generate_candidates(
-        const spmat &W, const std::optional<spmat> &JE,
-        const std::optional<spmat> &JI, const dvec &s, const dvec &lam,
-        const dvec &zL, const dvec &zU, const StepData &base_step,
-        const Bounds &B, double alpha_aff, double mu_target, bool use_shifted,
-        double tau_shift, double bound_shift, const Sigmas &Sg,
-        const Analysis &analysis,
-        std::function<KKTResult(const spmat &, const dvec &,
-                                const std::optional<spmat> &,
-                                const std::optional<dvec> &, std::string_view)>
+        const spmat& W, const std::optional<spmat>& JE,
+        const std::optional<spmat>& JI, const dvec& s, const dvec& lam,
+        const dvec& zL, const dvec& zU, const StepData& base_step,
+        const Bounds& B, double alpha_aff, double mu_target, bool use_shifted,
+        double tau_shift, double bound_shift, const Sigmas& Sg,
+        const Analysis& analysis,
+        std::function<KKTResult(const spmat&, const dvec&,
+                                const std::optional<spmat>&,
+                                const std::optional<dvec>&, std::string_view)>
             solve_kkt) const {
-
         std::vector<Candidate> candidates;
 
         for (Strategy strategy : config_.strategy_sequence) {
-            if (candidates.size() >= config_.max_candidates)
-                break;
+            if (candidates.size() >= config_.max_candidates) break;
 
             Candidate candidate;
             candidate.strategy_used = strategy;
@@ -373,8 +364,7 @@ private:
                 if (step_norm > trust_radius_) {
                     double scale = trust_radius_ / step_norm;
                     soc_res.dx *= scale;
-                    if (soc_res.dy.size() > 0)
-                        soc_res.dy *= scale;
+                    if (soc_res.dy.size() > 0) soc_res.dy *= scale;
                     candidate.trust_region_violation =
                         step_norm - trust_radius_;
                 }
@@ -401,48 +391,47 @@ private:
     }
 
     template <typename StepData, typename Bounds, typename Sigmas>
-    dvec compute_soc_rhs(Strategy strategy, const dvec &s, const dvec &lam,
-                         const dvec &zL, const dvec &zU,
-                         const StepData &base_step, const Bounds &B,
+    dvec compute_soc_rhs(Strategy strategy, const dvec& s, const dvec& lam,
+                         const dvec& zL, const dvec& zU,
+                         const StepData& base_step, const Bounds& B,
                          double alpha_aff, double mu_target, bool use_shifted,
-                         double tau_shift, double bound_shift, const Sigmas &Sg,
-                         const Analysis &analysis,
-                         const std::optional<spmat> &JI) const {
-
+                         double tau_shift, double bound_shift, const Sigmas& Sg,
+                         const Analysis& analysis,
+                         const std::optional<spmat>& JI) const {
         const int n = base_step.dx.size();
         const int mI = s.size();
         dvec rhs_x = dvec::Zero(n);
 
         switch (strategy) {
-        case Strategy::Basic:
-            return compute_basic_soc_rhs(s, lam, zL, zU, base_step, B,
-                                         alpha_aff, mu_target, use_shifted,
-                                         tau_shift, bound_shift, Sg, JI);
+            case Strategy::Basic:
+                return compute_basic_soc_rhs(s, lam, zL, zU, base_step, B,
+                                             alpha_aff, mu_target, use_shifted,
+                                             tau_shift, bound_shift, Sg, JI);
 
-        case Strategy::FeasibilityRestoring:
-            return compute_feasibility_rhs(
-                s, lam, zL, zU, base_step, B, alpha_aff, mu_target, use_shifted,
-                tau_shift, bound_shift, Sg, analysis, JI);
+            case Strategy::FeasibilityRestoring:
+                return compute_feasibility_rhs(
+                    s, lam, zL, zU, base_step, B, alpha_aff, mu_target,
+                    use_shifted, tau_shift, bound_shift, Sg, analysis, JI);
 
-        case Strategy::OptimalityImproving:
-            return compute_optimality_rhs(s, lam, zL, zU, base_step, B,
-                                          alpha_aff, mu_target, use_shifted,
-                                          tau_shift, bound_shift, analysis);
+            case Strategy::OptimalityImproving:
+                return compute_optimality_rhs(s, lam, zL, zU, base_step, B,
+                                              alpha_aff, mu_target, use_shifted,
+                                              tau_shift, bound_shift, analysis);
 
-        case Strategy::Hybrid:
-            return compute_hybrid_rhs(s, lam, zL, zU, base_step, B, alpha_aff,
-                                      mu_target, use_shifted, tau_shift,
-                                      bound_shift, Sg, analysis, JI);
+            case Strategy::Hybrid:
+                return compute_hybrid_rhs(
+                    s, lam, zL, zU, base_step, B, alpha_aff, mu_target,
+                    use_shifted, tau_shift, bound_shift, Sg, analysis, JI);
 
-        case Strategy::TrustRegion:
-            return compute_basic_soc_rhs(s, lam, zL, zU, base_step, B,
-                                         alpha_aff, mu_target, use_shifted,
-                                         tau_shift, bound_shift, Sg, JI);
+            case Strategy::TrustRegion:
+                return compute_basic_soc_rhs(s, lam, zL, zU, base_step, B,
+                                             alpha_aff, mu_target, use_shifted,
+                                             tau_shift, bound_shift, Sg, JI);
 
-        case Strategy::HigherOrder:
-            return compute_higher_order_rhs(s, lam, zL, zU, base_step, B,
-                                            alpha_aff, mu_target, use_shifted,
-                                            tau_shift, bound_shift, Sg, JI);
+            case Strategy::HigherOrder:
+                return compute_higher_order_rhs(
+                    s, lam, zL, zU, base_step, B, alpha_aff, mu_target,
+                    use_shifted, tau_shift, bound_shift, Sg, JI);
         }
 
         return rhs_x;
@@ -450,14 +439,13 @@ private:
 
     // Specific RHS computation methods
     template <typename StepData, typename Bounds, typename Sigmas>
-    dvec compute_basic_soc_rhs(const dvec &s, const dvec &lam, const dvec &zL,
-                               const dvec &zU, const StepData &base_step,
-                               const Bounds &B, double alpha_aff,
+    dvec compute_basic_soc_rhs(const dvec& s, const dvec& lam, const dvec& zL,
+                               const dvec& zU, const StepData& base_step,
+                               const Bounds& B, double alpha_aff,
                                double mu_target, bool use_shifted,
                                double tau_shift, double bound_shift,
-                               const Sigmas &Sg,
-                               const std::optional<spmat> &JI) const {
-
+                               const Sigmas& Sg,
+                               const std::optional<spmat>& JI) const {
         const int n = base_step.dx.size();
         const int mI = s.size();
         dvec rhs_x = dvec::Zero(n);
@@ -512,14 +500,13 @@ private:
     }
 
     template <typename StepData, typename Bounds, typename Sigmas>
-    dvec compute_feasibility_rhs(const dvec &s, const dvec &lam, const dvec &zL,
-                                 const dvec &zU, const StepData &base_step,
-                                 const Bounds &B, double alpha_aff,
+    dvec compute_feasibility_rhs(const dvec& s, const dvec& lam, const dvec& zL,
+                                 const dvec& zU, const StepData& base_step,
+                                 const Bounds& B, double alpha_aff,
                                  double mu_target, bool use_shifted,
                                  double tau_shift, double bound_shift,
-                                 const Sigmas &Sg, const Analysis &analysis,
-                                 const std::optional<spmat> &JI) const {
-
+                                 const Sigmas& Sg, const Analysis& analysis,
+                                 const std::optional<spmat>& JI) const {
         const int n = base_step.dx.size();
         dvec rhs_x = dvec::Zero(n);
 
@@ -527,11 +514,10 @@ private:
         if (analysis.has_significant_violations && JI) {
             for (int idx : analysis.most_violated_indices) {
                 double s_pred = s[idx] + alpha_aff * base_step.ds[idx];
-                if (use_shifted)
-                    s_pred += tau_shift;
+                if (use_shifted) s_pred += tau_shift;
 
                 if (s_pred < 0) {
-                    double correction_factor = 2.0; // More aggressive
+                    double correction_factor = 2.0;  // More aggressive
                     double violation_correction = -correction_factor * s_pred;
 
                     if (JI->nonZeros() && idx < Sg.Sigma_s.size()) {
@@ -577,13 +563,12 @@ private:
     }
 
     template <typename StepData, typename Bounds>
-    dvec compute_optimality_rhs(const dvec &s, const dvec &lam, const dvec &zL,
-                                const dvec &zU, const StepData &base_step,
-                                const Bounds &B, double alpha_aff,
+    dvec compute_optimality_rhs(const dvec& s, const dvec& lam, const dvec& zL,
+                                const dvec& zU, const StepData& base_step,
+                                const Bounds& B, double alpha_aff,
                                 double mu_target, bool use_shifted,
                                 double tau_shift, double bound_shift,
-                                const Analysis &analysis) const {
-
+                                const Analysis& analysis) const {
         const int n = base_step.dx.size();
         dvec rhs_x = dvec::Zero(n);
 
@@ -634,14 +619,13 @@ private:
     }
 
     template <typename StepData, typename Bounds, typename Sigmas>
-    dvec compute_hybrid_rhs(const dvec &s, const dvec &lam, const dvec &zL,
-                            const dvec &zU, const StepData &base_step,
-                            const Bounds &B, double alpha_aff, double mu_target,
+    dvec compute_hybrid_rhs(const dvec& s, const dvec& lam, const dvec& zL,
+                            const dvec& zU, const StepData& base_step,
+                            const Bounds& B, double alpha_aff, double mu_target,
                             bool use_shifted, double tau_shift,
-                            double bound_shift, const Sigmas &Sg,
-                            const Analysis &analysis,
-                            const std::optional<spmat> &JI) const {
-
+                            double bound_shift, const Sigmas& Sg,
+                            const Analysis& analysis,
+                            const std::optional<spmat>& JI) const {
         // Adaptive weighting based on problem state
         double violation_severity = analysis.violation_norm;
         double comp_severity = analysis.comp_error_norm;
@@ -663,14 +647,13 @@ private:
     }
 
     template <typename StepData, typename Bounds, typename Sigmas>
-    dvec compute_higher_order_rhs(const dvec &s, const dvec &lam,
-                                  const dvec &zL, const dvec &zU,
-                                  const StepData &base_step, const Bounds &B,
+    dvec compute_higher_order_rhs(const dvec& s, const dvec& lam,
+                                  const dvec& zL, const dvec& zU,
+                                  const StepData& base_step, const Bounds& B,
                                   double alpha_aff, double mu_target,
                                   bool use_shifted, double tau_shift,
-                                  double bound_shift, const Sigmas &Sg,
-                                  const std::optional<spmat> &JI) const {
-
+                                  double bound_shift, const Sigmas& Sg,
+                                  const std::optional<spmat>& JI) const {
         auto basic_rhs = compute_basic_soc_rhs(
             s, lam, zL, zU, base_step, B, alpha_aff, mu_target, use_shifted,
             tau_shift, bound_shift, Sg, JI);
@@ -720,16 +703,15 @@ private:
         }
 
         return basic_rhs +
-               0.5 * third_order_rhs; // Conservative third-order weight
+               0.5 * third_order_rhs;  // Conservative third-order weight
     }
 
     template <typename Bounds>
-    void complete_candidate(Candidate &candidate,
-                            const std::optional<spmat> &JI, const dvec &s,
-                            const dvec &lam, const dvec &zL, const dvec &zU,
-                            const Bounds &B, double mu_target, bool use_shifted,
+    void complete_candidate(Candidate& candidate,
+                            const std::optional<spmat>& JI, const dvec& s,
+                            const dvec& lam, const dvec& zL, const dvec& zU,
+                            const Bounds& B, double mu_target, bool use_shifted,
                             double tau_shift, double bound_shift) const {
-
         const int mI = s.size();
         const int n = candidate.dx.size();
 
@@ -819,11 +801,10 @@ private:
     }
 
     template <typename StepData, typename Bounds>
-    void evaluate_candidate(Candidate &candidate, const StepData &base_step,
-                            const dvec &s, const dvec &lam, const dvec &zL,
-                            const dvec &zU, const Bounds &B,
+    void evaluate_candidate(Candidate& candidate, const StepData& base_step,
+                            const dvec& s, const dvec& lam, const dvec& zL,
+                            const dvec& zU, const Bounds& B,
                             double mu_target) const {
-
         // Step length improvement
         double base_alpha = std::min(base_step.alpha_pri, base_step.alpha_dual);
         double candidate_alpha =
@@ -845,11 +826,10 @@ private:
     }
 
     template <typename Bounds>
-    double compute_merit_function(const Candidate &candidate, const dvec &s,
-                                  const dvec &lam, const dvec &zL,
-                                  const dvec &zU, const Bounds &B,
+    double compute_merit_function(const Candidate& candidate, const dvec& s,
+                                  const dvec& lam, const dvec& zL,
+                                  const dvec& zU, const Bounds& B,
                                   double mu_target) const {
-
         // Step length component
         double alpha_merit =
             1.0 - std::min(candidate.alpha_pri, candidate.alpha_dual);
@@ -899,48 +879,48 @@ private:
                config_.feasibility_weight * feas_merit;
     }
 
-    bool evaluate_acceptance(const Candidate &candidate) const {
+    bool evaluate_acceptance(const Candidate& candidate) const {
         bool alpha_improvement =
             candidate.alpha_improvement > config_.acceptance_threshold;
         bool merit_improvement = candidate.merit_value < 1.0;
 
         switch (candidate.strategy_used) {
-        case Strategy::FeasibilityRestoring:
-            return alpha_improvement || candidate.violation_reduction >
-                                            config_.merit_improvement_threshold;
+            case Strategy::FeasibilityRestoring:
+                return alpha_improvement ||
+                       candidate.violation_reduction >
+                           config_.merit_improvement_threshold;
 
-        case Strategy::OptimalityImproving:
-            return alpha_improvement || candidate.complementarity_improvement >
-                                            config_.merit_improvement_threshold;
+            case Strategy::OptimalityImproving:
+                return alpha_improvement ||
+                       candidate.complementarity_improvement >
+                           config_.merit_improvement_threshold;
 
-        case Strategy::TrustRegion:
-            return (alpha_improvement || merit_improvement) &&
-                   candidate.trust_region_violation < 1e-6;
+            case Strategy::TrustRegion:
+                return (alpha_improvement || merit_improvement) &&
+                       candidate.trust_region_violation < 1e-6;
 
-        case Strategy::Hybrid:
-            return alpha_improvement ||
-                   (candidate.violation_reduction > 0 &&
-                    candidate.complementarity_improvement > 0);
+            case Strategy::Hybrid:
+                return alpha_improvement ||
+                       (candidate.violation_reduction > 0 &&
+                        candidate.complementarity_improvement > 0);
 
-        case Strategy::HigherOrder:
-            return alpha_improvement && merit_improvement;
+            case Strategy::HigherOrder:
+                return alpha_improvement && merit_improvement;
 
-        default:
-            return alpha_improvement;
+            default:
+                return alpha_improvement;
         }
     }
 
-    Candidate select_best_candidate(const std::vector<Candidate> &candidates,
-                                    const auto &base_step) const {
-
+    Candidate select_best_candidate(const std::vector<Candidate>& candidates,
+                                    const auto& base_step) const {
         Candidate best;
         best.is_acceptable = false;
 
         double best_score = std::numeric_limits<double>::infinity();
 
-        for (const auto &candidate : candidates) {
-            if (!candidate.is_acceptable)
-                continue;
+        for (const auto& candidate : candidates) {
+            if (!candidate.is_acceptable) continue;
 
             double score = candidate.merit_value;
 
@@ -969,11 +949,11 @@ private:
         return best;
     }
 
-    bool passes_filter(const Candidate &candidate) const {
-        double violation_measure = candidate.violation_reduction; // Simplified
+    bool passes_filter(const Candidate& candidate) const {
+        double violation_measure = candidate.violation_reduction;  // Simplified
         double objective_measure = candidate.merit_value;
 
-        for (const auto &filter_point : filter_) {
+        for (const auto& filter_point : filter_) {
             if (violation_measure >= filter_point.first &&
                 objective_measure >= filter_point.second) {
                 return false;
@@ -982,8 +962,8 @@ private:
         return true;
     }
 
-    void update_state(const Candidate &applied_candidate,
-                      const Analysis &analysis) const {
+    void update_state(const Candidate& applied_candidate,
+                      const Analysis& analysis) const {
         // Update progress history
         double current_progress =
             std::min(applied_candidate.alpha_pri, applied_candidate.alpha_dual);
@@ -1024,10 +1004,10 @@ private:
             // Remove dominated points and limit size
             filter_.erase(
                 std::remove_if(filter_.begin(), filter_.end(),
-                               [this](const auto &point) {
+                               [this](const auto& point) {
                                    return std::any_of(
                                        filter_.begin(), filter_.end(),
-                                       [&point](const auto &other) {
+                                       [&point](const auto& other) {
                                            return &other != &point &&
                                                   other.first <= point.first &&
                                                   other.second <= point.second;
@@ -1043,7 +1023,7 @@ private:
 
     // Helper functions
     template <typename Bounds>
-    double compute_violation_norm(const dvec &s, const Bounds &B) const {
+    double compute_violation_norm(const dvec& s, const Bounds& B) const {
         double norm = 0.0;
 
         for (int i = 0; i < s.size(); ++i) {
@@ -1064,9 +1044,9 @@ private:
     }
 
     template <typename Bounds>
-    double compute_complementarity_error(const dvec &s, const dvec &lam,
-                                         const dvec &zL, const dvec &zU,
-                                         const Bounds &B,
+    double compute_complementarity_error(const dvec& s, const dvec& lam,
+                                         const dvec& zL, const dvec& zU,
+                                         const Bounds& B,
                                          double mu_target) const {
         double error = 0.0;
         int count = 0;

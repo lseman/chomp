@@ -22,14 +22,14 @@
 // Markowitz + rook LU with permutations and refinement
 // ======================================================
 class MarkowitzLU {
-public:
+   public:
     MarkowitzLU() = default;
-    MarkowitzLU(const Eigen::MatrixXd &A, double pivot_rel = 1e-12,
+    MarkowitzLU(const Eigen::MatrixXd& A, double pivot_rel = 1e-12,
                 double abs_floor = 1e-16, int rook_iters = 2) {
         factor(A, pivot_rel, abs_floor, rook_iters);
     }
 
-    void factor(const Eigen::MatrixXd &A, double pivot_rel = 1e-12,
+    void factor(const Eigen::MatrixXd& A, double pivot_rel = 1e-12,
                 double abs_floor = 1e-16, int rook_iters = 2) {
         if (A.rows() != A.cols())
             throw std::invalid_argument("MarkowitzLU: square only");
@@ -46,7 +46,7 @@ public:
         factorize_();
     }
 
-    Eigen::VectorXd solve(const Eigen::VectorXd &b) const {
+    Eigen::VectorXd solve(const Eigen::VectorXd& b) const {
         if (b.size() != n_)
             throw std::invalid_argument("MarkowitzLU::solve size mismatch");
 
@@ -81,7 +81,7 @@ public:
         return apply_Pc_(w);
     }
 
-    Eigen::VectorXd solveT(const Eigen::VectorXd &c) const {
+    Eigen::VectorXd solveT(const Eigen::VectorXd& c) const {
         if (c.size() != n_)
             throw std::invalid_argument("MarkowitzLU::solveT size mismatch");
 
@@ -122,26 +122,26 @@ public:
     Eigen::MatrixXd& L() { return L_; }
     Eigen::MatrixXd& U() { return U_; }
 
-private:
+   private:
     static constexpr double kSingFloor_ = 1e-18;
 
-    static Eigen::VectorXd forward_sub_(const Eigen::MatrixXd &L,
-                                        const Eigen::VectorXd &b) {
+    static Eigen::VectorXd forward_sub_(const Eigen::MatrixXd& L,
+                                        const Eigen::VectorXd& b) {
         // Unit-lower triangular solve (L has ones on diagonal by construction)
         // Use manual code to keep exact behavior and avoid dependencies.
         const int n = static_cast<int>(L.rows());
         Eigen::VectorXd x = b;
         for (int i = 0; i < n; ++i) {
             double s = L.row(i).head(i).dot(x.head(i));
-            double piv = L(i, i); // should be 1.0
+            double piv = L(i, i);  // should be 1.0
             if (std::abs(piv) < kSingFloor_ || !std::isfinite(piv))
                 throw std::runtime_error("Singular lower triangular");
             x(i) = (x(i) - s) / piv;
         }
         return x;
     }
-    static Eigen::VectorXd back_sub_(const Eigen::MatrixXd &U,
-                                     const Eigen::VectorXd &b) {
+    static Eigen::VectorXd back_sub_(const Eigen::MatrixXd& U,
+                                     const Eigen::VectorXd& b) {
         const int n = static_cast<int>(U.rows());
         Eigen::VectorXd x = b;
         for (int i = n - 1; i >= 0; --i) {
@@ -156,48 +156,42 @@ private:
         return x;
     }
 
-    Eigen::VectorXd apply_Pr_(const Eigen::VectorXd &v) const {
+    Eigen::VectorXd apply_Pr_(const Eigen::VectorXd& v) const {
         Eigen::VectorXd out(n_);
-        for (int i = 0; i < n_; ++i)
-            out(i) = v(Pr_[i]);
+        for (int i = 0; i < n_; ++i) out(i) = v(Pr_[i]);
         return out;
     }
-    Eigen::VectorXd apply_PrT_inv_(const Eigen::VectorXd &y) const {
+    Eigen::VectorXd apply_PrT_inv_(const Eigen::VectorXd& y) const {
         // returns P_r^T * y (i.e., apply inverse row permutation)
         Eigen::VectorXd out(n_);
-        for (int i = 0; i < n_; ++i)
-            out(Pr_[i]) = y(i);
+        for (int i = 0; i < n_; ++i) out(Pr_[i]) = y(i);
         return out;
     }
-    Eigen::VectorXd apply_Pc_(const Eigen::VectorXd &x) const {
+    Eigen::VectorXd apply_Pc_(const Eigen::VectorXd& x) const {
         Eigen::VectorXd out(n_);
-        for (int i = 0; i < n_; ++i)
-            out(Pc_[i]) = x(i);
+        for (int i = 0; i < n_; ++i) out(Pc_[i]) = x(i);
         return out;
     }
-    Eigen::VectorXd apply_PcT_(const Eigen::VectorXd &c) const {
+    Eigen::VectorXd apply_PcT_(const Eigen::VectorXd& c) const {
         Eigen::VectorXd out(n_);
-        for (int i = 0; i < n_; ++i)
-            out(i) = c(Pc_[i]);
+        for (int i = 0; i < n_; ++i) out(i) = c(Pc_[i]);
         return out;
     }
 
     void swap_rows_(int i, int j) {
-        if (i == j)
-            return;
+        if (i == j) return;
         U_.row(i).swap(U_.row(j));
         L_.row(i).head(i).swap(L_.row(j).head(i));
         std::swap(Pr_[i], Pr_[j]);
     }
     void swap_cols_(int i, int j) {
-        if (i == j)
-            return;
+        if (i == j) return;
         U_.col(i).swap(U_.col(j));
         std::swap(Pc_[i], Pc_[j]);
     }
 
-    static std::pair<std::vector<int>, std::vector<int>>
-    nnz_row_col_(const Eigen::MatrixXd &M, double eps = 1e-16) {
+    static std::pair<std::vector<int>, std::vector<int>> nnz_row_col_(
+        const Eigen::MatrixXd& M, double eps = 1e-16) {
         const int r = (int)M.rows(), c = (int)M.cols();
         std::vector<int> rn(r, 0), cn(c, 0);
         for (int i = 0; i < r; ++i)
@@ -210,7 +204,7 @@ private:
     }
 
     std::tuple<int, int, double> choose_pivot_(int k,
-                                               const Eigen::VectorXd &colmax) {
+                                               const Eigen::VectorXd& colmax) {
         int best_i = -1, best_j = -1;
         double best_val = 0.0;
         long best_score = -1;
@@ -233,8 +227,7 @@ private:
                 }
             }
         }
-        if (best_i >= 0)
-            return {best_i, best_j, best_val};
+        if (best_i >= 0) return {best_i, best_j, best_val};
 
         // rook pivoting (early exit if no movement)
         int i_idx;
@@ -269,8 +262,7 @@ private:
                              .maxCoeff()
                              .transpose();
                 for (int t = 0; t < colmax.size(); ++t)
-                    if (colmax(t) < abs_floor_)
-                        colmax(t) = 1.0;
+                    if (colmax(t) < abs_floor_) colmax(t) = 1.0;
             }
             auto [pi, pj, pval] = choose_pivot_(k, colmax);
             if (pi < 0) {
@@ -279,8 +271,9 @@ private:
                 sub.maxCoeff(&rr, &cc);
                 pi = k + (int)rr;
                 pj = k + (int)cc;
-                const double floor_adapt =
-                    std::max(abs_floor_, 10 * std::numeric_limits<double>::epsilon() * inf_norm);
+                const double floor_adapt = std::max(
+                    abs_floor_,
+                    10 * std::numeric_limits<double>::epsilon() * inf_norm);
                 if (std::abs(U_(pi, pj)) < floor_adapt) {
                     throw std::runtime_error(
                         "MarkowitzLU: singular matrix (no acceptable pivot)");
@@ -289,10 +282,12 @@ private:
             swap_rows_(k, pi);
             swap_cols_(k, pj);
             double piv = U_(k, k);
-            const double floor_adapt =
-                std::max(abs_floor_, 10 * std::numeric_limits<double>::epsilon() * inf_norm);
+            const double floor_adapt = std::max(
+                abs_floor_,
+                10 * std::numeric_limits<double>::epsilon() * inf_norm);
             if (std::abs(piv) < floor_adapt || !std::isfinite(piv)) {
-                throw std::runtime_error("MarkowitzLU: numerically singular pivot");
+                throw std::runtime_error(
+                    "MarkowitzLU: numerically singular pivot");
             }
             L_(k, k) = 1.0;
             for (int i = k + 1; i < n_; ++i) {
@@ -306,19 +301,17 @@ private:
         }
     }
 
-    static double L1_inf_norm_(const Eigen::MatrixXd &A) {
-        if (A.size() == 0)
-            return 0.0;
+    static double L1_inf_norm_(const Eigen::MatrixXd& A) {
+        if (A.size() == 0) return 0.0;
         double maxrow = 0.0;
         for (int i = 0; i < A.rows(); ++i) {
             double s = A.row(i).cwiseAbs().sum();
-            if (s > maxrow)
-                maxrow = s;
+            if (s > maxrow) maxrow = s;
         }
         return maxrow;
     }
 
-private:
+   private:
     int n_{0};
     double pivot_rel_{1e-12}, abs_floor_{1e-16};
     int rook_iters_{2};
@@ -332,7 +325,7 @@ private:
 //   - Sparse: Eigen::SparseLU with cached B and B^T factorizations
 // ======================================================
 class FTBasis {
-public:
+   public:
     using DenseMat = Eigen::MatrixXd;
     using SparseMat = Eigen::SparseMatrix<double, Eigen::ColMajor, int>;
 
@@ -349,26 +342,37 @@ public:
         // New: update mode and FT locality cap (dense only)
         enum class UpdateMode { EtaStack, ForrestTomlin };
         UpdateMode update_mode = UpdateMode::ForrestTomlin;
-        int ft_bandwidth_cap = 16; // 0 = unlimited, else local band half-width around pivot col
+        int ft_bandwidth_cap =
+            16;  // 0 = unlimited, else local band half-width around pivot col
     };
 
     struct Eta {
         int j;
-        Eigen::VectorXd u; // new_col - old_col
-        Eigen::VectorXd z; // B^{-1} u
-        Eigen::VectorXd w; // B^{-T} e_j
-        double alpha;      // 1 + z(j)
+        Eigen::VectorXd u;  // new_col - old_col
+        Eigen::VectorXd z;  // B^{-1} u
+        Eigen::VectorXd w;  // B^{-T} e_j
+        double alpha;       // 1 + z(j)
     };
 
-    FTBasis(const DenseMat &A, const std::vector<int> &basis)
+    FTBasis(const DenseMat& A, const std::vector<int>& basis)
         : FTBasis(A, basis, Options{}) {}
 
-    FTBasis(const DenseMat &A, const std::vector<int> &basis,
-            const Options &opt)
-        : A_dense_(std::cref(A)), Bcols_dense_(), lu_dense_(),
-          A_sparse_(*(const SparseMat *)nullptr), Bcols_sparse_(),
-          A_is_sparse_(false), m_((int)A.rows()), basis_(basis), opt_(opt),
-          etas_(), update_count_(0), B_sparse_(), BT_sparse_(), solver_B_(),
+    FTBasis(const DenseMat& A, const std::vector<int>& basis,
+            const Options& opt)
+        : A_dense_(std::cref(A)),
+          Bcols_dense_(),
+          lu_dense_(),
+          A_sparse_(*(const SparseMat*)nullptr),
+          Bcols_sparse_(),
+          A_is_sparse_(false),
+          m_((int)A.rows()),
+          basis_(basis),
+          opt_(opt),
+          etas_(),
+          update_count_(0),
+          B_sparse_(),
+          BT_sparse_(),
+          solver_B_(),
           solver_BT_() {
         if ((int)basis_.size() != m_)
             throw std::invalid_argument("FTBasis: basis size must equal m");
@@ -378,15 +382,25 @@ public:
         dense_refactor_();
     }
 
-    FTBasis(const SparseMat &A, const std::vector<int> &basis)
+    FTBasis(const SparseMat& A, const std::vector<int>& basis)
         : FTBasis(A, basis, Options{}) {}
 
-    FTBasis(const SparseMat &A, const std::vector<int> &basis,
-            const Options &opt)
-        : A_dense_(*(const DenseMat *)nullptr), Bcols_dense_(), lu_dense_(),
-          A_sparse_(std::cref(A)), Bcols_sparse_(), A_is_sparse_(true),
-          m_((int)A.rows()), basis_(basis), opt_(opt), etas_(),
-          update_count_(0), B_sparse_(), BT_sparse_(), solver_B_(),
+    FTBasis(const SparseMat& A, const std::vector<int>& basis,
+            const Options& opt)
+        : A_dense_(*(const DenseMat*)nullptr),
+          Bcols_dense_(),
+          lu_dense_(),
+          A_sparse_(std::cref(A)),
+          Bcols_sparse_(),
+          A_is_sparse_(true),
+          m_((int)A.rows()),
+          basis_(basis),
+          opt_(opt),
+          etas_(),
+          update_count_(0),
+          B_sparse_(),
+          BT_sparse_(),
+          solver_B_(),
           solver_BT_() {
         if ((int)basis_.size() != m_)
             throw std::invalid_argument("FTBasis: basis size must equal m");
@@ -397,7 +411,7 @@ public:
     }
 
     // Back-compat delegating ctor (old 8-arg signature on dense A)
-    FTBasis(const DenseMat &A, const std::vector<int> &basis,
+    FTBasis(const DenseMat& A, const std::vector<int>& basis,
             int refactor_every, int compress_every, double pivot_rel,
             double abs_floor, double alpha_tol, double z_inf_guard)
         : FTBasis(A, basis,
@@ -408,33 +422,32 @@ public:
 
     // -------- Basic info --------
     int rows() const noexcept { return m_; }
-    const std::vector<int> &basis() const noexcept { return basis_; }
-    const std::vector<Eta> &etas() const noexcept { return etas_; }
+    const std::vector<int>& basis() const noexcept { return basis_; }
+    const std::vector<Eta>& etas() const noexcept { return etas_; }
 
     // -------- Solves --------
-    Eigen::VectorXd solve_B(const Eigen::VectorXd &b) const {
+    Eigen::VectorXd solve_B(const Eigen::VectorXd& b) const {
         Eigen::VectorXd x = A_is_sparse_ ? sparse_solve_(b) : dense_solve_(b);
-        if (!etas_.empty())
-            x = apply_etas_solve_(x);
+        if (!etas_.empty()) x = apply_etas_solve_(x);
         return x;
     }
 
-    Eigen::VectorXd solve_BT(const Eigen::VectorXd &c) const {
+    Eigen::VectorXd solve_BT(const Eigen::VectorXd& c) const {
         Eigen::VectorXd y = A_is_sparse_ ? sparse_solveT_(c) : dense_solveT_(c);
-        if (!etas_.empty())
-            y = apply_etas_solve_T_(y);
+        if (!etas_.empty()) y = apply_etas_solve_T_(y);
         return y;
     }
 
     // -------- Column replacement (pivot) --------
-    void replace_column(int j, const Eigen::VectorXd &new_col_dense) {
+    void replace_column(int j, const Eigen::VectorXd& new_col_dense) {
         replace_column_impl_(j, new_col_dense);
     }
 
     template <typename Derived>
-    void replace_column(int j,
-                        const Eigen::SparseMatrixBase<Derived> &new_col_sparse) {
-        Eigen::SparseMatrix<double> tmp = new_col_sparse.derived().eval(); // m x 1
+    void replace_column(
+        int j, const Eigen::SparseMatrixBase<Derived>& new_col_sparse) {
+        Eigen::SparseMatrix<double> tmp =
+            new_col_sparse.derived().eval();  // m x 1
         Eigen::VectorXd nd(m_);
         nd.setZero();
         for (Eigen::SparseMatrix<double>::InnerIterator it(tmp, 0); it; ++it) {
@@ -451,51 +464,47 @@ public:
             dense_refactor_();
     }
 
-private:
+   private:
     // ===== Dense backend =====
     void dense_refactor_() {
         Eigen::MatrixXd B(m_, m_);
-        for (int k = 0; k < m_; ++k)
-            B.col(k) = Bcols_dense_[k];
+        for (int k = 0; k < m_; ++k) B.col(k) = Bcols_dense_[k];
         lu_dense_.factor(B, opt_.pivot_rel, opt_.abs_floor);
         etas_.clear();
         update_count_ = 0;
     }
-    Eigen::VectorXd dense_solve_(const Eigen::VectorXd &b) const {
+    Eigen::VectorXd dense_solve_(const Eigen::VectorXd& b) const {
         return lu_dense_.solve(b);
     }
-    Eigen::VectorXd dense_solveT_(const Eigen::VectorXd &c) const {
+    Eigen::VectorXd dense_solveT_(const Eigen::VectorXd& c) const {
         return lu_dense_.solveT(c);
     }
 
     // ===== Sparse backend =====
-    void sparse_build_B_(Eigen::SparseMatrix<double> &B) const {
+    void sparse_build_B_(Eigen::SparseMatrix<double>& B) const {
         std::vector<Eigen::Triplet<double>> trips;
         trips.reserve((size_t)std::max(1, m_) * 8);
         for (int k = 0; k < m_; ++k) {
-            const auto &col = Bcols_sparse_[k];
+            const auto& col = Bcols_sparse_[k];
             for (SparseMat::InnerIterator it(col, 0); it; ++it) {
                 trips.emplace_back(it.row(), k, it.value());
             }
         }
         B.resize(m_, m_);
         B.setFromTriplets(trips.begin(), trips.end());
-        if (opt_.sparse_drop_tol > 0.0)
-            B.prune(opt_.sparse_drop_tol);
+        if (opt_.sparse_drop_tol > 0.0) B.prune(opt_.sparse_drop_tol);
         B.makeCompressed();
     }
 
-    void sparse_factorize_(const Eigen::SparseMatrix<double> &B) {
+    void sparse_factorize_(const Eigen::SparseMatrix<double>& B) {
         B_sparse_ = B;
-        if (opt_.sparse_amd)
-            solver_B_.analyzePattern(B_sparse_);
+        if (opt_.sparse_amd) solver_B_.analyzePattern(B_sparse_);
         solver_B_.factorize(B_sparse_);
         if (solver_B_.info() != Eigen::Success)
             throw std::runtime_error("SparseLU factorization failed for B");
 
         BT_sparse_ = B.transpose();
-        if (opt_.sparse_amd)
-            solver_BT_.analyzePattern(BT_sparse_);
+        if (opt_.sparse_amd) solver_BT_.analyzePattern(BT_sparse_);
         solver_BT_.factorize(BT_sparse_);
         if (solver_BT_.info() != Eigen::Success)
             throw std::runtime_error("SparseLU factorization failed for B^T");
@@ -509,13 +518,13 @@ private:
         update_count_ = 0;
     }
 
-    Eigen::VectorXd sparse_solve_(const Eigen::VectorXd &b) const {
+    Eigen::VectorXd sparse_solve_(const Eigen::VectorXd& b) const {
         Eigen::VectorXd x = solver_B_.solve(b);
         if (solver_B_.info() != Eigen::Success)
             throw std::runtime_error("Sparse solve failed (B x = b)");
         return x;
     }
-    Eigen::VectorXd sparse_solveT_(const Eigen::VectorXd &c) const {
+    Eigen::VectorXd sparse_solveT_(const Eigen::VectorXd& c) const {
         Eigen::VectorXd y = solver_BT_.solve(c);
         if (solver_BT_.info() != Eigen::Success)
             throw std::runtime_error("Sparse solve failed (B^T y = c)");
@@ -525,12 +534,10 @@ private:
     // ===== FT product-form update path (dense only) =====
     // Minimal, safe implementation guarded by alpha/norm/limits.
     // If anything looks unstable, we fall back to a full refactor.
-    void forrest_tomlin_update_dense_(int j,
-                                      const Eigen::VectorXd& /*u*/,
+    void forrest_tomlin_update_dense_(int j, const Eigen::VectorXd& /*u*/,
                                       const Eigen::VectorXd& z,
                                       const Eigen::VectorXd& /*w*/,
-                                      double alpha)
-    {
+                                      double alpha) {
         // We use a *local* update that keeps U upper and L unit-lower by:
         // 1) Adjusting U's column j (diagonal scaling by alpha)
         // 2) Moving subdiagonal parts of column j into L
@@ -555,8 +562,10 @@ private:
         double old_piv = U(j, j);
         double new_piv = alpha * old_piv;
         if (!std::isfinite(new_piv) ||
-            std::abs(new_piv) < std::max(opt_.abs_floor,
-                                         10 * std::numeric_limits<double>::epsilon() * std::abs(old_piv)))
+            std::abs(new_piv) <
+                std::max(opt_.abs_floor,
+                         10 * std::numeric_limits<double>::epsilon() *
+                             std::abs(old_piv)))
             throw std::runtime_error("FT update: unstable new pivot");
         U(j, j) = new_piv;
 
@@ -569,13 +578,15 @@ private:
             }
         }
 
-        // 3) Chase the subdiagonal entries back to zero by subtracting multiples of row j of U
+        // 3) Chase the subdiagonal entries back to zero by subtracting
+        // multiples of row j of U
         //    For i>j: U(i, j:end) -= L(i,j) * U(j, j:end); then set L(i,j)=0
         const int row_tail = n - j;
         for (int i = std::max(j + 1, i_lo); i <= i_hi; ++i) {
             double lij = L(i, j);
             if (lij != 0.0) {
-                U.row(i).segment(j, row_tail).noalias() -= lij * U.row(j).segment(j, row_tail);
+                U.row(i).segment(j, row_tail).noalias() -=
+                    lij * U.row(j).segment(j, row_tail);
                 L(i, j) = 0.0;
             }
         }
@@ -591,13 +602,13 @@ private:
 
     // ===== FT product-form update framework (both paths) =====
     template <typename ColSetter>
-    void replace_column_impl_core_(int j, const Eigen::VectorXd &new_col_dense,
-                                   ColSetter &&set_col) {
+    void replace_column_impl_core_(int j, const Eigen::VectorXd& new_col_dense,
+                                   ColSetter&& set_col) {
         // Build old col and delta
         Eigen::VectorXd old(m_);
         old.setZero();
         if (A_is_sparse_) {
-            const auto &scol = Bcols_sparse_[j];
+            const auto& scol = Bcols_sparse_[j];
             for (SparseMat::InnerIterator it(scol, 0); it; ++it)
                 old[it.row()] = it.value();
         } else {
@@ -607,7 +618,8 @@ private:
 
         // Solve z = B^{-1} u  and w = B^{-T} e_j
         Eigen::VectorXd z = solve_B(u);
-        Eigen::VectorXd ej = Eigen::VectorXd::Zero(m_); ej(j) = 1.0;
+        Eigen::VectorXd ej = Eigen::VectorXd::Zero(m_);
+        ej(j) = 1.0;
         Eigen::VectorXd w = solve_BT(ej);
 
         // alpha = 1 + z_j
@@ -638,8 +650,7 @@ private:
             }
             // success
             ++update_count_;
-            if (need_compress_())
-                refactor();
+            if (need_compress_()) refactor();
             return;
         }
 
@@ -652,31 +663,29 @@ private:
             return;
         }
 
-        etas_.push_back(Eta{j, std::move(u), std::move(z), std::move(w), alpha});
+        etas_.push_back(
+            Eta{j, std::move(u), std::move(z), std::move(w), alpha});
         ++update_count_;
-        if (need_compress_())
-            refactor();
+        if (need_compress_()) refactor();
     }
 
-    void replace_column_impl_(int j, const Eigen::VectorXd &new_col_dense) {
+    void replace_column_impl_(int j, const Eigen::VectorXd& new_col_dense) {
         if (A_is_sparse_) {
-            auto set_col = [&](int col_j, const Eigen::VectorXd &dense) {
+            auto set_col = [&](int col_j, const Eigen::VectorXd& dense) {
                 std::vector<Eigen::Triplet<double>> tr;
                 tr.reserve((size_t)std::min<int>((int)dense.size(), 16));
                 for (int r = 0; r < dense.size(); ++r) {
                     double v = dense[r];
-                    if (v != 0.0)
-                        tr.emplace_back(r, 0, v);
+                    if (v != 0.0) tr.emplace_back(r, 0, v);
                 }
                 SparseMat col(m_, 1);
-                if (!tr.empty())
-                    col.setFromTriplets(tr.begin(), tr.end());
+                if (!tr.empty()) col.setFromTriplets(tr.begin(), tr.end());
                 col.makeCompressed();
                 Bcols_sparse_[col_j] = std::move(col);
             };
             replace_column_impl_core_(j, new_col_dense, set_col);
         } else {
-            auto set_col = [&](int col_j, const Eigen::VectorXd &dense) {
+            auto set_col = [&](int col_j, const Eigen::VectorXd& dense) {
                 Bcols_dense_[col_j] = dense;
             };
             replace_column_impl_core_(j, new_col_dense, set_col);
@@ -685,40 +694,35 @@ private:
 
     // Apply product-form etas after base solve
     Eigen::VectorXd apply_etas_solve_(Eigen::VectorXd x) const {
-        for (const auto &eta : etas_) {
+        for (const auto& eta : etas_) {
             double xj = x(eta.j);
-            if (xj != 0.0)
-                x.noalias() -= eta.z * (xj / eta.alpha);
+            if (xj != 0.0) x.noalias() -= eta.z * (xj / eta.alpha);
         }
         return x;
     }
     Eigen::VectorXd apply_etas_solve_T_(Eigen::VectorXd y) const {
-        for (const auto &eta : etas_) {
+        for (const auto& eta : etas_) {
             double uy = eta.u.dot(y);
-            if (uy != 0.0)
-                y.noalias() -= eta.w * (uy / eta.alpha);
+            if (uy != 0.0) y.noalias() -= eta.w * (uy / eta.alpha);
         }
         return y;
     }
 
     bool need_compress_() const noexcept {
-        if ((int)etas_.size() >= opt_.compress_every)
-            return true;
+        if ((int)etas_.size() >= opt_.compress_every) return true;
         double maxabsz = 0.0;
-        for (const auto &e : etas_) {
+        for (const auto& e : etas_) {
             double v = e.z.cwiseAbs().maxCoeff();
-            if (v > maxabsz)
-                maxabsz = v;
+            if (v > maxabsz) maxabsz = v;
         }
-        if (maxabsz > opt_.z_inf_guard)
-            return true;
+        if (maxabsz > opt_.z_inf_guard) return true;
         if (A_is_sparse_ && !etas_.empty() &&
             update_count_ > opt_.compress_every / 2)
             return true;
         return false;
     }
 
-private:
+   private:
     // ---- Members (order matters; keep in sync with init lists) ----
     // Dense storage
     std::reference_wrapper<const DenseMat> A_dense_;

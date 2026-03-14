@@ -4,22 +4,22 @@
 // - Calls your Python Model/Regularizer/QP via nanobind
 // - Depends on Eigen + nanobind
 
-#include <cstddef>
 #include <nanobind/eigen/dense.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
 #include <Eigen/Core>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
-#include "definitions.h"
-#include "dopt.h"
-#include "model.h"
-#include "tr.h" // TrustRegionManager, TRConfig, TRResult, TRInfo
+#include "../definitions.h"
+#include "DOpt.h"
+#include "../model.h"
+#include "../trustregion/Manager.h"  // TrustRegionManager, TRConfig, TRResult, TRInfo
 
 namespace nb = nanobind;
 using dvec = Eigen::VectorXd;
@@ -32,8 +32,8 @@ using TRResult = ::TRResult;
 using TRInfo = ::TRInfo;
 
 // Vectorized box clipping: y = min(max(x, lb), ub) where lb/ub may be absent
-static inline dvec clip_box(const dvec &x, const std::optional<dvec> &lb,
-                            const std::optional<dvec> &ub) {
+static inline dvec clip_box(const dvec& x, const std::optional<dvec>& lb,
+                            const std::optional<dvec>& ub) {
     dvec y = x;
     if (lb) {
         if (NB_UNLIKELY(lb->size() != x.size()))
@@ -50,12 +50,14 @@ static inline dvec clip_box(const dvec &x, const std::optional<dvec> &lb,
 
 // ------------------------ SQP Stepper (C++) ------------------------ //
 class SQPStepper {
-public:
+   public:
     // Single constructor: builds native TrustRegionManager from cfg
     explicit SQPStepper(nb::object cfg, nb::object qp_solver,
-                        ModelC *model = nullptr)
-        : cfg_(std::move(cfg)), qp_(std::move(qp_solver)),
-          tr_(build_tr_config_from_cfg_(cfg_)), model_(model) {
+                        ModelC* model = nullptr)
+        : cfg_(std::move(cfg)),
+          qp_(std::move(qp_solver)),
+          tr_(build_tr_config_from_cfg_(cfg_)),
+          model_(model) {
         if (!model_)
             throw std::invalid_argument(
                 "SQPStepper: ModelC* model must not be null");
@@ -73,11 +75,12 @@ public:
     std::shared_ptr<regx::Regularizer> regularizer_ =
         std::make_shared<regx::Regularizer>();
 
-    dopt::DOptStabilizer *dopt = nullptr;
-    ModelC *model_ = nullptr; // optional ModelC pointer for AD/LBFGS Hessians
+    dopt::DOptStabilizer* dopt = nullptr;
+    ModelC* model_ = nullptr;  // optional ModelC pointer for AD/LBFGS Hessians
 
-    std::tuple<dvec, dvec, dvec, SolverInfo>
-    step(const dvec &x_in, const dvec &lam_in, const dvec &nu_in, int it) {
+    std::tuple<dvec, dvec, dvec, SolverInfo> step(const dvec& x_in,
+                                                  const dvec& lam_in,
+                                                  const dvec& nu_in, int it) {
         // ---- 0) Box clipping ----
         std::optional<dvec> lb = model_->get_lb();
         std::optional<dvec> ub = model_->get_ub();
@@ -97,15 +100,12 @@ public:
 
         spmat JI = (mI > 0) ? model_->get_JI().value() : spmat(mI, n);
         spmat JE = (mE > 0) ? model_->get_JE().value() : spmat(mE, n);
+        dmat JI_dense = (mI > 0) ? dmat(JI) : dmat(mI, n);
+        dmat JE_dense = (mE > 0) ? dmat(JE) : dmat(mE, n);
         dvec cI = (mI > 0) ? model_->get_cI().value() : dvec::Zero(mI);
         dvec cE = (mE > 0) ? model_->get_cE().value() : dvec::Zero(mE);
 
         const double theta0 = model_->constraint_violation(x);
-
-        // ---- 2) Compute DOpt shifts (matrices unchanged; dense only for
-        // stats) ----
-        Eigen::MatrixXd JE_dense = JE.toDense();
-        Eigen::MatrixXd JI_dense = JI.toDense();
 
         auto [rE_opt, rI_opt, dopt_meta] =
             dopt->compute_shifts(JE_dense, JI_dense, cE, cI, lam_in, nu_in);
@@ -187,29 +187,31 @@ public:
         // ---- 4) Build RHS for TR/QP per convention ----
         dvec b_eq = ap_plus_b_le0
                         ? cE_shifted
-                        : -cE_shifted; // JE p + b_eq = 0  OR  JE p = b_eq
+                        : -cE_shifted;  // JE p + b_eq = 0  OR  JE p = b_eq
         dvec b_in = ap_plus_b_le0
                         ? cI_shifted
-                        : -cI_shifted; // JI p + b_in ≤ 0 OR  JI p ≤ b_in
+                        : -cI_shifted;  // JI p + b_in ≤ 0 OR  JI p ≤ b_in
 
         // ---- 5) Native TR solve (dense path) ----
         TRResult out = tr_.solve_dense(H, g0,
-                                       /*A_ineq*/ JI, /*b_ineq*/ b_in,
-                                       /*A_eq*/ JE, /*b_eq*/ b_eq,
+                                       /*A_ineq*/ (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt),
+                                       /*b_ineq*/ b_in,
+                                       /*A_eq*/ (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt),
+                                       /*b_eq*/ b_eq,
                                        /*model*/ model_,
                                        /*x*/ std::optional<dvec>(x),
                                        /*lb*/ lb, /*ub*/ ub,
                                        /*mu*/ 0.0,
                                        /*f_old*/ std::optional<double>(f0));
 
-        const dvec &p = out.p;
-        const dvec &lam_usr = out.lam;
-        const dvec &nu_new = out.nu;
-        const TRInfo &tinfo = out.info;
+        const dvec& p = out.p;
+        const dvec& lam_usr = out.lam;
+        const dvec& nu_new = out.nu;
+        const TRInfo& tinfo = out.info;
 
         if (!p.allFinite()) {
             return std::make_tuple(
-                x, dvec(), dvec(),
+                x, lam_in, nu_in,
                 make_info_dict(0.0, false, false, f0, theta0, KKT{}, 0, 0.0,
                                std::numeric_limits<double>::quiet_NaN(),
                                tr_.get_delta()));
@@ -223,25 +225,30 @@ public:
         const dvec g1 = model_->get_g().value();
         spmat JI1 = (mI > 0) ? model_->get_JI().value() : spmat(mI, n);
         spmat JE1 = (mE > 0) ? model_->get_JE().value() : spmat(mE, n);
+        dmat JI1_dense = (mI > 0) ? dmat(JI1) : dmat(mI, n);
+        dmat JE1_dense = (mE > 0) ? dmat(JE1) : dmat(mE, n);
         dvec cI1 = (mI > 0) ? model_->get_cI().value() : dvec::Zero(mI);
         dvec cE1 = (mE > 0) ? model_->get_cE().value() : dvec::Zero(mE);
 
         const double theta1 = model_->constraint_violation(x_trial);
 
         // Bound multipliers (not returned by TR): zeros for KKT
-        const dvec &zL = out.zL;
-        const dvec &zU = out.zU;
+        const dvec& zL = out.zL;
+        const dvec& zU = out.zU;
 
         auto [nu_hat, lam_hat, zL_hat, zU_hat] = recover_multipliers_at_trial_(
-            g1, JE1, JI1, cE1, cI1, x_trial, lb, ub,
+            g1, (mE > 0 ? std::optional<dmat>(JE1_dense) : std::nullopt),
+            (mI > 0 ? std::optional<dmat>(JI1_dense) : std::nullopt),
+            cE1, cI1, x_trial, lb, ub,
             /*act_eps=*/1e-10, /*reg=*/1e-12);
 
         // ---- 7) KKT residuals at trial (unshifted) ----
-        auto kkt = compute_kkt(g1, JE1, JI1, cE1, cI1, x_trial,
+        auto kkt = compute_kkt(g1, (mE > 0 ? std::optional<dmat>(JE1_dense) : std::nullopt),
+                               (mI > 0 ? std::optional<dmat>(JI1_dense) : std::nullopt),
+                               cE1, cI1, x_trial,
                                /*nu*/ (nu_hat.size() ? nu_hat : nu_new),
                                /*lam*/ (lam_hat.size() ? lam_hat : lam_usr),
                                /*zL*/ zL_hat, /*zU*/ zU_hat, lb, ub);
-
 
         // ---- 8) Convergence and acceptance ----
 
@@ -280,16 +287,13 @@ public:
         const int max_stall_iters =
             get_attr_or<int>(cfg_, "max_stall_iters", 5);
 
-        // Candidate convergence by your normalized criteria OR tiny objective
-        // change
+        // Candidate convergence by normalized KKT/feasibility metrics.
         bool conv_norm = (stat_n <= tol_stat) && (ineq_n <= tol_feas) &&
                          (eq_n <= tol_feas) &&
                          ((comp_n <= tol_comp) || (kkt.ineq <= 1e-10));
 
-        bool conv_obj = std::abs(f1 - f0) <= tol_obj_change;
-
         // Small-step criteria (absolute and relative to current x)
-        const double step_norm = tinfo.step_norm; // ||p||
+        const double step_norm = tinfo.step_norm;  // ||p||
         const double xnorm = std::max(1.0, x.norm());
         const bool small_step =
             (step_norm <= tol_step_abs) || (step_norm <= tol_step_rel * xnorm);
@@ -303,35 +307,62 @@ public:
         // Absolute floors (helpful when scaling becomes ill-conditioned)
         const bool abs_floors_ok =
             (theta1 <= tol_theta_abs) && (kkt.stat <= tol_kkt_abs);
+        const bool obj_stalled = std::abs(f1 - f0) <= tol_obj_change;
 
         // Simple stagnation logic (no measurable progress in f, θ, or KKT)
         const double kkt_norm =
             std::max({kkt.stat, kkt.eq, kkt.ineq, kkt.comp});
         auto almost_same = [](double a, double b) {
-            if (!std::isfinite(a) || !std::isfinite(b))
-                return false;
+            if (!std::isfinite(a) || !std::isfinite(b)) return false;
             double m = std::max(1.0, std::max(std::abs(a), std::abs(b)));
             return std::abs(a - b) <= 1e-12 * m;
         };
 
-        if (std::isfinite(prev_f_) && std::isfinite(prev_theta_) &&
+        const bool accepted = tinfo.accepted;
+        const dvec lam_final =
+            accepted ? (lam_hat.size() ? lam_hat : lam_usr) : lam_in;
+        const dvec nu_final =
+            accepted ? (nu_hat.size() ? nu_hat : nu_new) : nu_in;
+
+        const double f_eval = accepted ? f1 : f0;
+        const double theta_eval = accepted ? theta1 : theta0;
+        const KKT kkt_eval =
+            accepted
+                ? kkt
+                : compute_kkt(
+                      g0, (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt),
+                      (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt),
+                      cE, cI, x, nu_in, lam_in, dvec::Zero(n), dvec::Zero(n),
+                      lb, ub);
+
+        const double kkt_eval_norm =
+            std::max({kkt_eval.stat, kkt_eval.eq, kkt_eval.ineq, kkt_eval.comp});
+
+        if (accepted && std::isfinite(prev_f_) && std::isfinite(prev_theta_) &&
             std::isfinite(prev_kkt_)) {
             if (almost_same(f1, prev_f_) && almost_same(theta1, prev_theta_) &&
                 almost_same(kkt_norm, prev_kkt_))
                 ++stall_count_;
             else
                 stall_count_ = 0;
+        } else if (!accepted) {
+            stall_count_ = 0;
         }
-        prev_f_ = f1;
-        prev_theta_ = theta1;
-        prev_kkt_ = kkt_norm;
+        if (accepted) {
+            prev_f_ = f1;
+            prev_theta_ = theta1;
+            prev_kkt_ = kkt_norm;
+        }
 
-        // Final convergence decision
-        bool converged = conv_norm || conv_obj;
+        // Final convergence decision. Tiny objective change alone is not
+        // sufficient; require that we are already in a numerically small-step,
+        // low-residual regime.
+        bool converged =
+            accepted && (conv_norm || (obj_stalled && small_step && abs_floors_ok));
 
         // Augment with small-step / tiny-Δ / stagnation exits when already
         // “good enough”
-        if (!converged) {
+        if (accepted && !converged) {
             if ((small_step && abs_floors_ok) ||
                 (tiny_delta_stop && tiny_delta && small_step &&
                  (conv_norm || abs_floors_ok)) ||
@@ -343,29 +374,29 @@ public:
 
         // ---- 9) LBFGS memory update *only if accepted* ----
         if (hmode == "lbfgs" && tinfo.accepted) {
-            model_->lbfgs_update(x_trial, lam_usr, nu_new);
+            model_->lbfgs_update(x_trial, lam_final, nu_final);
         }
 
         // ---- 10) Pack & return ----
-        const double rho = std::numeric_limits<double>::quiet_NaN();
-        const bool accepted = tinfo.accepted;
-
+        const double reported_step_norm = accepted ? step_norm : 0.0;
         SolverInfo info =
-            make_info_dict(step_norm, accepted, converged, f1, theta1, kkt, 0,
-                           1.0, rho, tr_.get_delta());
+            make_info_dict(reported_step_norm, accepted, converged, f_eval,
+                           theta_eval,
+                           kkt_eval, 0, 1.0, tinfo.rho, tr_.get_delta());
         info.delta = tr_.get_delta();
 
-        return std::make_tuple(x_trial, lam_usr, nu_new, info);
+        return std::make_tuple(accepted ? x_trial : x, lam_final, nu_final,
+                               info);
     }
 
-private:
+   private:
     // config and collaborators
     nb::object cfg_, hess_, ls_, qp_, soc_, reg_, rest_;
     TrustRegionManager tr_;
     bool requires_dense_{};
 
-    static TRConfig build_tr_config_from_cfg_(const nb::object &cfg) {
-        TRConfig tc; // start with C++ defaults
+    static TRConfig build_tr_config_from_cfg_(const nb::object& cfg) {
+        TRConfig tc;  // start with C++ defaults
 
         // Core TR params
         tc.delta0 = get_attr_or<double>(cfg, "delta0", tc.delta0);
@@ -411,64 +442,58 @@ private:
         ensure_default("tr_delta0", 1.0);
         ensure_default("filter_theta_min", 1e-8);
         ensure_default("hessian_mode",
-                       std::string("lbfgs")); // "exact" or "lbfgs"
+                       std::string("lbfgs"));  // "exact" or "lbfgs"
         ensure_default("lbfgs_sparse_threshold", 1e-12);
         ensure_default("soc_violation_ratio", 0.9);
         ensure_default("tol_obj_change",
-                       1e-10); // was 1e-12; make it less brittle
-        ensure_default("tol_step_abs", 1e-12);  // absolute step threshold
-        ensure_default("tol_step_rel", 1e-9);   // relative step threshold
-        ensure_default("tol_theta_abs", 1e-10); // absolute feasibility floor
-        ensure_default("tol_kkt_abs", 1e-8);    // absolute KKT floor
+                       1e-10);  // was 1e-12; make it less brittle
+        ensure_default("tol_step_abs", 1e-12);   // absolute step threshold
+        ensure_default("tol_step_rel", 1e-9);    // relative step threshold
+        ensure_default("tol_theta_abs", 1e-10);  // absolute feasibility floor
+        ensure_default("tol_kkt_abs", 1e-8);     // absolute KKT floor
         ensure_default("tiny_delta_stop",
-                       true); // stop when Δ is tiny & no progress
-        ensure_default("max_stall_iters", 5); // stall window
+                       true);  // stop when Δ is tiny & no progress
+        ensure_default("max_stall_iters", 5);  // stall window
     }
 
-    template <class T> void ensure_default(const char *name, const T &val) {
-        if (!nb::hasattr(cfg_, name))
-            cfg_.attr(name) = val;
+    template <class T>
+    void ensure_default(const char* name, const T& val) {
+        if (!nb::hasattr(cfg_, name)) cfg_.attr(name) = val;
     }
 
-    static KKT compute_kkt(const dvec &g, const std::optional<dmat> &JE,
-                           const std::optional<dmat> &JI,
-                           const std::optional<dvec> &cE,
-                           const std::optional<dvec> &cI, const dvec &xval,
-                           const dvec &nu, const dvec &lam_user, const dvec &zL,
-                           const dvec &zU, const std::optional<dvec> &lb,
-                           const std::optional<dvec> &ub) {
+    static KKT compute_kkt(const dvec& g, const std::optional<dmat>& JE,
+                           const std::optional<dmat>& JI,
+                           const std::optional<dvec>& cE,
+                           const std::optional<dvec>& cI, const dvec& xval,
+                           const dvec& nu, const dvec& lam_user, const dvec& zL,
+                           const dvec& zU, const std::optional<dvec>& lb,
+                           const std::optional<dvec>& ub) {
         dvec r = g;
-        if (JE && JE->size() > 0)
-            r += JE->transpose() * nu;
+        if (JE && JE->size() > 0) r += JE->transpose() * nu;
 
         if (JI && JI->size() > 0 && lam_user.size() > 0)
             r += JI->transpose() * lam_user;
 
-        if (zU.size() == r.size())
-            r += zU; // +z_U
-        if (zL.size() == r.size())
-            r -= zL; // -z_L
+        if (zU.size() == r.size()) r += zU;  // +z_U
+        if (zL.size() == r.size()) r -= zL;  // -z_L
         const double stat = r.lpNorm<Eigen::Infinity>();
 
         const double feas_eq = cE ? cE->lpNorm<Eigen::Infinity>() : 0.0;
         double feas_in = 0.0;
         if (cI) {
             dvec tmp = *cI;
-            for (int i = 0; i < tmp.size(); ++i)
-                tmp[i] = std::max(0.0, tmp[i]);
+            for (int i = 0; i < tmp.size(); ++i) tmp[i] = std::max(0.0, tmp[i]);
             feas_in = tmp.lpNorm<Eigen::Infinity>();
         }
         double feas_box = 0.0;
         if (lb) {
             dvec t = (*lb) - xval;
-            for (int i = 0; i < t.size(); ++i)
-                t[i] = std::max(0.0, t[i]);
+            for (int i = 0; i < t.size(); ++i) t[i] = std::max(0.0, t[i]);
             feas_box = std::max(feas_box, t.lpNorm<Eigen::Infinity>());
         }
         if (ub) {
             dvec t = xval - (*ub);
-            for (int i = 0; i < t.size(); ++i)
-                t[i] = std::max(0.0, t[i]);
+            for (int i = 0; i < t.size(); ++i) t[i] = std::max(0.0, t[i]);
             feas_box = std::max(feas_box, t.lpNorm<Eigen::Infinity>());
         }
         const double ineq = std::max(feas_in, feas_box);
@@ -496,7 +521,7 @@ private:
     }
 
     SolverInfo make_info_dict(double step_norm, bool accepted, bool converged,
-                              double f_val, double theta, const KKT &kkt,
+                              double f_val, double theta, const KKT& kkt,
                               int ls_iters, double alpha, double rho,
                               double tr_delta) {
         SolverInfo d;
@@ -518,25 +543,23 @@ private:
     }
 
     static std::tuple<dvec, dvec, dvec, dvec> recover_multipliers_at_trial_(
-        const dvec &g1, const std::optional<dmat> &JE1,
-        const std::optional<dmat> &JI1, const std::optional<dvec> &cE1,
-        const std::optional<dvec> &cI1, const dvec &x_trial,
-        const std::optional<dvec> &lb, const std::optional<dvec> &ub,
+        const dvec& g1, const std::optional<dmat>& JE1,
+        const std::optional<dmat>& JI1, const std::optional<dvec>& cE1,
+        const std::optional<dvec>& cI1, const dvec& x_trial,
+        const std::optional<dvec>& lb, const std::optional<dvec>& ub,
         double act_eps = 1e-10, double reg = 1e-12) {
         const int n = (int)g1.size();
 
         // Build column blocks for [JE1ᵀ | JIactᵀ | I_L | -I_U]
         dmat AeqT(n, 0);
-        if (JE1 && JE1->size())
-            AeqT = JE1->transpose();
+        if (JE1 && JE1->size()) AeqT = JE1->transpose();
 
         // Near-active inequalities at the TRIAL point
         dmat AiactT(n, 0);
         std::vector<int> iact;
         if (JI1 && JI1->size() && cI1 && cI1->size() == JI1->rows()) {
             for (int i = 0; i < cI1->size(); ++i)
-                if ((*cI1)(i) >= -act_eps)
-                    iact.push_back(i);
+                if ((*cI1)(i) >= -act_eps) iact.push_back(i);
             if (!iact.empty()) {
                 AiactT.resize(n, (int)iact.size());
                 for (int k = 0; k < (int)iact.size(); ++k)
@@ -551,22 +574,18 @@ private:
         std::vector<int> idxL, idxU;
         if (lb && lb->size() == n) {
             for (int i = 0; i < n; ++i)
-                if (near(x_trial[i], (*lb)[i], act_eps))
-                    idxL.push_back(i);
+                if (near(x_trial[i], (*lb)[i], act_eps)) idxL.push_back(i);
         }
         if (ub && ub->size() == n) {
             for (int i = 0; i < n; ++i)
-                if (near((*ub)[i], x_trial[i], act_eps))
-                    idxU.push_back(i);
+                if (near((*ub)[i], x_trial[i], act_eps)) idxU.push_back(i);
         }
         dmat IL(n, (int)idxL.size());
         IL.setZero();
-        for (int j = 0; j < (int)idxL.size(); ++j)
-            IL(idxL[j], j) = 1.0;
+        for (int j = 0; j < (int)idxL.size(); ++j) IL(idxL[j], j) = 1.0;
         dmat IU(n, (int)idxU.size());
         IU.setZero();
-        for (int j = 0; j < (int)idxU.size(); ++j)
-            IU(idxU[j], j) = 1.0;
+        for (int j = 0; j < (int)idxU.size(); ++j) IU(idxU[j], j) = 1.0;
 
         const int mcols =
             AeqT.cols() + AiactT.cols() + (int)idxL.size() + (int)idxU.size();
@@ -597,7 +616,7 @@ private:
         dmat N = AT.transpose() * AT;
         N.diagonal().array() += reg;
         const dvec rhs = -AT.transpose() * g1;
-        dvec y = N.ldlt().solve(rhs); // fine for small systems
+        dvec y = N.ldlt().solve(rhs);  // fine for small systems
 
         // Unpack and enforce nonnegativity of inequality/bound duals
         ofs = 0;

@@ -1,13 +1,23 @@
-// ip_cpp.cpp — refactored and organized C++23 version
+// ip_cpp.cpp — refactored and organized C++23 helpers
 #pragma once
+#include <nanobind/eigen/dense.h>
+#include <nanobind/eigen/sparse.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/pair.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <Eigen/LU>
 #include <Eigen/SparseCore>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -19,19 +29,8 @@
 #include <utility>
 #include <vector>
 
-#include <nanobind/eigen/dense.h>
-#include <nanobind/eigen/sparse.h>
-#include <nanobind/nanobind.h>
-#include <nanobind/ndarray.h>
-#include <nanobind/stl/pair.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
-
-#include "definitions.h"
-#include "model.h"
-
-#include <chrono>
-#include <iomanip>
+#include "../definitions.h"
+#include "../model.h"
 
 #ifndef IP_PROFILE
 #define IP_PROFILE 1
@@ -45,7 +44,9 @@ struct ScopedTimer {
     bool print_on_destroy;
 
     explicit ScopedTimer(std::string n, bool print_total = true)
-        : name(std::move(n)), t0(clock::now()), last(t0),
+        : name(std::move(n)),
+          t0(clock::now()),
+          last(t0),
           print_on_destroy(print_total) {
         std::cout << "[IP] >>> " << name << " begin\n";
     }
@@ -58,7 +59,7 @@ struct ScopedTimer {
                       << std::setprecision(3) << dt << " ms)\n";
         }
     }
-    void lap(const char *label) {
+    void lap(const char* label) {
         auto now = clock::now();
         auto dt = std::chrono::duration<double, std::milli>(now - last).count();
         std::cout << "      [lap] " << label << ": " << std::fixed
@@ -70,15 +71,15 @@ struct ScopedTimer {
 #define IP_LAP(label) __ip_timer__.lap(label)
 #define IP_LOG(msg) std::cout << "[IP] " << msg << "\n"
 #else
-#define IP_TIMER(name)                                                         \
-    struct {                                                                   \
-        void lap(const char *) {}                                              \
+#define IP_TIMER(name)           \
+    struct {                     \
+        void lap(const char*) {} \
     } __ip_timer__(name)
-#define IP_LAP(label)                                                          \
-    do {                                                                       \
+#define IP_LAP(label) \
+    do {              \
     } while (0)
-#define IP_LOG(msg)                                                            \
-    do {                                                                       \
+#define IP_LOG(msg) \
+    do {            \
     } while (0)
 #endif
 
@@ -89,7 +90,7 @@ namespace consts {
 constexpr double EPS_DIV = 1e-16;
 constexpr double EPS_POS = 1e-12;
 constexpr double INF = std::numeric_limits<double>::infinity();
-} // namespace consts
+}  // namespace consts
 
 // ---------- External structs ----------
 struct StepResult {
@@ -101,16 +102,20 @@ struct KKTResult {
 };
 
 // ---------- Small utilities ----------
-template <class T> [[nodiscard]] constexpr T clamp(T v, T lo, T hi) noexcept {
+template <class T>
+[[nodiscard]] constexpr T clamp(T v, T lo, T hi) noexcept {
     return (v < lo) ? lo : (v > hi) ? hi : v;
 }
-template <class T> [[nodiscard]] constexpr T clamp_min(T v, T lo) noexcept {
+template <class T>
+[[nodiscard]] constexpr T clamp_min(T v, T lo) noexcept {
     return (v < lo) ? lo : v;
 }
-template <class T> [[nodiscard]] constexpr T clamp_max(T v, T hi) noexcept {
+template <class T>
+[[nodiscard]] constexpr T clamp_max(T v, T hi) noexcept {
     return (v > hi) ? hi : v;
 }
-template <class T> [[nodiscard]] constexpr T clamp01(T v) noexcept {
+template <class T>
+[[nodiscard]] constexpr T clamp01(T v) noexcept {
     return v < T(0) ? T(0) : (v > T(1) ? T(1) : v);
 }
 
@@ -120,21 +125,19 @@ template <class T> [[nodiscard]] constexpr T clamp01(T v) noexcept {
     return num / d;
 }
 
-[[nodiscard]] inline double safe_inf_norm(const dvec &v) noexcept {
+[[nodiscard]] inline double safe_inf_norm(const dvec& v) noexcept {
     return (v.size() == 0) ? 0.0 : v.cwiseAbs().maxCoeff();
 }
 
-static inline double percentile_(const dvec &v, double p01_99) {
-    if (v.size() == 0)
-        return 0.0;
+static inline double percentile_(const dvec& v, double p01_99) {
+    if (v.size() == 0) return 0.0;
     std::vector<double> a(v.data(), v.data() + v.size());
     std::sort(a.begin(), a.end());
     p01_99 = clamp(p01_99, 0.0, 1.0);
     const double idx = p01_99 * (a.size() - 1);
     const size_t i = static_cast<size_t>(idx);
     const double frac = idx - i;
-    if (i + 1 < a.size())
-        return a[i] * (1.0 - frac) + a[i + 1] * frac;
+    if (i + 1 < a.size()) return a[i] * (1.0 - frac) + a[i + 1] * frac;
     return a.back();
 }
 
@@ -166,7 +169,7 @@ struct EvalPack {
 // ---------- Adaptive Shift Manager ----------
 // ---------- Adaptive Shift Manager (revised) ----------
 class AdaptiveShiftManager {
-public:
+   public:
     explicit AdaptiveShiftManager(nb::object cfg) : cfg_(cfg) {}
 
     void reset() {
@@ -175,10 +178,9 @@ public:
         cE_prev_inf_ = 0.0;
         shift_stall_count_ = 0;
     }
-    double compute_slack_shift(const dvec &s, const dvec &cI, const dvec &lam,
+    double compute_slack_shift(const dvec& s, const dvec& cI, const dvec& lam,
                                int it) {
-        if (!s.size())
-            return 0.0;
+        if (!s.size()) return 0.0;
         assert(s.size() == cI.size() && lam.size() == cI.size());
 
         const double base = get_attr_or<double>(cfg_, "ip_shift_tau", 1e-3);
@@ -198,7 +200,7 @@ public:
         int near_active_ct = 0;
         double s_sum = 0.0, lam_sum = 0.0;
         int sample_count = 0;
-        constexpr int max_samples = 1000; // Limit samples for large vectors
+        constexpr int max_samples = 1000;  // Limit samples for large vectors
         const int step = std::max(1, static_cast<int>(s.size()) / max_samples);
 
         for (int i = 0; i < cI.size(); i += step) {
@@ -216,7 +218,8 @@ public:
         const double s_p10 =
             sample_count > 0
                 ? s_sum / sample_count
-                : percentile_(s, 0.10); // Fallback to full percentile if needed
+                : percentile_(s,
+                              0.10);  // Fallback to full percentile if needed
         const double lam_med = sample_count > 0
                                    ? lam_sum / sample_count
                                    : percentile_(lam.cwiseAbs(), 0.50);
@@ -227,8 +230,7 @@ public:
 
         // Stall-aware boost
         const bool stallish = (s_p10 < 1e-6) && (frac_active > 0.25);
-        if (stallish)
-            ++shift_stall_count_;
+        if (stallish) ++shift_stall_count_;
         const double stall_boost =
             stallish ? (k_stall * (1.0 + 0.05 * it)) : 0.0;
 
@@ -248,7 +250,7 @@ public:
         return clamp(tau_ema_, tau_min, tau_max);
     }
 
-    double compute_bound_shift(const dvec &x, const Bounds &B, int it) {
+    double compute_bound_shift(const dvec& x, const Bounds& B, int it) {
         bool any = false;
         for (int i = 0; i < x.size(); ++i) {
             if (B.hasL[i] || B.hasU[i]) {
@@ -256,8 +258,7 @@ public:
                 break;
             }
         }
-        if (!any)
-            return 0.0;
+        if (!any) return 0.0;
 
         const double base = get_attr_or<double>(cfg_, "ip_shift_bounds", 0.0);
         const double beta = get_attr_or<double>(cfg_, "ip_shift_beta", 0.25);
@@ -283,23 +284,21 @@ public:
                 const double gL = std::max(x[i] - B.lb[i], 0.0);
                 gap_sum += gL;
                 ++gap_count;
-                if (gL < near_tol)
-                    ++near_active_ct;
+                if (gL < near_tol) ++near_active_ct;
             }
             if (B.hasU[i]) {
                 const double gU = std::max(B.ub[i] - x[i], 0.0);
                 gap_sum += gU;
                 ++gap_count;
-                if (gU < near_tol)
-                    ++near_active_ct;
+                if (gU < near_tol) ++near_active_ct;
             }
         }
 
         const double frac_near =
             gap_count > 0 ? static_cast<double>(near_active_ct) / gap_count
                           : 0.0;
-        const double g_p10 =
-            gap_count > 0 ? gap_sum / gap_count : 1.0; // Approximate percentile
+        const double g_p10 = gap_count > 0 ? gap_sum / gap_count
+                                           : 1.0;  // Approximate percentile
 
         // μ-scaled nudging
         const double raise =
@@ -321,10 +320,9 @@ public:
     }
 
     // Adaptive RHS shift for equalities: returns Δr_E (same shape as cE)
-    std::optional<dvec> compute_equality_shift(const std::optional<spmat> &JE,
-                                               const std::optional<dvec> &cE) {
-        if (!cE || cE->size() == 0)
-            return std::nullopt;
+    std::optional<dvec> compute_equality_shift(const std::optional<spmat>& JE,
+                                               const std::optional<dvec>& cE) {
+        if (!cE || cE->size() == 0) return std::nullopt;
         if (JE && JE->rows() != cE->size()) {
             // shape mismatch: be conservative and skip
             return std::nullopt;
@@ -346,9 +344,9 @@ public:
 
         // Conditioning proxy from JE column norms (storage-agnostic)
         auto cs = colnorm_stats_(JE);
-        const double cond_proxy = (cs.mx / cs.mn); // ≥ 1
+        const double cond_proxy = (cs.mx / cs.mn);  // ≥ 1
         const double cond_term =
-            (cond_proxy - 1.0) / (cond_proxy + 1.0); // ∈ [0,1)
+            (cond_proxy - 1.0) / (cond_proxy + 1.0);  // ∈ [0,1)
 
         const double k_prog =
             get_attr_or<double>(cfg_, "ip_sigmaE_k_prog", 0.60);
@@ -370,7 +368,7 @@ public:
         const double max_shift_abs =
             get_attr_or<double>(cfg_, "ip_max_shift", 1e-2);
         const double max_shift_rel = get_attr_or<double>(
-            cfg_, "ip_max_shift_rel", 0.10); // fraction of |cE_i|
+            cfg_, "ip_max_shift_rel", 0.10);  // fraction of |cE_i|
         for (int i = 0; i < rE.size(); ++i) {
             const double cap_i =
                 std::max(max_shift_abs, max_shift_rel * std::abs((*cE)[i]));
@@ -379,7 +377,7 @@ public:
         return rE;
     }
 
-private:
+   private:
     nb::object cfg_;
 
     // EMA states + init flags
@@ -391,17 +389,16 @@ private:
     bool sigmaE_ema_init_ = false;
 
     double cE_prev_inf_ = 0.0;
-    int shift_stall_count_ = 0; // optional heuristic counter
+    int shift_stall_count_ = 0;  // optional heuristic counter
 
     struct ColNormStats {
         double mean{1.0}, mn{1.0}, mx{1.0};
     };
 
     // Storage-agnostic column norm stats
-    static ColNormStats colnorm_stats_(const std::optional<spmat> &J) {
+    static ColNormStats colnorm_stats_(const std::optional<spmat>& J) {
         ColNormStats s;
-        if (!J || J->nonZeros() == 0)
-            return s;
+        if (!J || J->nonZeros() == 0) return s;
 
         const int ncols = J->cols();
         std::vector<double> col_sq(ncols, 0.0);
@@ -410,7 +407,7 @@ private:
         for (int k = 0; k < J->outerSize(); ++k) {
             for (spmat::InnerIterator it(*J, k); it; ++it) {
                 const int c =
-                    it.col(); // true column index regardless of storage
+                    it.col();  // true column index regardless of storage
                 const double v = it.value();
                 col_sq[c] += v * v;
             }
@@ -433,16 +430,16 @@ private:
     }
 };
 
-#include "ip_soc.h"
+#include "Soc.h"
 // ---------- Mehrotra-Gondzio Solver with Fixes ----------
 class MehrotraGondzioSolver {
-public:
+   public:
     enum class BarrierStrategy {
-        Monotone,            // Standard Fiacco-McCormick
-        Mehrotra,            // Classic Mehrotra
-        MehrotraSafeguarded, // Mehrotra with corrector safeguards
-        Probing,             // KNITRO-style probing
-        QualityFunction      // Minimize quality function
+        Monotone,             // Standard Fiacco-McCormick
+        Mehrotra,             // Classic Mehrotra
+        MehrotraSafeguarded,  // Mehrotra with corrector safeguards
+        Probing,              // KNITRO-style probing
+        QualityFunction       // Minimize quality function
     };
 
     struct GondzioConfig {
@@ -476,19 +473,19 @@ public:
 
     AdvancedSOC advanced_soc_;
 
-    explicit MehrotraGondzioSolver(nb::object cfg, ModelC *model)
+    explicit MehrotraGondzioSolver(nb::object cfg, ModelC* model)
         : cfg_(cfg), model_(model) {
         load_config_();
         AdvancedSOC::Config soc_config;
     }
 
-    std::tuple<double, double, double, StepData>
-    solve(const spmat &W, const dvec &r_d, const std::optional<spmat> &JE,
-          const std::optional<dvec> &r_pE, const std::optional<spmat> &JI,
-          const std::optional<dvec> &r_pI, const dvec &s, const dvec &lam,
-          const dvec &zL, const dvec &zU, const Bounds &B, bool use_shifted,
-          double tau_shift, double bound_shift, double mu, double theta,
-          const Sigmas &Sg) {
+    std::tuple<double, double, double, StepData> solve(
+        const spmat& W, const dvec& r_d, const std::optional<spmat>& JE,
+        const std::optional<dvec>& r_pE, const std::optional<spmat>& JI,
+        const std::optional<dvec>& r_pI, const dvec& s, const dvec& lam,
+        const dvec& zL, const dvec& zU, const Bounds& B, bool use_shifted,
+        double tau_shift, double bound_shift, double mu, double theta,
+        const Sigmas& Sg) {
         IP_TIMER("solve()");
 
         // Mehrotra affine predictor with corrected bound handling
@@ -514,18 +511,11 @@ public:
             use_shifted, tau_shift, bound_shift, Sg, base_step);
         IP_LAP("Gondzio corrections");
 
-        // // SOC with constraint violation handling
-        // if (alpha_aff < config_.soc_threshold) {
-        //     final_step = apply_soc_corrections_(
-        //         W, JE, JI, s, lam, zL, zU, final_step, B, alpha_aff,
-        //         mu_target, use_shifted, tau_shift, bound_shift, Sg);
-        // }
-
         bool soc_applied = advanced_soc_.apply_soc(
             final_step, W, JE, JI, s, lam, zL, zU, B, alpha_aff, mu_target,
             use_shifted, tau_shift, bound_shift, Sg,
-            [this](const auto &W, const auto &rhs, const auto &JE,
-                   const auto &r_pE,
+            [this](const auto& W, const auto& rhs, const auto& JE,
+                   const auto& r_pE,
                    auto tag) { return solve_kkt_(W, rhs, JE, r_pE, tag); });
         IP_LAP("SOC step");
 
@@ -533,22 +523,22 @@ public:
     }
 
     void set_kkt_solver(
-        std::function<KKTResult(const spmat &, const dvec &,
-                                const std::optional<spmat> &,
-                                const std::optional<dvec> &, std::string_view)>
+        std::function<KKTResult(const spmat&, const dvec&,
+                                const std::optional<spmat>&,
+                                const std::optional<dvec>&, std::string_view)>
             solver) {
         solve_kkt_ = std::move(solver);
     }
 
     std::string solving_method = "ldl";
 
-private:
+   private:
     nb::object cfg_;
-    ModelC *model_;
+    ModelC* model_;
     GondzioConfig config_;
-    std::function<KKTResult(const spmat &, const dvec &,
-                            const std::optional<spmat> &,
-                            const std::optional<dvec> &, std::string_view)>
+    std::function<KKTResult(const spmat&, const dvec&,
+                            const std::optional<spmat>&,
+                            const std::optional<dvec>&, std::string_view)>
         solve_kkt_;
 
     // Cache for dx_aff to fix the affine mu calculation
@@ -590,19 +580,18 @@ private:
 
     // FIXED: Proper affine predictor with correct bound slack calculations
     std::tuple<double, double, double> compute_affine_predictor_(
-        const spmat &W, const dvec &r_d, const std::optional<spmat> &JE,
-        const std::optional<dvec> &r_pE, const std::optional<spmat> &JI,
-        const std::optional<dvec> &r_pI, const dvec &s, const dvec &lam,
-        const dvec &zL, const dvec &zU, const Bounds &B, bool use_shifted,
+        const spmat& W, const dvec& r_d, const std::optional<spmat>& JE,
+        const std::optional<dvec>& r_pE, const std::optional<spmat>& JI,
+        const std::optional<dvec>& r_pI, const dvec& s, const dvec& lam,
+        const dvec& zL, const dvec& zU, const Bounds& B, bool use_shifted,
         double tau_shift, double bound_shift, double mu, double theta) {
-
         const bool haveJE = JE && JE->rows() > 0 && JE->cols() > 0;
         auto res = solve_kkt_(W, -r_d, haveJE ? JE : std::nullopt,
                               (r_pE && r_pE->size() > 0) ? r_pE : std::nullopt,
                               solving_method);
 
         dvec dx_aff = std::move(res.dx);
-        dx_aff_cache_ = dx_aff; // Cache for later use in mu calculation
+        dx_aff_cache_ = dx_aff;  // Cache for later use in mu calculation
 
         const int mI = static_cast<int>(s.size());
         const int n = static_cast<int>(zL.size());
@@ -655,9 +644,9 @@ private:
     }
 
     // FIXED: Proper affine mu calculation with correct bound slack evolution
-    double compute_affine_mu_(const dvec &s, const dvec &ds, const dvec &lam,
-                              const dvec &dlam, const dvec &zL, const dvec &dzL,
-                              const dvec &zU, const dvec &dzU, const Bounds &B,
+    double compute_affine_mu_(const dvec& s, const dvec& ds, const dvec& lam,
+                              const dvec& dlam, const dvec& zL, const dvec& dzL,
+                              const dvec& zU, const dvec& dzU, const Bounds& B,
                               double alpha_aff, bool use_shifted,
                               double tau_shift, double bound_shift) const {
         double sum_parts = 0.0;
@@ -704,45 +693,45 @@ private:
     // Barrier parameter selection with multiple strategies
     double compute_barrier_parameter_(double mu, double mu_aff, double sigma,
                                       double alpha_aff, double theta,
-                                      const dvec &s, const dvec &lam,
-                                      const dvec &zL, const dvec &zU,
-                                      const Bounds &B) {
+                                      const dvec& s, const dvec& lam,
+                                      const dvec& zL, const dvec& zU,
+                                      const Bounds& B) {
         const double mu_min = get_attr_or<double>(cfg_, "ip_mu_min", 1e-12);
 
         switch (config_.barrier_strategy) {
-        case BarrierStrategy::Monotone:
-            return std::max(mu_min, 0.1 * mu);
+            case BarrierStrategy::Monotone:
+                return std::max(mu_min, 0.1 * mu);
 
-        case BarrierStrategy::Mehrotra:
-            return clamp_min(sigma * mu_aff, mu_min);
+            case BarrierStrategy::Mehrotra:
+                return clamp_min(sigma * mu_aff, mu_min);
 
-        case BarrierStrategy::MehrotraSafeguarded: {
-            double mu_target = clamp_min(sigma * mu_aff, mu_min);
-            // Safeguard: prevent too aggressive reduction
-            if (mu_target < config_.safeguard_threshold * mu &&
-                alpha_aff < 0.9) {
-                mu_target =
-                    std::max(mu_target, config_.safeguard_threshold * mu);
+            case BarrierStrategy::MehrotraSafeguarded: {
+                double mu_target = clamp_min(sigma * mu_aff, mu_min);
+                // Safeguard: prevent too aggressive reduction
+                if (mu_target < config_.safeguard_threshold * mu &&
+                    alpha_aff < 0.9) {
+                    mu_target =
+                        std::max(mu_target, config_.safeguard_threshold * mu);
+                }
+                return mu_target;
             }
-            return mu_target;
-        }
 
-        case BarrierStrategy::Probing: {
-            // KNITRO-style probing approach
-            double probe_factor = std::min(0.1, std::pow(alpha_aff, 2));
-            return clamp_min(probe_factor * mu, mu_min);
-        }
+            case BarrierStrategy::Probing: {
+                // KNITRO-style probing approach
+                double probe_factor = std::min(0.1, std::pow(alpha_aff, 2));
+                return clamp_min(probe_factor * mu, mu_min);
+            }
 
-        case BarrierStrategy::QualityFunction: {
-            // Minimize quality function approach
-            double quality =
-                compute_quality_function_(mu_aff, alpha_aff, theta);
-            double scaling = std::min(1.0, quality);
-            return clamp_min(scaling * sigma * mu_aff, mu_min);
-        }
+            case BarrierStrategy::QualityFunction: {
+                // Minimize quality function approach
+                double quality =
+                    compute_quality_function_(mu_aff, alpha_aff, theta);
+                double scaling = std::min(1.0, quality);
+                return clamp_min(scaling * sigma * mu_aff, mu_min);
+            }
 
-        default:
-            return clamp_min(sigma * mu_aff, mu_min);
+            default:
+                return clamp_min(sigma * mu_aff, mu_min);
         }
     }
 
@@ -753,7 +742,7 @@ private:
         const double mu_min = get_attr_or<double>(cfg_, "ip_mu_min", 1e-12);
 
         if (alpha_aff > 0.95) {
-            return 0.0; // Pure Newton step for good affine progress
+            return 0.0;  // Pure Newton step for good affine progress
         }
 
         // Standard Mehrotra formula
@@ -765,7 +754,7 @@ private:
             get_attr_or<double>(cfg_, "ip_theta_clip", 1e-2);
         if (theta > theta_clip) {
             sigma =
-                std::max(sigma, 0.5); // More centering for infeasible points
+                std::max(sigma, 0.5);  // More centering for infeasible points
         }
 
         // Problem conditioning adjustment
@@ -788,11 +777,11 @@ private:
     }
 
     // Step length computation with better numerics
-    double compute_step_length_(const dvec &s, const dvec &ds, const dvec &lam,
-                                const dvec &dlam, const dvec &zL,
-                                const dvec &dzL, const dvec &zU,
-                                const dvec &dzU, const dvec &dx,
-                                const Bounds &B) const {
+    double compute_step_length_(const dvec& s, const dvec& ds, const dvec& lam,
+                                const dvec& dlam, const dvec& zL,
+                                const dvec& dzL, const dvec& zU,
+                                const dvec& dzU, const dvec& dx,
+                                const Bounds& B) const {
         double alpha = 1.0;
         const double eps_div = std::max(consts::EPS_DIV, 1e-16);
 
@@ -838,13 +827,12 @@ private:
 
     // Centering step computation
     StepData compute_centering_step_(
-        const spmat &W, const dvec &r_d, const std::optional<spmat> &JE,
-        const std::optional<dvec> &r_pE, const std::optional<spmat> &JI,
-        const std::optional<dvec> &r_pI, const dvec &s, const dvec &lam,
-        const dvec &zL, const dvec &zU, const Bounds &B, double mu_target,
+        const spmat& W, const dvec& r_d, const std::optional<spmat>& JE,
+        const std::optional<dvec>& r_pE, const std::optional<spmat>& JI,
+        const std::optional<dvec>& r_pI, const dvec& s, const dvec& lam,
+        const dvec& zL, const dvec& zU, const Bounds& B, double mu_target,
         bool use_shifted, double tau_shift, double bound_shift,
-        const Sigmas &Sg) {
-
+        const Sigmas& Sg) {
         dvec rhs_x = -r_d;
         const int mI = static_cast<int>(s.size());
         const int n = static_cast<int>(zL.size());
@@ -922,8 +910,8 @@ private:
     }
 
     // Bound dual computation
-    std::pair<dvec, dvec> compute_bound_duals_(const dvec &dx, const dvec &zL,
-                                               const dvec &zU, const Bounds &B,
+    std::pair<dvec, dvec> compute_bound_duals_(const dvec& dx, const dvec& zL,
+                                               const dvec& zU, const Bounds& B,
                                                double bound_shift,
                                                bool use_shifted, double mu,
                                                bool use_mu) const {
@@ -950,13 +938,11 @@ private:
     }
 
     // Step length computation with separate primal/dual
-    std::pair<double, double>
-    compute_step_lengths_(const dvec &s, const dvec &ds, const dvec &lam,
-                          const dvec &dlam, const dvec &zL, const dvec &dzL,
-                          const dvec &zU, const dvec &dzU, const dvec &dx,
-                          const Bounds &B, double tau_pri,
-                          double tau_dual) const {
-
+    std::pair<double, double> compute_step_lengths_(
+        const dvec& s, const dvec& ds, const dvec& lam, const dvec& dlam,
+        const dvec& zL, const dvec& dzL, const dvec& zU, const dvec& dzU,
+        const dvec& dx, const Bounds& B, double tau_pri,
+        double tau_dual) const {
         double a_pri = 1.0, a_dual = 1.0;
         const double eps_div = std::max(consts::EPS_DIV, 1e-16);
 
@@ -1000,13 +986,12 @@ private:
 
     // Gondzio corrections with safeguards
     StepData apply_gondzio_corrections_(
-        const spmat &W, const dvec &r_d, const std::optional<spmat> &JE,
-        const std::optional<dvec> &r_pE, const std::optional<spmat> &JI,
-        const std::optional<dvec> &r_pI, const dvec &s, const dvec &lam,
-        const dvec &zL, const dvec &zU, const Bounds &B, double mu_target,
+        const spmat& W, const dvec& r_d, const std::optional<spmat>& JE,
+        const std::optional<dvec>& r_pE, const std::optional<spmat>& JI,
+        const std::optional<dvec>& r_pI, const dvec& s, const dvec& lam,
+        const dvec& zL, const dvec& zU, const Bounds& B, double mu_target,
         bool use_shifted, double tau_shift, double bound_shift,
-        const Sigmas &Sg, StepData base_step) {
-
+        const Sigmas& Sg, StepData base_step) {
         StepData result = std::move(base_step);
         const double tau_pri = get_attr_or<double>(cfg_, "ip_tau_pri", 0.995);
         const double tau_dual = get_attr_or<double>(cfg_, "ip_tau_dual", 0.995);
@@ -1027,8 +1012,7 @@ private:
             // Reduce corrections if not making progress
             if (centrality > prev_cent * 0.95) {
                 stall_count++;
-                if (stall_count > 2)
-                    max_corr = std::max(1, max_corr - 1);
+                if (stall_count > 2) max_corr = std::max(1, max_corr - 1);
             } else {
                 stall_count = 0;
                 if (centrality < 0.1)
@@ -1043,8 +1027,7 @@ private:
                 std::min(result.alpha_pri, result.alpha_dual);
             const double centrality_current = result.centrality_measure;
 
-            if (!should_apply_gondzio_(centrality_current, alpha_max, k))
-                break;
+            if (!should_apply_gondzio_(centrality_current, alpha_max, k)) break;
 
             auto [rhs_corr_x, rhs_corr_s] = compute_correction_rhs_(
                 s, lam, result.ds, result.dlam, zL, zU, result.dzL, result.dzU,
@@ -1063,14 +1046,12 @@ private:
                 double scale =
                     config_.safeguard_threshold * base_norm / corr_norm;
                 corr_res.dx *= scale;
-                if (corr_res.dy.size() > 0)
-                    corr_res.dy *= scale;
+                if (corr_res.dy.size() > 0) corr_res.dy *= scale;
             }
 
             // Apply correction
             result.dx += corr_res.dx;
-            if (JE && corr_res.dy.size() > 0)
-                result.dnu += corr_res.dy;
+            if (JE && corr_res.dy.size() > 0) result.dnu += corr_res.dy;
 
             // Recompute slack and multiplier steps
             const int mI = static_cast<int>(s.size());
@@ -1099,8 +1080,7 @@ private:
 
             // Early termination if correction doesn't help
             double new_alpha = std::min(result.alpha_pri, result.alpha_dual);
-            if (new_alpha < alpha_max * 0.95)
-                break;
+            if (new_alpha < alpha_max * 0.95) break;
         }
 
         return result;
@@ -1108,12 +1088,11 @@ private:
 
     // Centrality measure with better numerics
     double compute_centrality_measure_(
-        const dvec &s, const dvec &lam, const dvec &ds, const dvec &dlam,
-        const dvec &zL, const dvec &zU, const dvec &dzL, const dvec &dzU,
-        const dvec &dx, const Bounds &B, double alpha_pri, double alpha_dual,
+        const dvec& s, const dvec& lam, const dvec& ds, const dvec& dlam,
+        const dvec& zL, const dvec& zU, const dvec& dzL, const dvec& dzU,
+        const dvec& dx, const Bounds& B, double alpha_pri, double alpha_dual,
         double mu_target, bool use_shifted, double tau_shift,
         double bound_shift) const {
-
         std::vector<double> ratios;
         ratios.reserve(s.size() + zL.size() + zU.size());
 
@@ -1155,8 +1134,7 @@ private:
             }
         }
 
-        if (ratios.empty())
-            return 1.0;
+        if (ratios.empty()) return 1.0;
 
         // Compute robust centrality measure
         std::sort(ratios.begin(), ratios.end());
@@ -1181,8 +1159,7 @@ private:
                                centrality_measure < config_.gamma_a) &&
                               alpha_max >= config_.tau_min;
 
-        if (!basic_criteria)
-            return false;
+        if (!basic_criteria) return false;
 
         // Additional criteria for later corrections
         if (correction_index > 0) {
@@ -1198,12 +1175,12 @@ private:
         return true;
     }
     std::pair<dvec, dvec> compute_correction_rhs_(
-        const dvec &s, const dvec &lam, const dvec &ds, const dvec &dlam,
-        const dvec &zL, const dvec &zU, const dvec &dzL, const dvec &dzU,
-        const dvec &dx, const Bounds &B, const spmat &JI, double alpha_pri,
+        const dvec& s, const dvec& lam, const dvec& ds, const dvec& dlam,
+        const dvec& zL, const dvec& zU, const dvec& dzL, const dvec& dzU,
+        const dvec& dx, const Bounds& B, const spmat& JI, double alpha_pri,
         double alpha_dual, double mu_target, double centrality_measure,
         bool use_shifted, double tau_shift, double bound_shift,
-        const Sigmas &Sg, int correction_index) const {
+        const Sigmas& Sg, int correction_index) const {
         const int n = static_cast<int>(dx.size());
         const int mI = static_cast<int>(s.size());
 
@@ -1221,8 +1198,8 @@ private:
         // Initialize result vectors without zero-initialization
         dvec rhs_x(n);
         dvec rhs_s(mI);
-        rhs_x.setZero(); // Only if necessary; consider removing if all elements
-                         // are assigned
+        rhs_x.setZero();  // Only if necessary; consider removing if all
+                          // elements are assigned
         rhs_s.setZero();
 
         // Slack corrections (vectorized where possible)
@@ -1276,15 +1253,14 @@ private:
         return {rhs_x, rhs_s};
     }
 
-public:
-    double
-    average_complementarity(const dvec &s,   // size mI
-                            const dvec &lam, // size mI
-                            const dvec &zL,  // size n
-                            const dvec &zU,  // size n
-                            const Bounds &B, // hasL/hasU, sL/sU at current x
-                            bool use_shifted, double tau_shift,
-                            double bound_shift) {
+   public:
+    double average_complementarity(
+        const dvec& s,    // size mI
+        const dvec& lam,  // size mI
+        const dvec& zL,   // size n
+        const dvec& zU,   // size n
+        const Bounds& B,  // hasL/hasU, sL/sU at current x
+        bool use_shifted, double tau_shift, double bound_shift) {
         double sum = 0.0;
         int cnt = 0;
 

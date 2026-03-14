@@ -31,19 +31,19 @@ struct FilterConfig {
 };
 
 class Filter {
-private:
+   private:
     struct Entry {
         double theta_neg;
         double f;
 
         // Comparison for heap operations (optimize frequent comparisons)
-        bool operator<(const Entry &other) const noexcept {
+        bool operator<(const Entry& other) const noexcept {
             return theta_neg < other.theta_neg;
         }
     };
 
-public:
-    explicit Filter(const FilterConfig &cfg) : cfg_(cfg) {
+   public:
+    explicit Filter(const FilterConfig& cfg) : cfg_(cfg) {
         cfg_.validate();
         reset();
     }
@@ -51,7 +51,7 @@ public:
     void reset() {
         entries_.clear();
         entries_.reserve(cfg_.filter_max_size +
-                         1); // Pre-allocate for efficiency
+                         1);  // Pre-allocate for efficiency
 
         // Sentinel entry: (theta_max = 10 * filter_theta_min, f = -inf)
         entries_.emplace_back(Entry{-(cfg_.filter_theta_min * 10.0),
@@ -62,9 +62,9 @@ public:
         initial_f_.reset();
     }
 
-    [[nodiscard]] bool
-    is_acceptable(double theta, double f,
-                  std::optional<double> trust_radius = std::nullopt) const {
+    [[nodiscard]] bool is_acceptable(
+        double theta, double f,
+        std::optional<double> trust_radius = std::nullopt) const {
         // Fast early exits
         if (!std::isfinite(theta) || !std::isfinite(f) || theta < 0.0) {
             return false;
@@ -79,7 +79,7 @@ public:
         const double eps = 1e-8 * std::max(theta_scale, f_scale);
 
         // Check against all filter entries
-        for (const auto &e : entries_) {
+        for (const auto& e : entries_) {
             const double t_i = -e.theta_neg;
 
             // Forbidden region check
@@ -90,9 +90,9 @@ public:
                 const double swf = cfg_.switch_f * f_scale;
 
                 if (theta < swθ || f < e.f - swf) {
-                    continue; // Rescue successful
+                    continue;  // Rescue successful
                 }
-                return false; // In forbidden region, no rescue
+                return false;  // In forbidden region, no rescue
             }
         }
 
@@ -107,10 +107,8 @@ public:
         }
 
         // Initialize scales on first call
-        if (!initial_theta_)
-            initial_theta_ = std::max(theta, 1e-8);
-        if (!initial_f_)
-            initial_f_ = std::max(std::abs(f), 1e-8);
+        if (!initial_theta_) initial_theta_ = std::max(theta, 1e-8);
+        if (!initial_f_) initial_f_ = std::max(std::abs(f), 1e-8);
 
         const auto [gθ, gf] = compute_margins_(trust_radius);
         const double eps = 1e-8 * std::max(*initial_theta_, *initial_f_);
@@ -119,7 +117,7 @@ public:
         std::vector<Entry> kept;
         kept.reserve(entries_.size() + 1);
 
-        for (const auto &e : entries_) {
+        for (const auto& e : entries_) {
             const double t_i = -e.theta_neg;
 
             // Check if new point dominates this entry
@@ -127,7 +125,7 @@ public:
                                           (f < e.f - gf * theta + eps);
 
             if (!dominated_by_new) {
-                return false; // New point is dominated, reject
+                return false;  // New point is dominated, reject
             }
 
             kept.push_back(e);
@@ -137,7 +135,7 @@ public:
         kept.emplace_back(Entry{-theta, f});
 
         // Maintain heap property and size limit
-        auto comp = [](const Entry &a, const Entry &b) {
+        auto comp = [](const Entry& a, const Entry& b) {
             return a.theta_neg > b.theta_neg;
         };
 
@@ -158,7 +156,7 @@ public:
         std::vector<std::pair<double, double>> out;
         out.reserve(entries_.size());
 
-        for (const auto &e : entries_) {
+        for (const auto& e : entries_) {
             out.emplace_back(-e.theta_neg, e.f);
         }
 
@@ -169,16 +167,16 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
     [[nodiscard]] std::size_t iteration() const noexcept { return iter_; }
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
-    [[nodiscard]] const FilterConfig &config() const noexcept { return cfg_; }
+    [[nodiscard]] const FilterConfig& config() const noexcept { return cfg_; }
 
-private:
-    [[nodiscard]] std::pair<double, double>
-    compute_margins_(std::optional<double> trust_radius) const {
+   private:
+    [[nodiscard]] std::pair<double, double> compute_margins_(
+        std::optional<double> trust_radius) const {
         // Find maximum theta in filter
         double theta_max = 1.0;
         if (!entries_.empty()) {
             theta_max = 0.0;
-            for (const auto &e : entries_) {
+            for (const auto& e : entries_) {
                 theta_max = std::max(theta_max, -e.theta_neg);
             }
         }

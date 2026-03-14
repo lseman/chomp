@@ -52,27 +52,27 @@ struct PIQPResult {
     std::string status;
     int iterations = 0;
     Vector x;
-    Vector s; // slacks
-    Vector y; // λ = equality multipliers
-    Vector z; // μ = inequality multipliers
+    Vector s;  // slacks
+    Vector y;  // λ = equality multipliers
+    Vector z;  // μ = inequality multipliers
 
     double obj_val = 0.0;
     PIQPResiduals residuals;
 };
 
 class PIQPSolver {
-public:
-    explicit PIQPSolver(const PIQPSettings &settings = PIQPSettings{})
+   public:
+    explicit PIQPSolver(const PIQPSettings& settings = PIQPSettings{})
         : settings_(settings) {}
 
     // Sparse-only setup
-    PIQPSolver &setup(const SparseMatrix &P, const Vector &q,
-                      const std::optional<SparseMatrix> &A = std::nullopt,
-                      const std::optional<Vector> &b = std::nullopt,
-                      const std::optional<SparseMatrix> &G = std::nullopt,
-                      const std::optional<Vector> &h = std::nullopt) {
+    PIQPSolver& setup(const SparseMatrix& P, const Vector& q,
+                      const std::optional<SparseMatrix>& A = std::nullopt,
+                      const std::optional<Vector>& b = std::nullopt,
+                      const std::optional<SparseMatrix>& G = std::nullopt,
+                      const std::optional<Vector>& h = std::nullopt) {
         n_ = static_cast<int>(q.size());
-        P_ = P; // assumed symmetric; Ψ uses lower triangle via LLT
+        P_ = P;  // assumed symmetric; Ψ uses lower triangle via LLT
         q_ = q;
 
         if (A && b) {
@@ -176,21 +176,16 @@ public:
             const double inv_delta = (p_ > 0) ? (1.0 / delta_) : 0.0;
 
             // Reduced weights W = diag( (s./z + δ)^{-1} )
-            if (m_ > 0)
-                lambda_weights = buildReducedWeights(s_, z_);
+            if (m_ > 0) lambda_weights = buildReducedWeights(s_, z_);
 
             // Cache Ax, Gx
-            if (p_ > 0)
-                Ax.noalias() = A_ * x_;
-            if (m_ > 0)
-                Gx.noalias() = G_ * x_;
+            if (p_ > 0) Ax.noalias() = A_ * x_;
+            if (m_ > 0) Gx.noalias() = G_ * x_;
 
             // -------- Affine RHS --------
             rx_aff.noalias() = -(P_ * x_ + q_ + rho_ * (x_ - xi_));
-            if (p_ > 0)
-                rx_aff.noalias() -= A_.transpose() * y_;
-            if (m_ > 0)
-                rx_aff.noalias() -= G_.transpose() * z_;
+            if (p_ > 0) rx_aff.noalias() -= A_.transpose() * y_;
+            if (m_ > 0) rx_aff.noalias() -= G_.transpose() * z_;
 
             if (p_ > 0)
                 ry_aff = -(Ax + delta_ * (lambda_ - y_) - b_);
@@ -239,8 +234,7 @@ public:
             // -------- Take step --------
             const double alpha = fractionToBoundary(s_, ds_cor, z_, dz_cor);
             x_ += alpha * dx_cor;
-            if (p_ > 0)
-                y_ += alpha * dy_cor;
+            if (p_ > 0) y_ += alpha * dy_cor;
             if (m_ > 0) {
                 s_ += alpha * ds_cor;
                 z_ += alpha * dz_cor;
@@ -263,10 +257,8 @@ public:
                                              std::max(std::abs(sz_prev), 1e-30);
 
             if (p_new <= 0.95 * p_prev) {
-                if (p_ > 0)
-                    lambda_ = y_;
-                if (m_ > 0)
-                    nu_ = z_;
+                if (p_ > 0) lambda_ = y_;
+                if (m_ > 0) nu_ = z_;
                 delta_ = (1.0 - r) * delta_;
             } else {
                 delta_ = (1.0 - r / 3.0) * delta_;
@@ -311,12 +303,9 @@ public:
         R.y = y_;
         R.z = z_;
         R.obj_val = obj_val;
-        if (m_ > 0)
-            R.s = s_;
-        if (p_ > 0)
-            R.y = y_;
-        if (m_ > 0)
-            R.z = z_;
+        if (m_ > 0) R.s = s_;
+        if (p_ > 0) R.y = y_;
+        if (m_ > 0) R.z = z_;
         R.obj_val = obj_val;
         R.residuals.eq_inf =
             (p_ > 0) ? r_eq_final.lpNorm<Eigen::Infinity>() : 0.0;
@@ -330,22 +319,22 @@ public:
     }
 
     // Getters
-    const PIQPSettings &getSettings() const { return settings_; }
-    const Vector &getX() const { return x_; }
-    const Vector &getS() const { return s_; }
-    const Vector &getY() const { return y_; }
-    const Vector &getZ() const { return z_; }
+    const PIQPSettings& getSettings() const { return settings_; }
+    const Vector& getX() const { return x_; }
+    const Vector& getS() const { return s_; }
+    const Vector& getY() const { return y_; }
+    const Vector& getZ() const { return z_; }
     int getIterations() const { return iter_; }
-    const std::string &getStatus() const { return status_; }
+    const std::string& getStatus() const { return status_; }
 
-public:
+   public:
     // ---- Warm start API ----
     // Set initial iterates; any std::nullopt leaves current values in place.
     // If copy_to_prox_centers==true, also sets (xi, lambda, nu) to the same.
-    PIQPSolver &warm_start(const std::optional<Vector> &x = std::nullopt,
-                           const std::optional<Vector> &y = std::nullopt,
-                           const std::optional<Vector> &z = std::nullopt,
-                           const std::optional<Vector> &s = std::nullopt,
+    PIQPSolver& warm_start(const std::optional<Vector>& x = std::nullopt,
+                           const std::optional<Vector>& y = std::nullopt,
+                           const std::optional<Vector>& z = std::nullopt,
+                           const std::optional<Vector>& s = std::nullopt,
                            bool copy_to_prox_centers = true) {
         if (x) {
             assert(int(x->size()) == n_);
@@ -365,18 +354,16 @@ public:
         }
         if (copy_to_prox_centers) {
             xi_ = x_;
-            if (p_ > 0)
-                lambda_ = y_;
-            if (m_ > 0)
-                nu_ = z_;
+            if (p_ > 0) lambda_ = y_;
+            if (m_ > 0) nu_ = z_;
         }
         return *this;
     }
 
     // Explicit prox-center warm start (does not touch x,y,z,s)
-    PIQPSolver &set_prox_centers(const std::optional<Vector> &xi,
-                                 const std::optional<Vector> &lambda,
-                                 const std::optional<Vector> &nu) {
+    PIQPSolver& set_prox_centers(const std::optional<Vector>& xi,
+                                 const std::optional<Vector>& lambda,
+                                 const std::optional<Vector>& nu) {
         if (xi) {
             assert(int(xi->size()) == n_);
             xi_ = *xi;
@@ -394,19 +381,17 @@ public:
 
     // Convenience: prime next solve with the solver's current iterates.
     // (also primes prox centers unless also_prox=false)
-    PIQPSolver &use_last_as_warm_start(bool also_prox = true) {
+    PIQPSolver& use_last_as_warm_start(bool also_prox = true) {
         if (also_prox) {
             xi_ = x_;
-            if (p_ > 0)
-                lambda_ = y_;
-            if (m_ > 0)
-                nu_ = z_;
+            if (p_ > 0) lambda_ = y_;
+            if (m_ > 0) nu_ = z_;
         }
         return *this;
     }
 
     // Quick knobs to reset proximal penalties before a new solve
-    PIQPSolver &set_prox_params(double rho, double delta) {
+    PIQPSolver& set_prox_params(double rho, double delta) {
         rho_ = std::max(rho, settings_.rho_floor);
         delta_ = std::max(delta, settings_.delta_floor);
         return *this;
@@ -415,13 +400,13 @@ public:
     // ---- Numeric update for SQP loops (pattern-stable fast path) ----
     // Update values of P,q,A,b,G,h. If same_pattern=true (default), we REUSE
     // the analyzed pattern of Ψ; else we rebuild it (one-time analyzePattern).
-    PIQPSolver &
-    update_values(const SparseMatrix &P, const Vector &q,
-                  const std::optional<SparseMatrix> &A = std::nullopt,
-                  const std::optional<Vector> &b = std::nullopt,
-                  const std::optional<SparseMatrix> &G = std::nullopt,
-                  const std::optional<Vector> &h = std::nullopt,
-                  bool same_pattern = true) {
+    PIQPSolver& update_values(
+        const SparseMatrix& P, const Vector& q,
+        const std::optional<SparseMatrix>& A = std::nullopt,
+        const std::optional<Vector>& b = std::nullopt,
+        const std::optional<SparseMatrix>& G = std::nullopt,
+        const std::optional<Vector>& h = std::nullopt,
+        bool same_pattern = true) {
         assert(int(q.size()) == n_);
         P_ = P;
         q_ = q;
@@ -465,14 +450,15 @@ public:
         return *this;
     }
 
-private:
+   private:
     void resize_iterates_if_needed_() {
         if (int(x_.size()) != n_) x_.setZero(n_);
         if (p_ > 0) {
             if (int(y_.size()) != p_) y_.setZero(p_);
             if (int(lambda_.size()) != p_) lambda_.setZero(p_);
         } else {
-            y_.resize(0); lambda_.resize(0);
+            y_.resize(0);
+            lambda_.resize(0);
         }
         if (m_ > 0) {
             if (int(s_.size()) != m_) s_ = Vector::Constant(m_, 1.0);
@@ -481,7 +467,9 @@ private:
             z_ = z_.array().max(settings_.min_slack);
             if (int(nu_.size()) != m_) nu_ = z_;
         } else {
-            s_.resize(0); z_.resize(0); nu_.resize(0);
+            s_.resize(0);
+            z_.resize(0);
+            nu_.resize(0);
         }
         if (int(xi_.size()) != n_) xi_ = x_;
     }
@@ -499,7 +487,7 @@ private:
     Vector q_orig_, b_orig_, h_orig_;
 
     // precomputed
-    SparseMatrix AtA_; // AᵀA (pattern/values fixed)
+    SparseMatrix AtA_;  // AᵀA (pattern/values fixed)
 
     // iterates
     Vector x_, s_, y_, z_;
@@ -513,7 +501,7 @@ private:
     // ---------- Ψ factorization with analyzePattern ----------
     bool psi_symbolic_done_ = false;
     Eigen::SimplicialLLT<SparseMatrix, Eigen::Lower> chol_;
-    SparseMatrix psi_pattern_; // pattern-only matrix (no numerical values)
+    SparseMatrix psi_pattern_;  // pattern-only matrix (no numerical values)
 
     void buildPsiPattern_() {
         // Pattern = P ∪ AᵀA ∪ GᵀG ∪ I
@@ -536,19 +524,16 @@ private:
         T.reserve(P_.nonZeros() + AtA_.nonZeros() + GtG.nonZeros() + n_);
 
         // helper to append pattern (values = 1.0)
-        auto push_pattern = [&](const SparseMatrix &M) {
+        auto push_pattern = [&](const SparseMatrix& M) {
             for (int k = 0; k < M.outerSize(); ++k) {
                 for (SparseMatrix::InnerIterator it(M, k); it; ++it) {
                     T.emplace_back(it.row(), it.col(), 1.0);
                 }
             }
         };
-        if (P_.rows() == n_)
-            push_pattern(P_);
-        if (AtA_.rows() == n_)
-            push_pattern(AtA_);
-        if (GtG.rows() == n_)
-            push_pattern(GtG);
+        if (P_.rows() == n_) push_pattern(P_);
+        if (AtA_.rows() == n_) push_pattern(AtA_);
+        if (GtG.rows() == n_) push_pattern(GtG);
         push_pattern(I);
 
         psi_pattern_.setFromTriplets(T.begin(), T.end());
@@ -561,10 +546,10 @@ private:
 
     // Assemble numeric Ψ and solve reduced Newton system with reused symbolic
     // factor
-    void solvePsiNewton_(const Vector &rx, const Vector &ry, const Vector &rz,
-                         const Vector &rs, const Vector &lambda_weights,
-                         double inv_delta, Vector &dx, Vector &dy, Vector &dz,
-                         Vector &ds) {
+    void solvePsiNewton_(const Vector& rx, const Vector& ry, const Vector& rz,
+                         const Vector& rs, const Vector& lambda_weights,
+                         double inv_delta, Vector& dx, Vector& dy, Vector& dz,
+                         Vector& ds) {
         // ---- assemble Ψ numerically (pattern fixed) ----
         SparseMatrix Psi(n_, n_);
         Psi = P_;
@@ -573,10 +558,8 @@ private:
         {
             SparseMatrix I(n_, n_);
             I.setIdentity();
-            if (rho_ != 0.0)
-                Psi += rho_ * I;
-            if (settings_.reg_eps != 0.0)
-                Psi += settings_.reg_eps * I;
+            if (rho_ != 0.0) Psi += rho_ * I;
+            if (settings_.reg_eps != 0.0) Psi += settings_.reg_eps * I;
         }
 
         // + (1/δ) AᵀA
@@ -639,10 +622,10 @@ private:
     }
 
     // Core pieces used by termination and reporting
-    std::pair<Vector, Vector> primalBlock(const Vector *x = nullptr,
-                                          const Vector *s = nullptr) const {
-        const Vector &xu = x ? *x : x_;
-        const Vector &su = s ? *s : s_;
+    std::pair<Vector, Vector> primalBlock(const Vector* x = nullptr,
+                                          const Vector* s = nullptr) const {
+        const Vector& xu = x ? *x : x_;
+        const Vector& su = s ? *s : s_;
         Vector r_eq((p_ > 0) ? p_ : 0), r_in((m_ > 0) ? m_ : 0);
         if (p_ > 0)
             r_eq = A_ * xu - b_;
@@ -655,26 +638,26 @@ private:
         return {r_eq, r_in};
     }
 
-    Vector dualStationarity(const Vector *x = nullptr,
-                            const Vector *y = nullptr,
-                            const Vector *z = nullptr) const {
-        const Vector &xu = x ? *x : x_;
+    Vector dualStationarity(const Vector* x = nullptr,
+                            const Vector* y = nullptr,
+                            const Vector* z = nullptr) const {
+        const Vector& xu = x ? *x : x_;
         Vector r_stat = P_ * xu + q_;
         if (p_ > 0) {
-            const Vector &yu = y ? *y : y_;
+            const Vector& yu = y ? *y : y_;
             r_stat.noalias() += A_.transpose() * yu;
         }
         if (m_ > 0) {
-            const Vector &zu = z ? *z : z_;
+            const Vector& zu = z ? *z : z_;
             r_stat.noalias() += G_.transpose() * zu;
         }
         return r_stat;
     }
 
-    std::pair<double, double> measuresPkDk(const Vector *x = nullptr,
-                                           const Vector *y = nullptr,
-                                           const Vector *z = nullptr,
-                                           const Vector *s = nullptr) const {
+    std::pair<double, double> measuresPkDk(const Vector* x = nullptr,
+                                           const Vector* y = nullptr,
+                                           const Vector* z = nullptr,
+                                           const Vector* s = nullptr) const {
         auto [r_eq, r_in] = primalBlock(x, s);
         Vector r_stat = dualStationarity(x, y, z);
         double p_k = 0.0;
@@ -687,11 +670,11 @@ private:
         return {p_k, d_k};
     }
 
-    double dualityGap(const Vector *x = nullptr, const Vector *y = nullptr,
-                      const Vector *z = nullptr) const {
-        const Vector &xu = x ? *x : x_;
-        const Vector &yu = y ? *y : y_;
-        const Vector &zu = z ? *z : z_;
+    double dualityGap(const Vector* x = nullptr, const Vector* y = nullptr,
+                      const Vector* z = nullptr) const {
+        const Vector& xu = x ? *x : x_;
+        const Vector& yu = y ? *y : y_;
+        const Vector& zu = z ? *z : z_;
         double t1 = (n_ > 0) ? xu.dot(P_ * xu) : 0.0;
         double t2 = (n_ > 0) ? q_.dot(xu) : 0.0;
         double t3 = (p_ > 0) ? b_.dot(yu) : 0.0;
@@ -705,16 +688,12 @@ private:
 
         // primal
         double lhs_pri = 0.0;
-        if (p_ > 0)
-            lhs_pri = std::max(lhs_pri, r_eq.lpNorm<Eigen::Infinity>());
-        if (m_ > 0)
-            lhs_pri = std::max(lhs_pri, r_in.lpNorm<Eigen::Infinity>());
+        if (p_ > 0) lhs_pri = std::max(lhs_pri, r_eq.lpNorm<Eigen::Infinity>());
+        if (m_ > 0) lhs_pri = std::max(lhs_pri, r_in.lpNorm<Eigen::Infinity>());
 
         Vector Ax((p_ > 0) ? p_ : 0), Gx((m_ > 0) ? m_ : 0);
-        if (p_ > 0)
-            Ax = A_ * x_;
-        if (m_ > 0)
-            Gx = G_ * x_;
+        if (p_ > 0) Ax = A_ * x_;
+        if (m_ > 0) Gx = G_ * x_;
 
         double scale_pri = 1.0;
         if (p_ > 0) {
@@ -760,10 +739,8 @@ private:
             scale_gap = std::max(scale_gap, std::abs(x_.dot(Px)));
             scale_gap = std::max(scale_gap, std::abs(q_.dot(x_)));
         }
-        if (p_ > 0)
-            scale_gap = std::max(scale_gap, std::abs(b_.dot(y_)));
-        if (m_ > 0)
-            scale_gap = std::max(scale_gap, std::abs(h_.dot(z_)));
+        if (p_ > 0) scale_gap = std::max(scale_gap, std::abs(b_.dot(y_)));
+        if (m_ > 0) scale_gap = std::max(scale_gap, std::abs(h_.dot(z_)));
         const double rhs_gap =
             settings_.eps_abs + settings_.eps_rel * scale_gap;
 
@@ -778,27 +755,23 @@ private:
         return ok;
     }
 
-    Vector buildReducedWeights(const Vector &s, const Vector &z) const {
-        if (m_ == 0)
-            return Vector(0);
-        Vector w = s.cwiseQuotient(z);              // s ./ z
-        return (w.array() + delta_).cwiseInverse(); // 1 ./ (s./z + δ)
+    Vector buildReducedWeights(const Vector& s, const Vector& z) const {
+        if (m_ == 0) return Vector(0);
+        Vector w = s.cwiseQuotient(z);               // s ./ z
+        return (w.array() + delta_).cwiseInverse();  // 1 ./ (s./z + δ)
     }
 
-    double fractionToBoundary(const Vector &s, const Vector &ds,
-                              const Vector &z, const Vector &dz) const {
-        if (m_ == 0)
-            return 1.0;
+    double fractionToBoundary(const Vector& s, const Vector& ds,
+                              const Vector& z, const Vector& dz) const {
+        if (m_ == 0) return 1.0;
         double alpha = 1.0;
         const double tau = settings_.tau;
         for (int i = 0; i < m_; ++i)
-            if (ds(i) < 0.0)
-                alpha = std::min(alpha, -tau * s(i) / ds(i));
+            if (ds(i) < 0.0) alpha = std::min(alpha, -tau * s(i) / ds(i));
         for (int i = 0; i < m_; ++i)
-            if (dz(i) < 0.0)
-                alpha = std::min(alpha, -tau * z(i) / dz(i));
+            if (dz(i) < 0.0) alpha = std::min(alpha, -tau * z(i) / dz(i));
         return std::max(0.0, std::min(1.0, alpha));
     }
 };
 
-} // namespace piqp
+}  // namespace piqp

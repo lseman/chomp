@@ -1,9 +1,5 @@
 #pragma once
 
-#include "ADGraph.h"
-#include "Definitions.h"
-#include "Variable.h"
-
 #include <algorithm>
 #include <limits>
 #include <map> // <-- needed for std::map in getVariables()
@@ -13,24 +9,26 @@
 #include <utility>
 #include <vector>
 
+#include "ADGraph.h"
+#include "Definitions.h"
+#include "Variable.h"
+
 class Expression;
 using ExpressionPtr = std::shared_ptr<Expression>;
-using VariablePtr = std::shared_ptr<Variable>;
-using ADGraphPtr = std::shared_ptr<ADGraph>;
+using VariablePtr   = std::shared_ptr<Variable>;
+using ADGraphPtr    = std::shared_ptr<ADGraph>;
 
 class Expression : public std::enable_shared_from_this<Expression> {
 public:
     ADGraphPtr graph{};
-    ADNodePtr node{};
-    ADNodePtr rootNode{};
+    ADNodePtr  node{};
+    ADNodePtr  rootNode{};
 
-    
     // Construct with graph (creates an empty node placeholder)
     explicit Expression(const ADGraphPtr &graphIn);
 
     // Constant expression (placeholder variant)
-    explicit Expression(double /*constante*/,
-                        const ADGraphPtr &graphIn = nullptr)
+    explicit Expression(double /*constante*/, const ADGraphPtr &graphIn = nullptr)
         : graph(graphIn ? graphIn : std::make_shared<ADGraph>()) {
         initializeNode();
     }
@@ -44,12 +42,10 @@ public:
     }
 
     // From a VariablePtr: build a Var node with meta (name/value/order/bounds)
-    Expression(const VariablePtr &variable, double /*coeff*/ = 1.0,
-               const ADGraphPtr &graphIn = nullptr)
+    Expression(const VariablePtr &variable, double /*coeff*/ = 1.0, const ADGraphPtr &graphIn = nullptr)
         : graph(graphIn ? graphIn : std::make_shared<ADGraph>()) {
-        initializeNode(Operator::Var, variable->getName(), variable->getValue(),
-                       variable->getOrder(), variable->getLowerBound(),
-                       variable->getUpperBound());
+        initializeNode(Operator::Var, variable->getName(), variable->getValue(), variable->getOrder(),
+                       variable->getLowerBound(), variable->getUpperBound());
         graph->nodeVariables[variable->getName()] = node;
     }
 
@@ -65,9 +61,8 @@ public:
 
     // Deep-copy ctor (optional)
     Expression(const Expression &other)
-        : std::enable_shared_from_this<Expression>(other),
-          graph(std::make_shared<ADGraph>(*other.graph)), node(other.node),
-          rootNode(other.rootNode), expVariables(other.expVariables) {}
+        : std::enable_shared_from_this<Expression>(other), graph(std::make_shared<ADGraph>(*other.graph)),
+          node(other.node), rootNode(other.rootNode), expVariables(other.expVariables) {}
 
     // -------- calculus APIs --------
     std::string toString() {
@@ -81,36 +76,30 @@ public:
     }
 
     // Dense Hessian via n HVPs (column-by-column)
-    std::unordered_map<std::string, std::unordered_map<std::string, double>>
-    computeHessian() {
+    std::unordered_map<std::string, std::unordered_map<std::string, double>> computeHessian() {
         prepare();
 
-        std::unordered_map<std::string, std::unordered_map<std::string, double>>
-            H;
-        if (!rootNode)
-            return H;
+        std::unordered_map<std::string, std::unordered_map<std::string, double>> H;
+        if (!rootNode) return H;
 
         graph->initializeNodeVariables();
         const int n = static_cast<int>(graph->nodeVariables.size());
-        if (n == 0)
-            return H;
+        if (n == 0) return H;
 
         std::vector<std::string> idx2name(n);
         for (auto &kv : graph->nodeVariables) {
-            if (kv.second && kv.second->order >= 0 && kv.second->order < n) {
-                idx2name[kv.second->order] = kv.first;
-            }
+            if (kv.second && kv.second->order >= 0 && kv.second->order < n) { idx2name[kv.second->order] = kv.first; }
         }
 
         for (int j = 0; j < n; ++j) {
             std::vector<double> e(n, 0.0);
-            e[j] = 1.0;
+            e[j]     = 1.0;
             auto col = graph->hessianVectorProduct(rootNode, e);
 
             const std::string &cj = idx2name[j];
             for (int i = 0; i < n; ++i) {
                 const std::string &ri = idx2name[i];
-                H[ri][cj] = (i < static_cast<int>(col.size())) ? col[i] : 0.0;
+                H[ri][cj]             = (i < static_cast<int>(col.size())) ? col[i] : 0.0;
             }
         }
         return H;
@@ -118,10 +107,9 @@ public:
 
     std::vector<std::pair<std::string, double>> getGradient() {
         std::vector<std::pair<std::string, double>> out;
-        auto m = computeGradient();
+        auto                                        m = computeGradient();
         out.reserve(m.size());
-        for (auto &kv : m)
-            out.emplace_back(kv.first, kv.second);
+        for (auto &kv : m) out.emplace_back(kv.first, kv.second);
         return out;
     }
 
@@ -149,9 +137,7 @@ public:
         prepare();
         for (auto &kv : values) {
             auto it = expVariables.find(kv.first);
-            if (it != expVariables.end() && it->second) {
-                it->second->value = kv.second;
-            }
+            if (it != expVariables.end() && it->second) { it->second->value = kv.second; }
         }
         return graph->evaluate(rootNode);
     }
@@ -159,14 +145,13 @@ public:
     // Return true if a variable with that name exists in the graph and was
     // updated.
     bool setVariable(const VariablePtr &variable, double /*coeff*/ = 1.0) {
-        if (!graph || !variable)
-            return false;
+        if (!graph || !variable) return false;
 
         // Prefer O(1) lookup
         auto it = graph->nodeVariables.find(variable->getName());
         if (it != graph->nodeVariables.end() && it->second) {
             ADNodePtr n = it->second;
-            n->value = variable->getValue();
+            n->value    = variable->getValue();
             // keep metadata in sync (optional, but handy)
             n->lb = variable->getLowerBound();
             n->ub = variable->getUpperBound();
@@ -177,8 +162,8 @@ public:
         for (auto &n : graph->nodes) {
             if (n && n->name == variable->getName()) {
                 n->value = variable->getValue();
-                n->lb = variable->getLowerBound();
-                n->ub = variable->getUpperBound();
+                n->lb    = variable->getLowerBound();
+                n->ub    = variable->getUpperBound();
                 // Also update the map so future lookups are O(1)
                 graph->nodeVariables[variable->getName()] = n;
                 return true;
@@ -215,50 +200,61 @@ public:
     // Unary minus
     ExpressionPtr operator-() const; // NEW
 
+    ExpressionPtr relu(const Expression &); // ReLU: max(0, x)
+    ExpressionPtr silu(const Expression &); // SiLU: x * sigmoid(x)
+    ExpressionPtr gelu(const Expression &); // GELU (your tanh-approx)
+    ExpressionPtr tanh(const Expression &); // tanh(x)
+    ExpressionPtr max(const Expression& a, const Expression& b);
+
     // Variable access helpers (stubs)
     std::map<VariablePtr, double> getVariables() const { return {}; }
-    std::vector<VariablePtr> getVariablesUnique() { return {}; }
+    std::vector<VariablePtr>      getVariablesUnique() { return {}; }
 
     // Update a variable’s current value by name
     void setVar(std::string name, double value) {
         auto it = expVariables.find(name);
-        if (it != expVariables.end() && it->second)
-            it->second->value = value;
+        if (it != expVariables.end() && it->second) it->second->value = value;
     }
 
 private:
     tsl::robin_map<std::string, ADNodePtr> expVariables;
+    const ADGraph* prepared_graph_ = nullptr;
+    const ADNode* prepared_node_ = nullptr;
 
-    void initializeNode(Operator type = Operator::NA, std::string name = "",
-                        double value = 0.0, int order = -1,
+    void initializeNode(Operator type = Operator::NA, std::string name = "", double value = 0.0, int order = -1,
                         double lb = -std::numeric_limits<double>::infinity(),
                         double ub = std::numeric_limits<double>::infinity()) {
-        node = std::make_shared<ADNode>();
-        node->type = type;
-        node->name = std::move(name);
+        node        = std::make_shared<ADNode>();
+        node->type  = type;
+        node->name  = std::move(name);
         node->value = value;
         node->order = order;
-        node->lb = lb;
-        node->ub = ub;
-        if (graph)
-            graph->addNode(node);
+        node->lb    = lb;
+        node->ub    = ub;
+        if (graph) graph->addNode(node);
     }
 
     // Prepare the graph for evaluation/derivatives
     void prepare() {
-        if (!graph)
-            graph = std::make_shared<ADGraph>();
-        if (node)
-            graph->addNode(node);
+        if (!graph) graph = std::make_shared<ADGraph>();
+        if (rootNode && prepared_graph_ == graph.get() && prepared_node_ == node.get() && !graph->cache_.dirty) {
+            return;
+        }
+        if (node) graph->addNode(node);
 
         auto rebuilt = graph->rebuildGraphWithUniqueVariables(node);
-        graph = std::get<0>(rebuilt);
+        graph        = std::get<0>(rebuilt);
         expVariables = std::get<1>(rebuilt);
 
         graph->initializeNodeVariables();
-
-        auto roots = graph->findRootNodes();
-        rootNode = !roots.empty() ? roots.back() : node;
+        if (node) {
+            rootNode = node;
+        } else {
+            auto roots = graph->findRootNodes();
+            rootNode = roots.empty() ? nullptr : roots.back();
+        }
+        prepared_graph_ = graph.get();
+        prepared_node_ = node.get();
     }
 };
 
@@ -279,4 +275,8 @@ ExpressionPtr cos(const Expression &x);                          // NEW
 ExpressionPtr tan(const Expression &x);                          // NEW
 ExpressionPtr exp(const Expression &x);                          // NEW
 ExpressionPtr log(const Expression &x);                          // NEW
-ExpressionPtr maximum(const Expression &a, const Expression &b); // NEW
+ExpressionPtr gelu(const Expression &x);                         // NEW
+ExpressionPtr silu(const Expression &x);                         // NEW
+ExpressionPtr relu(const Expression &x);                         // NEW
+ExpressionPtr tanh(const Expression &x);                         // NEW
+ExpressionPtr max(const Expression &a, const Expression &b); // NEW

@@ -23,16 +23,16 @@
 #include <vector>
 
 // ====== Project ======
-#include "definitions.h"
-#include "filter.h"
-#include "model.h"
-#include "tr_aux.h"
+#include "../blocks/filter.h"
+#include "../definitions.h"
+#include "../model.h"
+#include "Aux.h"
 
 // If you expose nanobind types/errors in ModelC implementations
 namespace nb = nanobind;
 
 // QDLDL (modern C++ wrapper; adjust header as needed in your tree)
-#include "qdldl.h"
+#include "../qp/QDLDL.h"
 
 // -----------------------------------------------------------------------------
 // Box handling — unified
@@ -46,58 +46,48 @@ struct BoxCtx {
         return x && (lb || ub);
     }
 
-    static double alpha_max(const dvec &x, const dvec &d,
-                            const std::optional<dvec> &lb,
-                            const std::optional<dvec> &ub,
+    static double alpha_max(const dvec& x, const dvec& d,
+                            const std::optional<dvec>& lb,
+                            const std::optional<dvec>& ub,
                             double tau = 0.999999) {
-        if ((!lb && !ub) || d.size() == 0)
-            return 1.0;
+        if ((!lb && !ub) || d.size() == 0) return 1.0;
         double amax = 1.0;
         if (lb) {
             for (int i = 0; i < d.size(); ++i)
-                if (d[i] < 0.0)
-                    amax = std::min(amax, ((*lb)[i] - x[i]) / d[i]);
+                if (d[i] < 0.0) amax = std::min(amax, ((*lb)[i] - x[i]) / d[i]);
         }
         if (ub) {
             for (int i = 0; i < d.size(); ++i)
-                if (d[i] > 0.0)
-                    amax = std::min(amax, ((*ub)[i] - x[i]) / d[i]);
+                if (d[i] > 0.0) amax = std::min(amax, ((*ub)[i] - x[i]) / d[i]);
         }
         amax = std::clamp(amax, 0.0, 1.0);
         return std::clamp(tau * amax, 0.0, 1.0);
     }
 
-    static dvec pullback(const dvec &x, const dvec &p,
-                         const std::optional<dvec> &lb,
-                         const std::optional<dvec> &ub) {
+    static dvec pullback(const dvec& x, const dvec& p,
+                         const std::optional<dvec>& lb,
+                         const std::optional<dvec>& ub) {
         dvec xt = x + p;
-        if (lb)
-            xt = xt.cwiseMax(*lb);
-        if (ub)
-            xt = xt.cwiseMin(*ub);
+        if (lb) xt = xt.cwiseMax(*lb);
+        if (ub) xt = xt.cwiseMin(*ub);
         return xt - x;
     }
 
-    [[nodiscard]] dvec enforce_step(const dvec &p) const {
-        if (!active())
-            return p;
-        const dvec &xx = *x;
-        if (mode == BoxMode::Projection)
-            return pullback(xx, p, lb, ub);
+    [[nodiscard]] dvec enforce_step(const dvec& p) const {
+        if (!active()) return p;
+        const dvec& xx = *x;
+        if (mode == BoxMode::Projection) return pullback(xx, p, lb, ub);
         const double a = alpha_max(xx, p, lb, ub);
         return a * p;
     }
 
-    [[nodiscard]] dvec enforce_correction(const dvec &x_trial,
-                                          const dvec &q) const {
-        if (!active())
-            return q;
+    [[nodiscard]] dvec enforce_correction(const dvec& x_trial,
+                                          const dvec& q) const {
+        if (!active()) return q;
         if (mode == BoxMode::Projection) {
             dvec xc = x_trial + q;
-            if (lb)
-                xc = xc.cwiseMax(*lb);
-            if (ub)
-                xc = xc.cwiseMin(*ub);
+            if (lb) xc = xc.cwiseMax(*lb);
+            if (ub) xc = xc.cwiseMin(*ub);
             return xc - x_trial;
         }
         const double a = alpha_max(x_trial, q, lb, ub);
@@ -108,23 +98,21 @@ struct BoxCtx {
 // -----------------------------------------------------------------------------
 // Utilities
 // -----------------------------------------------------------------------------
-[[nodiscard]] inline dmat symmetrize(const dmat &A) {
+[[nodiscard]] inline dmat symmetrize(const dmat& A) {
     return 0.5 * (A + A.transpose());
 }
 
-[[nodiscard]] inline dmat psd_cholesky_with_shift(const dmat &S,
+[[nodiscard]] inline dmat psd_cholesky_with_shift(const dmat& S,
                                                   double shift_min) {
     Eigen::LLT<dmat> llt(S);
-    if (llt.info() == Eigen::Success)
-        return llt.matrixL();
+    if (llt.info() == Eigen::Success) return llt.matrixL();
 
     Eigen::SelfAdjointEigenSolver<dmat> es(0.5 * (S + S.transpose()));
-    const auto &vals = es.eigenvalues();
-    const auto &V = es.eigenvectors();
+    const auto& vals = es.eigenvalues();
+    const auto& V = es.eigenvectors();
 
     double add = shift_min;
-    if (vals.size())
-        add = std::max(shift_min, 1e-12 - vals.minCoeff());
+    if (vals.size()) add = std::max(shift_min, 1e-12 - vals.minCoeff());
 
     dvec pos = (vals.array() + add).max(shift_min).matrix();
     dmat Spos = V * pos.asDiagonal() * V.transpose();
@@ -135,28 +123,26 @@ struct BoxCtx {
     return llt2.matrixL();
 }
 
-[[nodiscard]] inline double model_reduction_quad_into(const LinOp &H,
-                                                      const dvec &g,
-                                                      const dvec &p, dvec &Hp) {
+[[nodiscard]] inline double model_reduction_quad_into(const LinOp& H,
+                                                      const dvec& g,
+                                                      const dvec& p, dvec& Hp) {
     H_apply(H, p, Hp);
     return -(g.dot(p) + 0.5 * p.dot(Hp));
 }
 
-[[nodiscard]] inline double estimate_sigma_into(const LinOp &H, const Metric &M,
-                                                const dvec &g, const dvec &p,
-                                                dvec &Hp) {
-    if (p.size() == 0)
-        return 0.0;
+[[nodiscard]] inline double estimate_sigma_into(const LinOp& H, const Metric& M,
+                                                const dvec& g, const dvec& p,
+                                                dvec& Hp) {
+    if (p.size() == 0) return 0.0;
     double den = std::pow(M.norm(p), 2);
-    if (den <= 1e-14)
-        return 0.0;
+    if (den <= 1e-14) return 0.0;
     H_apply(H, p, Hp);
     return std::max(0.0, -(p.dot(Hp) + p.dot(g)) / den);
 }
 
-[[nodiscard]] inline double pred_red_cubic_into(const LinOp &H, const Metric &M,
-                                                const dvec &g, const dvec &p,
-                                                double sigma, dvec &Hp) {
+[[nodiscard]] inline double pred_red_cubic_into(const LinOp& H, const Metric& M,
+                                                const dvec& g, const dvec& p,
+                                                double sigma, dvec& Hp) {
     H_apply(H, p, Hp);
     const double quad = g.dot(p) + 0.5 * p.dot(Hp);
     return -(quad + (sigma / 3.0) * std::pow(M.norm(p), 3));
@@ -166,14 +152,13 @@ struct BoxCtx {
 // AAT cached solve for projection — QDLDL version (robust; int32 guaranteed)
 // -----------------------------------------------------------------------------
 namespace {
-inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
+inline dvec solve_sym_spd_qdldl(const dmat& N_in, const dvec& b_in) {
     using namespace qdldl23;
     using FloatT = double;
     using IntT = int32_t;
 
     const int m = static_cast<int>(N_in.rows());
-    if (m == 0)
-        return dvec(0);
+    if (m == 0) return dvec(0);
 
     // Pack the (dense) upper triangle of N into CSC expected by QDLDL
     SparseD32 S;
@@ -181,7 +166,7 @@ inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
     S.Ap.resize(static_cast<size_t>(m) + 1);
     S.Ap[0] = 0;
     for (IntT j = 0; j < (IntT)m; ++j)
-        S.Ap[(size_t)j + 1] = S.Ap[(size_t)j] + (j + 1); // 0..j
+        S.Ap[(size_t)j + 1] = S.Ap[(size_t)j] + (j + 1);  // 0..j
 
     const size_t nnz = (size_t)S.Ap.back();
     S.Ai.resize(nnz);
@@ -200,28 +185,26 @@ inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
         const Symb32 sym = analyze_fast(S);
         auto F = refactorize<FloatT, IntT>(S, sym);
 
-        dvec x = b_in; // will be overwritten with solution
+        dvec x = b_in;  // will be overwritten with solution
         solve<FloatT, IntT>(F, x.data());
 
         // A couple of refinement sweeps (cheap for small m)
         refine<FloatT, IntT>(S, F, x.data(), b_in.data(), /*iters=*/2,
-                             static_cast<const Ordering<IntT> *>(nullptr));
+                             static_cast<const Ordering<IntT>*>(nullptr));
 
         return x;
     } catch (...) {
         // Dense fallbacks (should be rare)
         Eigen::LLT<dmat> llt(N_in);
-        if (llt.info() == Eigen::Success)
-            return llt.solve(b_in);
+        if (llt.info() == Eigen::Success) return llt.solve(b_in);
         Eigen::LDLT<dmat> ldlt(N_in);
-        if (ldlt.info() == Eigen::Success)
-            return ldlt.solve(b_in);
+        if (ldlt.info() == Eigen::Success) return ldlt.solve(b_in);
         return N_in.partialPivLu().solve(b_in);
     }
 }
-} // namespace
+}  // namespace
 
-[[nodiscard]] inline dvec AAT_solve(const dmat &A, const dvec &rhs,
+[[nodiscard]] inline dvec AAT_solve(const dmat& A, const dvec& rhs,
                                     double reg_floor = 1e-12) {
     using namespace qdldl23;
     using FloatT = double;
@@ -231,7 +214,7 @@ inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
         int rows = -1, cols = -1;
         double fnorm = NAN, dsum = NAN, reg = NAN;
         Symb32 S;
-        SparseD32 pattern; // upper CSC pattern
+        SparseD32 pattern;  // upper CSC pattern
         bool analyzed = false;
         bool valid = false;
     };
@@ -273,8 +256,7 @@ inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
         P.Ax.resize(nnz);
         for (IntT j = 0; j < (IntT)m; ++j) {
             IntT p = P.Ap[(size_t)j];
-            for (IntT i = 0; i <= j; ++i)
-                P.Ai[(size_t)p++] = i;
+            for (IntT i = 0; i <= j; ++i) P.Ai[(size_t)p++] = i;
         }
         P.finalize_upper_inplace(/*require_diag=*/true);
 
@@ -290,13 +272,12 @@ inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
 
     // Inject values into persistent CSC buffer (upper packed)
     {
-        auto &Ap = C.pattern.Ap;
-        auto &Ai = C.pattern.Ai;
-        auto &Ax = C.pattern.Ax;
+        auto& Ap = C.pattern.Ap;
+        auto& Ai = C.pattern.Ai;
+        auto& Ax = C.pattern.Ax;
         for (int j = 0; j < m; ++j) {
             int p = Ap[(size_t)j];
-            for (int i = 0; i <= j; ++i, ++p)
-                Ax[(size_t)p] = M(i, j);
+            for (int i = 0; i <= j; ++i, ++p) Ax[(size_t)p] = M(i, j);
         }
     }
 
@@ -305,11 +286,11 @@ inline dvec solve_sym_spd_qdldl(const dmat &N_in, const dvec &b_in) {
     qdldl23::solve<FloatT, IntT>(F, x.data());
     qdldl23::refine<FloatT, IntT>(
         C.pattern, F, x.data(), rhs.data(), /*iters=*/1,
-        static_cast<const qdldl23::Ordering<IntT> *>(nullptr));
+        static_cast<const qdldl23::Ordering<IntT>*>(nullptr));
     return x;
 }
 
-inline void project_tangent_into(const dvec &v, const dmat &Aeq, dvec &out) {
+inline void project_tangent_into(const dvec& v, const dmat& Aeq, dvec& out) {
     if (Aeq.size() == 0) {
         out = v;
         return;
@@ -318,7 +299,7 @@ inline void project_tangent_into(const dvec &v, const dmat &Aeq, dvec &out) {
     dvec y = AAT_solve(Aeq, rhs);
     out.noalias() = v - Aeq.transpose() * y;
 }
-inline dvec project_tangent(const dvec &v, const dmat &Aeq) {
+inline dvec project_tangent(const dvec& v, const dmat& Aeq) {
     dvec out(v.size());
     project_tangent_into(v, Aeq, out);
     return out;
@@ -328,12 +309,11 @@ inline dvec project_tangent(const dvec &v, const dmat &Aeq) {
 // Config
 // -----------------------------------------------------------------------------
 struct TRConfig {
-
-    std::string tr_method = "auto"; // "auto" | "pcg" | "dogleg" | "gltr"
-    int dogleg_n_max = 300;         // use dogleg if n <= this and dense SPD
-    int gltr_n_min = 200;           // use GLTR if n >= this
-    double gltr_cond_trigger = 1e8; // or when cg stalls / high cond estimate
-    bool assume_gn_spd = true;      // okay to treat GN H as SPD for dogleg
+    std::string tr_method = "auto";  // "auto" | "pcg" | "dogleg" | "gltr"
+    int dogleg_n_max = 300;          // use dogleg if n <= this and dense SPD
+    int gltr_n_min = 200;            // use GLTR if n >= this
+    double gltr_cond_trigger = 1e8;  // or when cg stalls / high cond estimate
+    bool assume_gn_spd = true;       // okay to treat GN H as SPD for dogleg
 
     double delta0 = 1.0, delta_min = 1e-10, delta_max = 1e3;
     double cg_tol = 1e-8, cg_tol_rel = 1e-4;
@@ -359,7 +339,7 @@ struct TRConfig {
     double curvature_criticality_tol = 1e-6;
 
     // box
-    std::string box_mode = "alpha"; // "alpha" | "projection"
+    std::string box_mode = "alpha";  // "alpha" | "projection"
     bool recover_lam_active_only = true;
 
     // filter
@@ -385,26 +365,27 @@ struct TRConfig {
 // TrustRegionManager
 // -----------------------------------------------------------------------------
 class TrustRegionManager {
-public:
-    explicit TrustRegionManager(const TRConfig &cfg)
-        : cfg_(cfg), delta_(cfg.delta0), filter_(cfg.filter_cfg),
+   public:
+    explicit TrustRegionManager(const TRConfig& cfg)
+        : cfg_(cfg),
+          delta_(cfg.delta0),
+          filter_(cfg.filter_cfg),
           filter_enabled_(cfg.use_filter) {
         metric_.valid = false;
     }
     TrustRegionManager()
-        : cfg_(), delta_(cfg_.delta0), filter_(cfg_.filter_cfg),
+        : cfg_(),
+          delta_(cfg_.delta0),
+          filter_(cfg_.filter_cfg),
           filter_enabled_(cfg_.use_filter) {
         metric_.valid = false;
     }
 
     TRBackend choose_backend_(int n, bool has_dense_H, bool spd_hint,
                               double cond_hint) const {
-        if (cfg_.tr_method == "dogleg")
-            return TRBackend::DOGLEG;
-        if (cfg_.tr_method == "pcg")
-            return TRBackend::PCG;
-        if (cfg_.tr_method == "gltr")
-            return TRBackend::GLTR;
+        if (cfg_.tr_method == "dogleg") return TRBackend::DOGLEG;
+        if (cfg_.tr_method == "pcg") return TRBackend::PCG;
+        if (cfg_.tr_method == "gltr") return TRBackend::GLTR;
 
         // auto:
         if (has_dense_H && n <= cfg_.dogleg_n_max && spd_hint)
@@ -417,7 +398,7 @@ public:
     }
 
     // ---------- NEW: dense nullspace basis for Aeq (thin, stable) ----------
-    std::pair<dmat, int> nullspace_basis_(const dmat &Aeq) const {
+    std::pair<dmat, int> nullspace_basis_(const dmat& Aeq) const {
         // Build Q2 s.t. Aeq * (Q2 * z) = 0 for any z
         if (Aeq.size() == 0) {
             return {dmat::Identity((int)Aeq.cols(), (int)Aeq.cols()),
@@ -439,8 +420,7 @@ public:
         const double tol = cfg_.licq_threshold;
         const int diagN = std::min(r, (int)R.rows());
         for (int i = 0; i < diagN; ++i)
-            if (std::abs(R(i, i)) > tol)
-                ++rank;
+            if (std::abs(R(i, i)) > tol) ++rank;
 
         const int k = std::max(0, n - rank);
         if (k == 0) {
@@ -455,28 +435,30 @@ public:
     inline void reset_filter() { filter_.reset(); }
 
     // Unified metric APIs
-    template <class Mat> void set_metric_from_H(const Mat &H) {
+    template <class Mat>
+    void set_metric_from_H(const Mat& H) {
         if (cfg_.norm_type != "ellip") {
             metric_.valid = false;
             return;
         }
         set_metric_from_dense_spd_(to_metric_matrix_(H, cfg_.metric_shift));
     }
-    template <class Mat> void update_metric_from_H(const Mat &H) {
+    template <class Mat>
+    void update_metric_from_H(const Mat& H) {
         if (cfg_.norm_type != "ellip") {
             metric_.valid = false;
             return;
         }
         update_metric_from_dense_spd_(to_metric_matrix_(H, cfg_.metric_shift));
     }
-    inline void set_metric_from_H_dense(const dmat &H) { set_metric_from_H(H); }
-    inline void set_metric_from_H_sparse(const spmat &H) {
+    inline void set_metric_from_H_dense(const dmat& H) { set_metric_from_H(H); }
+    inline void set_metric_from_H_sparse(const spmat& H) {
         set_metric_from_H(H);
     }
-    inline void update_metric_from_H_dense(const dmat &H) {
+    inline void update_metric_from_H_dense(const dmat& H) {
         update_metric_from_H(H);
     }
-    inline void update_metric_from_H_sparse(const spmat &H) {
+    inline void update_metric_from_H_sparse(const spmat& H) {
         update_metric_from_H(H);
     }
 
@@ -491,36 +473,36 @@ public:
     };
 
     // Primary entry
-    TRResult solve(const LinOp &H, const dvec &g,
-                   const std::optional<dmat> &Aineq = std::nullopt,
-                   const std::optional<dvec> &bineq = std::nullopt,
-                   const std::optional<dmat> &Aeq = std::nullopt,
-                   const std::optional<dvec> &beq = std::nullopt,
-                   ModelC *model = nullptr, const BoxCtx &box = {},
+    TRResult solve(const LinOp& H, const dvec& g,
+                   const std::optional<dmat>& Aineq = std::nullopt,
+                   const std::optional<dvec>& bineq = std::nullopt,
+                   const std::optional<dmat>& Aeq = std::nullopt,
+                   const std::optional<dvec>& beq = std::nullopt,
+                   ModelC* model = nullptr, const BoxCtx& box = {},
                    double mu = 0.0,
-                   const std::optional<double> &f_old = std::nullopt,
-                   const HContext &HC = {}) {
+                   const std::optional<double>& f_old = std::nullopt,
+                   const HContext& HC = {}) {
         box_ = box;
         return core_solve_(H, g, Aineq, bineq, Aeq, beq, HC.Hsparse, HC.Hdense,
                            model, box.x, box.lb, box.ub, mu, f_old);
     }
 
-    ModelC *model_ = nullptr; // optional callback handle
+    ModelC* model_ = nullptr;  // optional callback handle
 
     // Convenience wrappers
-    TRResult solve_dense(const dmat &H, const dvec &g,
-                         const std::optional<dmat> &Aineq = std::nullopt,
-                         const std::optional<dvec> &bineq = std::nullopt,
-                         const std::optional<dmat> &Aeq = std::nullopt,
-                         const std::optional<dvec> &beq = std::nullopt,
-                         ModelC *model = nullptr,
-                         const std::optional<dvec> &x = std::nullopt,
-                         const std::optional<dvec> &lb = std::nullopt,
-                         const std::optional<dvec> &ub = std::nullopt,
+    TRResult solve_dense(const dmat& H, const dvec& g,
+                         const std::optional<dmat>& Aineq = std::nullopt,
+                         const std::optional<dvec>& bineq = std::nullopt,
+                         const std::optional<dmat>& Aeq = std::nullopt,
+                         const std::optional<dvec>& beq = std::nullopt,
+                         ModelC* model = nullptr,
+                         const std::optional<dvec>& x = std::nullopt,
+                         const std::optional<dvec>& lb = std::nullopt,
+                         const std::optional<dvec>& ub = std::nullopt,
                          double mu = 0.0,
-                         const std::optional<double> &f_old = std::nullopt) {
+                         const std::optional<double>& f_old = std::nullopt) {
         LinOp Hop{
-            .mv = [&H](const dvec &in, dvec &out) { out.noalias() = H * in; },
+            .mv = [&H](const dvec& in, dvec& out) { out.noalias() = H * in; },
             .n = (int)g.size()};
         BoxCtx box;
         box.x = x;
@@ -532,19 +514,19 @@ public:
                      HContext{H, std::nullopt});
     }
 
-    TRResult solve_sparse(const spmat &H, const dvec &g,
-                          const std::optional<dmat> &Aineq = std::nullopt,
-                          const std::optional<dvec> &bineq = std::nullopt,
-                          const std::optional<dmat> &Aeq = std::nullopt,
-                          const std::optional<dvec> &beq = std::nullopt,
-                          ModelC *model = nullptr,
-                          const std::optional<dvec> &x = std::nullopt,
-                          const std::optional<dvec> &lb = std::nullopt,
-                          const std::optional<dvec> &ub = std::nullopt,
+    TRResult solve_sparse(const spmat& H, const dvec& g,
+                          const std::optional<dmat>& Aineq = std::nullopt,
+                          const std::optional<dvec>& bineq = std::nullopt,
+                          const std::optional<dmat>& Aeq = std::nullopt,
+                          const std::optional<dvec>& beq = std::nullopt,
+                          ModelC* model = nullptr,
+                          const std::optional<dvec>& x = std::nullopt,
+                          const std::optional<dvec>& lb = std::nullopt,
+                          const std::optional<dvec>& ub = std::nullopt,
                           double mu = 0.0,
-                          const std::optional<double> &f_old = std::nullopt) {
+                          const std::optional<double>& f_old = std::nullopt) {
         LinOp Hop{
-            .mv = [&H](const dvec &in, dvec &out) { out.noalias() = H * in; },
+            .mv = [&H](const dvec& in, dvec& out) { out.noalias() = H * in; },
             .n = (int)g.size()};
         BoxCtx box;
         box.x = x;
@@ -556,7 +538,7 @@ public:
                      HContext{std::nullopt, H});
     }
 
-private:
+   private:
     // ---------------- state ----------------
     Filter filter_;
     bool filter_enabled_;
@@ -573,14 +555,14 @@ private:
 
     // --------------- metric core ---------------
     template <class Mat>
-    static dmat to_metric_matrix_(const Mat &H, double shift) {
+    static dmat to_metric_matrix_(const Mat& H, double shift) {
         dmat Msym = dmat(H);
         Msym = 0.5 * (Msym + Msym.transpose());
         Msym.diagonal().array() += shift;
         return Msym;
     }
 
-    void set_metric_from_dense_spd_(const dmat &Mspd) {
+    void set_metric_from_dense_spd_(const dmat& Mspd) {
         if (cfg_.norm_type != "ellip") {
             metric_.valid = false;
             return;
@@ -591,7 +573,7 @@ private:
         metric_.valid = true;
     }
 
-    void update_metric_from_dense_spd_(const dmat &M_new_in) {
+    void update_metric_from_dense_spd_(const dmat& M_new_in) {
         if (cfg_.norm_type != "ellip") {
             metric_.valid = false;
             return;
@@ -605,8 +587,7 @@ private:
             0.5 * ((M_new - metric_.M) + (M_new - metric_.M).transpose());
         const double base = std::max(1.0, metric_.M.norm());
         const double rel = Delta.norm() / base;
-        if (!std::isfinite(rel) || rel <= 1e-12)
-            return;
+        if (!std::isfinite(rel) || rel <= 1e-12) return;
 
         dmat A = metric_.L * metric_.L.transpose();
         Eigen::LLT<dmat> llt(A);
@@ -630,8 +611,7 @@ private:
         const double tol = 1e-12 * (Delta.norm() + 1.0);
         for (int idx : order) {
             const double lam = evals[idx];
-            if (std::abs(lam) <= tol)
-                continue;
+            if (std::abs(lam) <= tol) continue;
             const double sigma = (lam >= 0.0) ? +1.0 : -1.0;
             dvec w = std::sqrt(std::abs(lam)) * U.col(idx);
             llt.rankUpdate(w, sigma);
@@ -649,28 +629,28 @@ private:
     [[nodiscard]] inline bool use_projection_() const noexcept {
         return (cfg_.box_mode == "projection");
     }
-    [[nodiscard]] inline double tr_norm_(const dvec &p) const {
+    [[nodiscard]] inline double tr_norm_(const dvec& p) const {
         return metric_.norm(p);
     }
     [[nodiscard]] inline double cg_tol_(double gnorm) const {
         return std::min(cfg_.cg_tol, cfg_.cg_tol_rel * std::max(gnorm, 1e-16));
     }
 
-    [[nodiscard]] double
-    projected_grad_norm_(const dvec &g, const std::optional<dmat> &Aeq) const {
+    [[nodiscard]] double projected_grad_norm_(
+        const dvec& g, const std::optional<dmat>& Aeq) const {
         dvec gp = g;
         if (box_.active()) {
-            const dvec &x = *box_.x;
+            const dvec& x = *box_.x;
             constexpr double tol = 1e-12;
             if (box_.lb) {
-                const dvec &lb = *box_.lb;
+                const dvec& lb = *box_.lb;
                 const int n = static_cast<int>(gp.size());
                 for (int i = 0; i < n; ++i)
                     if (i < lb.size() && x[i] <= lb[i] + tol && gp[i] > 0.0)
                         gp[i] = 0.0;
             }
             if (box_.ub) {
-                const dvec &ub = *box_.ub;
+                const dvec& ub = *box_.ub;
                 const int n = static_cast<int>(gp.size());
                 for (int i = 0; i < n; ++i)
                     if (i < ub.size() && x[i] >= ub[i] - tol && gp[i] < 0.0)
@@ -685,13 +665,12 @@ private:
     }
 
     // ---------------- criticality machinery ----------------
-    [[nodiscard]] std::pair<bool, int>
-    maybe_apply_criticality_(const dvec &g, const std::optional<dmat> &Aeq,
-                             const std::optional<dmat> &Aineq = std::nullopt,
-                             const std::optional<dvec> &bineq = std::nullopt,
-                             const std::optional<LinOp> &Hop = std::nullopt) {
-        if (!cfg_.criticality_enabled)
-            return {false, 0};
+    [[nodiscard]] std::pair<bool, int> maybe_apply_criticality_(
+        const dvec& g, const std::optional<dmat>& Aeq,
+        const std::optional<dmat>& Aineq = std::nullopt,
+        const std::optional<dvec>& bineq = std::nullopt,
+        const std::optional<LinOp>& Hop = std::nullopt) {
+        if (!cfg_.criticality_enabled) return {false, 0};
         bool criticality = false;
         int shrinks = 0;
 
@@ -700,22 +679,19 @@ private:
 
             // projected gradient
             const double pg = projected_grad_norm_(g, Aeq);
-            if (pg <= cfg_.kappa_g * std::max(delta_, 1e-16))
-                any = true;
+            if (pg <= cfg_.kappa_g * std::max(delta_, 1e-16)) any = true;
 
             // KKT residual
             if (cfg_.use_kkt_criticality && Hop && Aineq && bineq) {
                 const double kkt =
                     compute_kkt_residual_(g, Aeq, *Aineq, *bineq, *Hop);
                 current_kkt_residual_ = kkt;
-                if (kkt <= cfg_.kkt_residual_tol)
-                    any = true;
+                if (kkt <= cfg_.kkt_residual_tol) any = true;
             }
 
             // curvature
             if (cfg_.use_curvature_criticality && Hop) {
-                if (check_curvature_criticality_(g, Aeq, *Hop))
-                    any = true;
+                if (check_curvature_criticality_(g, Aeq, *Hop)) any = true;
             }
 
             // simple degeneracy check
@@ -732,26 +708,23 @@ private:
         return {criticality, shrinks};
     }
 
-    bool check_second_order_criticality(const LinOp &H, const dvec &g,
-                                        const std::optional<dmat> &Aeq) {
+    bool check_second_order_criticality(const LinOp& H, const dvec& g,
+                                        const std::optional<dmat>& Aeq) {
         dvec pg = project_tangent(g, Aeq ? *Aeq : dmat(0, g.size()));
-        if (tr_norm_(pg) > cfg_.kkt_residual_tol)
-            return false;
+        if (tr_norm_(pg) > cfg_.kkt_residual_tol) return false;
         dvec d = dvec::Random(g.size()).normalized();
-        if (Aeq && Aeq->size())
-            project_tangent_into(d, *Aeq, d);
+        if (Aeq && Aeq->size()) project_tangent_into(d, *Aeq, d);
         dvec Hd;
         H_apply(H, d, Hd);
-        if (Aeq && Aeq->size())
-            project_tangent_into(Hd, *Aeq, Hd);
+        if (Aeq && Aeq->size()) project_tangent_into(Hd, *Aeq, Hd);
         return d.dot(Hd) >= -cfg_.curvature_criticality_tol;
     }
 
-    [[nodiscard]] double compute_kkt_residual_(const dvec &g,
-                                               const std::optional<dmat> &Aeq,
-                                               const dmat &Aineq,
-                                               const dvec &bineq,
-                                               const LinOp &Hop) {
+    [[nodiscard]] double compute_kkt_residual_(const dvec& g,
+                                               const std::optional<dmat>& Aeq,
+                                               const dmat& Aineq,
+                                               const dvec& bineq,
+                                               const LinOp& Hop) {
         const int n = (int)g.size();
         const dvec p0 = dvec::Zero(n);
 
@@ -761,14 +734,10 @@ private:
             box_.ub, std::nullopt);
 
         dvec gradL = g;
-        if (Aeq && nu.size())
-            gradL += Aeq->transpose() * nu;
-        if (lam.size())
-            gradL += Aineq.transpose() * lam;
-        if (muL.size())
-            gradL -= muL;
-        if (muU.size())
-            gradL += muU;
+        if (Aeq && nu.size()) gradL += Aeq->transpose() * nu;
+        if (lam.size()) gradL += Aineq.transpose() * lam;
+        if (muL.size()) gradL -= muL;
+        if (muU.size()) gradL += muU;
 
         const double stationarity = tr_norm_(gradL);
 
@@ -804,17 +773,15 @@ private:
         return std::max(stationarity, vInorm);
     }
 
-    [[nodiscard]] bool
-    check_curvature_criticality_(const dvec &g, const std::optional<dmat> &Aeq,
-                                 const LinOp &Hop) const {
+    [[nodiscard]] bool check_curvature_criticality_(
+        const dvec& g, const std::optional<dmat>& Aeq, const LinOp& Hop) const {
         dvec pg = g;
         if (Aeq && Aeq->size()) {
             project_tangent_into(g, *Aeq, W_.tmp);
             pg = W_.tmp;
         }
         const double nrm = tr_norm_(pg);
-        if (nrm <= 1e-12)
-            return true;
+        if (nrm <= 1e-12) return true;
         dvec d = pg / std::max(nrm, 1e-16);
         if (Aeq && Aeq->size()) {
             project_tangent_into(d, *Aeq, W_.tmp);
@@ -831,10 +798,9 @@ private:
         return curv <= cfg_.curvature_criticality_tol;
     }
 
-    [[nodiscard]] bool check_constraint_degeneracy_(const dmat &Aineq,
-                                                    const dvec &) const {
-        if (Aineq.rows() <= 1)
-            return false;
+    [[nodiscard]] bool check_constraint_degeneracy_(const dmat& Aineq,
+                                                    const dvec&) const {
+        if (Aineq.rows() <= 1) return false;
         try {
             Eigen::FullPivLU<dmat> lu(Aineq);
             lu.setThreshold(cfg_.licq_threshold);
@@ -844,25 +810,22 @@ private:
         }
     }
 
-    [[nodiscard]] inline double curvature_along_(const LinOp &H,
-                                                 const dvec &p) {
+    [[nodiscard]] inline double curvature_along_(const LinOp& H,
+                                                 const dvec& p) {
         double denom = tr_norm_(p);
         denom *= denom;
-        if (denom <= 1e-16)
-            return std::numeric_limits<double>::quiet_NaN();
+        if (denom <= 1e-16) return std::numeric_limits<double>::quiet_NaN();
         H_apply(H, p, W_.Hp);
         return p.dot(W_.Hp) / denom;
     }
 
     void update_tr_radius_(double predicted, double actual, double step_norm,
-                           const LinOp &H, const dvec &p, double /*theta_old*/,
+                           const LinOp& H, const dvec& p, double /*theta_old*/,
                            double /*theta_new*/) {
-        if (!(std::isfinite(predicted) && std::abs(predicted) > 1e-16))
-            return;
+        if (!(std::isfinite(predicted) && std::abs(predicted) > 1e-16)) return;
         const double rho = actual / predicted;
         recent_rhos_.push_back(rho);
-        if (recent_rhos_.size() > 10)
-            recent_rhos_.erase(recent_rhos_.begin());
+        if (recent_rhos_.size() > 10) recent_rhos_.erase(recent_rhos_.begin());
         auto [eta1, eta2] = compute_adaptive_thresholds_();
 
         if (rho < eta1) {
@@ -878,16 +841,15 @@ private:
                     const double curv = curvature_along_(H, p);
                     growth = adjust_growth_for_curvature_(growth, curv);
                 }
-                if (jacobian_condition_ > 100)
-                    growth = std::min(growth, 1.5);
+                if (jacobian_condition_ > 100) growth = std::min(growth, 1.5);
                 delta_ = std::min(cfg_.delta_max, growth * delta_);
             }
         }
         delta_ = std::clamp(delta_, cfg_.delta_min, cfg_.delta_max);
     }
 
-    [[nodiscard]] std::pair<double, double>
-    compute_adaptive_thresholds_() const {
+    [[nodiscard]] std::pair<double, double> compute_adaptive_thresholds_()
+        const {
         if (!cfg_.adaptive_eta_thresholds || recent_rhos_.empty())
             return {cfg_.eta1, cfg_.eta2};
         const double mean =
@@ -904,18 +866,18 @@ private:
         return {std::clamp(e1, 0.05, 0.25), std::clamp(e2, 0.7, 0.95)};
     }
 
-    [[nodiscard]] inline double choose_predicted_(const TRInfo &info) const {
+    [[nodiscard]] inline double choose_predicted_(const TRInfo& info) const {
         if (std::isfinite(info.predicted_reduction_cubic) &&
             std::abs(info.predicted_reduction_cubic) >= 1e-16)
             return info.predicted_reduction_cubic;
         return info.model_reduction_quad;
     }
 
-    [[nodiscard]] Prec make_projected_prec_(const dmat &Aeq,
-                                            const Prec &base) const {
+    [[nodiscard]] Prec make_projected_prec_(const dmat& Aeq,
+                                            const Prec& base) const {
         Prec Pproj;
         Pproj.valid = true;
-        Pproj.apply = [this, Aeq, base](const dvec &r, dvec &z) {
+        Pproj.apply = [this, Aeq, base](const dvec& r, dvec& z) {
             project_tangent_into(r, Aeq, W_.proj_buf1);
             if (base.valid) {
                 base.apply(W_.proj_buf1, W_.proj_buf2);
@@ -927,19 +889,18 @@ private:
         return Pproj;
     }
 
-    ModelC *global_model = nullptr;
+    ModelC* global_model = nullptr;
 
     // ---------------- core solve ----------------
     [[nodiscard]] TRResult core_solve_(
-        const LinOp &Hop, const dvec &g, const std::optional<dmat> &Aineq,
-        const std::optional<dvec> &bineq, const std::optional<dmat> &Aeq,
-        const std::optional<dvec> &beq, const std::optional<spmat> &sparseH,
-        const std::optional<dmat> &denseH, ModelC *model,
-        const std::optional<dvec> &x, const std::optional<dvec> &lb,
-        const std::optional<dvec> &ub, double mu,
-        const std::optional<double> &f_old_opt) {
-
-        (void)mu; // not used here directly (placeholder for future penalties)
+        const LinOp& Hop, const dvec& g, const std::optional<dmat>& Aineq,
+        const std::optional<dvec>& bineq, const std::optional<dmat>& Aeq,
+        const std::optional<dvec>& beq, const std::optional<spmat>& sparseH,
+        const std::optional<dmat>& denseH, ModelC* model,
+        const std::optional<dvec>& x, const std::optional<dvec>& lb,
+        const std::optional<dvec>& ub, double mu,
+        const std::optional<double>& f_old_opt) {
+        (void)mu;  // not used here directly (placeholder for future penalties)
 
         global_model = model ? model : nullptr;
 
@@ -973,9 +934,9 @@ private:
             const int n = (int)g.size();
             const bool has_dense = (bool)denseH;
             const bool spd_hint =
-                cfg_.assume_gn_spd; // or inspect H type if you track it
+                cfg_.assume_gn_spd;  // or inspect H type if you track it
             const double cond_hint =
-                jacobian_condition_; // updated in SOC; ok if NaN
+                jacobian_condition_;  // updated in SOC; ok if NaN
 
             const TRBackend be =
                 choose_backend_(n, has_dense, spd_hint,
@@ -1062,21 +1023,31 @@ private:
                 info.model_reduction =
                     model_reduction_quad_into(Hop, g, p, W_.Hp);
                 info.model_reduction_quad = info.model_reduction;
+
+                std::tie(lam, nu, muL, muU) = recover_multipliers_(
+                    Hop, g, p, sigma, Aeq, Aineq, x, lb, ub,
+                    info.active_set_size
+                        ? std::optional<std::vector<int>>(
+                              info.active_set_indices)
+                        : std::nullopt);
             }
         }
 
         // model eval (optional)
         std::optional<double> f_trial, theta_trial;
         std::optional<double> f_old = f_old_opt;
+        std::optional<double> theta_old;
         if (model) {
+            if (box_.x) {
+                auto current_ft = eval_model_f_theta_(
+                    model, box_.x, dvec::Zero(g.size()));
+                if (!f_old) f_old = current_ft.first;
+                theta_old = current_ft.second;
+            }
             if (!f_old) {
                 try {
                     if (model->get_f())
                         f_old = model->get_f().value();
-                    else if (box_.x)
-                        f_old = eval_model_f_theta_(model, box_.x,
-                                                    dvec::Zero(g.size()))
-                                    .first;
                 } catch (...) {
                 }
             }
@@ -1129,9 +1100,27 @@ private:
             if (f_old && f_trial && std::isfinite(*f_old) &&
                 std::isfinite(*f_trial))
                 actual = (*f_old) - (*f_trial);
+            if (theta_old && theta_trial && std::isfinite(*theta_old) &&
+                std::isfinite(*theta_trial)) {
+                const double theta_actual =
+                    cfg_.constraint_weight * ((*theta_old) - (*theta_trial));
+                if (!std::isfinite(actual)) {
+                    actual = theta_actual;
+                } else if (accepted_by == "filter" || accepted_by == "ls-filter") {
+                    actual = std::max(actual, theta_actual);
+                }
+            }
+            info.rho =
+                (std::isfinite(predicted) && std::abs(predicted) > 1e-16 &&
+                 std::isfinite(actual))
+                    ? (actual / predicted)
+                    : std::numeric_limits<double>::quiet_NaN();
             if (std::isfinite(predicted) && std::isfinite(actual))
                 update_tr_radius_(predicted, actual, info.step_norm, Hop, p,
                                   NAN, NAN);
+        } else {
+            delta_ = std::clamp(cfg_.gamma1 * delta_, cfg_.delta_min,
+                                cfg_.delta_max);
         }
 
         TRResult ret;
@@ -1145,11 +1134,11 @@ private:
     }
 
     // --------------- projected operator / normal step ---------------
-    [[nodiscard]] LinOp make_projected_operator_(const LinOp &H,
-                                                 const dmat &Aeq) const {
+    [[nodiscard]] LinOp make_projected_operator_(const LinOp& H,
+                                                 const dmat& Aeq) const {
         LinOp P;
         P.n = H.n;
-        P.mv = [this, H, Aeq](const dvec &x, dvec &y) {
+        P.mv = [this, H, Aeq](const dvec& x, dvec& y) {
             project_tangent_into(x, Aeq, W_.Px);
             H_apply(H, W_.Px, W_.Hx);
             project_tangent_into(W_.Hx, Aeq, W_.PHx);
@@ -1158,14 +1147,13 @@ private:
         return P;
     }
 
-    [[nodiscard]] dvec min_norm_normal_(const dmat &A, const dvec &b) const {
-        if (A.size() == 0)
-            return dvec::Zero(b.size());
+    [[nodiscard]] dvec min_norm_normal_(const dmat& A, const dvec& b) const {
+        if (A.size() == 0) return dvec::Zero(b.size());
         if (!metric_.valid) {
             dvec y = AAT_solve(A, -b);
             return A.transpose() * y;
         }
-        auto Minv = [&](const dvec &r) {
+        auto Minv = [&](const dvec& r) {
             dvec y = metric_.L.triangularView<Eigen::Lower>().solve(r);
             return metric_.L.transpose().triangularView<Eigen::Upper>().solve(
                 y);
@@ -1177,11 +1165,11 @@ private:
 
     // --------------- equality path ---------------
     [[nodiscard]] std::pair<dvec, TRInfo> solve_with_equalities_(
-        const LinOp &Hop, const dvec &g, const dmat &Aeq, const dvec &beq,
-        const std::optional<dmat> &Aineq, const std::optional<dvec> &bineq,
-        const std::optional<spmat> &sparseH, const std::optional<dmat> &denseH,
-        const std::optional<dvec> &x, const std::optional<dvec> &lb,
-        const std::optional<dvec> &ub) {
+        const LinOp& Hop, const dvec& g, const dmat& Aeq, const dvec& beq,
+        const std::optional<dmat>& Aineq, const std::optional<dvec>& bineq,
+        const std::optional<spmat>& sparseH, const std::optional<dmat>& denseH,
+        const std::optional<dvec>& x, const std::optional<dvec>& lb,
+        const std::optional<dvec>& ub) {
         TRInfo info;
         {
             auto [c, s] = maybe_apply_criticality_(g, Aeq);
@@ -1192,8 +1180,7 @@ private:
         dvec p_n = min_norm_normal_(Aeq, beq);
         const double zeta = cfg_.zeta;
         double nn = tr_norm_(p_n);
-        if (nn > zeta * delta_)
-            p_n *= (zeta * delta_ / std::max(1e-16, nn));
+        if (nn > zeta * delta_) p_n *= (zeta * delta_ / std::max(1e-16, nn));
 
         if (box_.active()) {
             if (use_projection_()) {
@@ -1222,9 +1209,9 @@ private:
         // ---------- Tangential subproblem ----------
         W_.tmp = g;
         Hop.apply_into(p_n, W_.Hp);
-        W_.tmp.noalias() += W_.Hp; // gtilde
+        W_.tmp.noalias() += W_.Hp;  // gtilde
         auto Htan = make_projected_operator_(Hop, Aeq);
-        project_tangent_into(W_.tmp, Aeq, W_.proj_buf1); // g_tan
+        project_tangent_into(W_.tmp, Aeq, W_.proj_buf1);  // g_tan
         double rem = std::sqrt(
             std::max(0.0, delta_ * delta_ - tr_norm_(p_n) * tr_norm_(p_n)));
 
@@ -1240,7 +1227,7 @@ private:
         const int n = (int)g.size();
         const bool has_dense = (bool)denseH;
         const bool spd_hint =
-            cfg_.assume_gn_spd; // GN/H SPD-ish in tangent space
+            cfg_.assume_gn_spd;  // GN/H SPD-ish in tangent space
         const double cond_hint = jacobian_condition_;
 
         const TRBackend be = choose_backend_(
@@ -1263,11 +1250,11 @@ private:
                 // Dogleg in reduced space with Euclidean metric (or pull metric
                 // if you want)
                 Metric Mred =
-                    metric_; // ok: your boundary_intersection_metric uses M
+                    metric_;  // ok: your boundary_intersection_metric uses M
 
                 auto dr = dogleg_step_(Hred, gred, Mred, rem);
-                dvec z = dr.p;        // reduced coords
-                dvec pt_try = Q2 * z; // lift to full space
+                dvec z = dr.p;         // reduced coords
+                dvec pt_try = Q2 * z;  // lift to full space
 
                 // Enforce radius in metric and box after combining with normal
                 // step:
@@ -1281,8 +1268,7 @@ private:
                     else {
                         const double beta = BoxCtx::alpha_max(
                             *box_.x + p_n, pt_try, box_.lb, box_.ub);
-                        if (beta < 1.0)
-                            pt_try *= beta;
+                        if (beta < 1.0) pt_try *= beta;
                     }
                 }
 
@@ -1318,8 +1304,7 @@ private:
 
         // Clip to remaining radius if needed
         const double pt_norm = tr_norm_(p_t);
-        if (pt_norm > rem)
-            p_t *= (rem / std::max(1e-16, pt_norm));
+        if (pt_norm > rem) p_t *= (rem / std::max(1e-16, pt_norm));
 
         if (box_.active()) {
             if (use_projection_())
@@ -1327,8 +1312,7 @@ private:
             else {
                 const double beta =
                     BoxCtx::alpha_max(*box_.x + p_n, p_t, box_.lb, box_.ub);
-                if (beta < 1.0)
-                    p_t *= beta;
+                if (beta < 1.0) p_t *= beta;
             }
         }
 
@@ -1356,10 +1340,10 @@ private:
 
     // --------------- inequality-only path ---------------
     [[nodiscard]] std::pair<dvec, TRInfo> solve_with_inequalities_(
-        const LinOp &Hop, const dvec &g, const dmat &Aineq, const dvec &bineq,
-        const std::optional<spmat> &sparseH, const std::optional<dmat> &denseH,
-        const std::optional<dvec> &x, const std::optional<dvec> &lb,
-        const std::optional<dvec> &ub) {
+        const LinOp& Hop, const dvec& g, const dmat& Aineq, const dvec& bineq,
+        const std::optional<spmat>& sparseH, const std::optional<dmat>& denseH,
+        const std::optional<dvec>& x, const std::optional<dvec>& lb,
+        const std::optional<dvec>& ub) {
         TRInfo info;
         {
             auto [c, s] = maybe_apply_criticality_(g, std::nullopt);
@@ -1400,24 +1384,23 @@ private:
 
     // --------------- active-set loop ---------------
     [[nodiscard]] std::tuple<dvec, std::vector<int>, std::pair<int, int>>
-    active_set_loop_(const LinOp &Hop, const dvec &g,
-                     const std::optional<dmat> &Aeq,
-                     const std::optional<dvec> &beq, const dmat &Aineq,
-                     const dvec &bineq, const dvec &p_init) {
+    active_set_loop_(const LinOp& Hop, const dvec& g,
+                     const std::optional<dmat>& Aeq,
+                     const std::optional<dvec>& beq, const dmat& Aineq,
+                     const dvec& bineq, const dvec& p_init) {
         const int n = (int)g.size();
         dvec p = p_init;
         std::set<int> active;
         int it = 0;
 
-        auto rank_of = [&](const dmat &A) -> int {
-            if (!A.size())
-                return 0;
+        auto rank_of = [&](const dmat& A) -> int {
+            if (!A.size()) return 0;
             Eigen::FullPivLU<dmat> lu(A);
             lu.setThreshold(cfg_.rcond);
             return (int)lu.rank();
         };
 
-        auto build_augmented = [&](dmat &Acur, dvec &bcur) {
+        auto build_augmented = [&](dmat& Acur, dvec& bcur) {
             if (active.empty()) {
                 if (Aeq && beq && Aeq->size()) {
                     Acur = *Aeq;
@@ -1453,29 +1436,25 @@ private:
         while (it < cfg_.max_active_set_iter) {
             const dvec viol = Aineq * p + bineq;
             const auto mask = (viol.array() > cfg_.constraint_tol);
-            if (!mask.any())
-                break;
+            if (!mask.any()) break;
 
             dmat Acur;
             dvec bcur;
             build_augmented(Acur, bcur);
             const int rcur = Acur.size() ? rank_of(Acur) : 0;
-            if (rcur >= n || (int)active.size() >= max_active)
-                break;
+            if (rcur >= n || (int)active.size() >= max_active) break;
 
             std::vector<int> cand;
             cand.reserve((size_t)viol.size());
             for (int i = 0; i < viol.size(); ++i)
-                if (mask[i])
-                    cand.push_back(i);
+                if (mask[i]) cand.push_back(i);
             std::ranges::sort(cand,
                               [&](int a, int b) { return viol[a] > viol[b]; });
 
             bool added = false;
             int last = -1;
             for (int idx : cand) {
-                if (active.contains(idx))
-                    continue;
+                if (active.contains(idx)) continue;
                 dmat Atest;
                 if (!Acur.size())
                     Atest = Aineq.row(idx);
@@ -1490,8 +1469,7 @@ private:
                     break;
                 }
             }
-            if (!added)
-                break;
+            if (!added) break;
 
             dmat A_aug;
             dvec b_aug;
@@ -1502,8 +1480,7 @@ private:
                     std::nullopt, std::nullopt, box_.x, box_.lb, box_.ub);
                 p = box_.active() ? box_.enforce_step(p_eq) : p_eq;
             } catch (...) {
-                if (last >= 0)
-                    active.erase(last);
+                if (last >= 0) active.erase(last);
                 break;
             }
             ++it;
@@ -1515,13 +1492,12 @@ private:
 
     // --------------- multipliers ---------------
     [[nodiscard]] std::pair<std::vector<int>, std::vector<int>>
-    detect_active_bounds_(const std::optional<dvec> &x, const dvec &p,
-                          const std::optional<dvec> &lb,
-                          const std::optional<dvec> &ub,
+    detect_active_bounds_(const std::optional<dvec>& x, const dvec& p,
+                          const std::optional<dvec>& lb,
+                          const std::optional<dvec>& ub,
                           double tol = 1e-10) const {
         std::vector<int> idxL, idxU;
-        if (!(x && (lb || ub)))
-            return {idxL, idxU};
+        if (!(x && (lb || ub))) return {idxL, idxU};
         const dvec xt = *x + p;
         const int n = (int)xt.size();
         idxL.reserve(n);
@@ -1537,12 +1513,11 @@ private:
 
     // ---------- Multipliers (clean/lean, fewer allocs) ----------
     [[nodiscard]] std::tuple<dvec, dvec, dvec, dvec> recover_multipliers_(
-        const LinOp &Hop, const dvec &g, const dvec &p, double sigma,
-        const std::optional<dmat> &Aeq, const std::optional<dmat> &Aineq,
-        const std::optional<dvec> &x, const std::optional<dvec> &lb,
-        const std::optional<dvec> &ub,
-        const std::optional<std::vector<int>> &active_idx_opt) {
-
+        const LinOp& Hop, const dvec& g, const dvec& p, double sigma,
+        const std::optional<dmat>& Aeq, const std::optional<dmat>& Aineq,
+        const std::optional<dvec>& x, const std::optional<dvec>& lb,
+        const std::optional<dvec>& ub,
+        const std::optional<std::vector<int>>& active_idx_opt) {
         const int n = (int)g.size();
 
         // r = H p + g + sigma p  (reuse workspace buffer)
@@ -1554,18 +1529,16 @@ private:
         // Transposed blocks that will compose AT = [Aeq^T | Aact^T | I_L |
         // -I_U]
         dmat AeqT(n, 0);
-        if (Aeq && Aeq->size())
-            AeqT = Aeq->transpose();
+        if (Aeq && Aeq->size()) AeqT = Aeq->transpose();
 
         dmat AactT(n, 0);
         if (Aineq && Aineq->size()) {
             if (cfg_.recover_lam_active_only && active_idx_opt &&
                 !active_idx_opt->empty()) {
-                const auto &ids = *active_idx_opt;
+                const auto& ids = *active_idx_opt;
                 const int k = (int)ids.size();
                 dmat A_sel(k, Aineq->cols());
-                for (int i = 0; i < k; ++i)
-                    A_sel.row(i) = Aineq->row(ids[i]);
+                for (int i = 0; i < k; ++i) A_sel.row(i) = Aineq->row(ids[i]);
                 AactT = A_sel.transpose();
             } else {
                 AactT = Aineq->transpose();
@@ -1579,13 +1552,11 @@ private:
         dmat IL(n, nL), IU(n, nU);
         if (nL) {
             IL.setZero();
-            for (int j = 0; j < nL; ++j)
-                IL(idxL[j], j) = 1.0;
+            for (int j = 0; j < nL; ++j) IL(idxL[j], j) = 1.0;
         }
         if (nU) {
             IU.setZero();
-            for (int j = 0; j < nU; ++j)
-                IU(idxU[j], j) = 1.0;
+            for (int j = 0; j < nU; ++j) IU(idxU[j], j) = 1.0;
         }
 
         const int mcols = AeqT.cols() + AactT.cols() + nL + nU;
@@ -1662,14 +1633,12 @@ private:
         dvec muL = dvec::Zero(n), muU = dvec::Zero(n);
         if (nL) {
             const dvec yL = y.segment(ofs, nL);
-            for (int j = 0; j < nL; ++j)
-                muL[idxL[j]] = std::max(0.0, -yL[j]);
+            for (int j = 0; j < nL; ++j) muL[idxL[j]] = std::max(0.0, -yL[j]);
             ofs += nL;
         }
         if (nU) {
             const dvec yU = y.segment(ofs, nU);
-            for (int j = 0; j < nU; ++j)
-                muU[idxU[j]] = std::max(0.0, -yU[j]);
+            for (int j = 0; j < nU; ++j) muU[idxU[j]] = std::max(0.0, -yU[j]);
             ofs += nU;
         }
 
@@ -1678,18 +1647,17 @@ private:
 
     // ---------- Model eval (tight, no GIL unless you add it) ----------
     [[nodiscard]] std::pair<std::optional<double>, std::optional<double>>
-    eval_model_f_theta_(ModelC *model, const std::optional<dvec> &x,
-                        const dvec &s = dvec()) const {
-        if (!model)
-            return {std::nullopt, std::nullopt};
+    eval_model_f_theta_(ModelC* model, const std::optional<dvec>& x,
+                        const dvec& s = dvec()) const {
+        if (!model) return {std::nullopt, std::nullopt};
         const dvec xt = x ? (*x + s) : s;
         try {
-            std::vector<std::string> need{"f"}; // keep eval light
+            std::vector<std::string> need{"f"};  // keep eval light
             model->eval_all(xt, need);
             auto f = model->get_f();
             auto th = model->constraint_violation(xt);
             return {f, th};
-        } catch (const nb::python_error &) {
+        } catch (const nb::python_error&) {
             return {std::nullopt, std::nullopt};
         }
     }
@@ -1697,15 +1665,15 @@ private:
     // ---------- Backtracking (factor common checks, keep semantics) ----------
     [[nodiscard]] std::tuple<bool, dvec, std::string, std::optional<double>,
                              std::optional<double>>
-    _backtrack_on_reject_(ModelC *model, const std::optional<dvec> &x,
-                          const dvec &s, const std::optional<dvec> &lb,
-                          const std::optional<dvec> &ub, double delta,
+    _backtrack_on_reject_(ModelC* model, const std::optional<dvec>& x,
+                          const dvec& s, const std::optional<dvec>& lb,
+                          const std::optional<dvec>& ub, double delta,
                           std::optional<double> base_f, int max_tries = 3) {
         static constexpr std::array<double, 3> alphas{0.5, 0.25, 0.125};
         const int tries = std::min(max_tries, (int)alphas.size());
 
-        auto acceptable = [&](const std::optional<double> &f_t,
-                              const std::optional<double> &th_t) -> bool {
+        auto acceptable = [&](const std::optional<double>& f_t,
+                              const std::optional<double>& th_t) -> bool {
             return filter_enabled_ && f_t && th_t && std::isfinite(*f_t) &&
                    std::isfinite(*th_t) &&
                    filter_.is_acceptable(*th_t, *f_t, delta);
@@ -1713,8 +1681,7 @@ private:
 
         for (int k = 0; k < tries; ++k) {
             dvec sa = alphas[(size_t)k] * s;
-            if (box_.active())
-                sa = box_.enforce_step(sa);
+            if (box_.active()) sa = box_.enforce_step(sa);
 
             auto [f_t, th_t] = eval_model_f_theta_(model, x, sa);
 
@@ -1740,14 +1707,14 @@ private:
     // ---------- Status text ----------
     [[nodiscard]] static std::string status_to_string_(TRStatus s) {
         switch (s) {
-        case TRStatus::SUCCESS:
-            return "success";
-        case TRStatus::BOUNDARY:
-            return "boundary";
-        case TRStatus::NEG_CURV:
-            return "negative_curvature";
-        default:
-            return "max_iterations";
+            case TRStatus::SUCCESS:
+                return "success";
+            case TRStatus::BOUNDARY:
+                return "boundary";
+            case TRStatus::NEG_CURV:
+                return "negative_curvature";
+            default:
+                return "max_iterations";
         }
     }
 
@@ -1759,22 +1726,20 @@ private:
         double theta1 = NAN;
     };
 
-    [[nodiscard]] dvec clip_correction_to_radius_(const dvec &s,
-                                                  const dvec &q) const {
-        if (tr_norm_(s + q) <= delta_ + 1e-14 || tr_norm_(q) <= 1e-16)
-            return q;
+    [[nodiscard]] dvec clip_correction_to_radius_(const dvec& s,
+                                                  const dvec& q) const {
+        if (tr_norm_(s + q) <= delta_ + 1e-14 || tr_norm_(q) <= 1e-16) return q;
         const double t =
             detail::boundary_intersection_metric(metric_, s, q, delta_);
         return std::clamp(t, 0.0, 1.0) * q;
     }
 
-    [[nodiscard]] SOCResult
-    soc_correction_(ModelC *model, const dvec &x, const dvec &p,
-                    const LinOp &Hop, const std::optional<dmat> &Hdense,
-                    const std::optional<spmat> &Hsparse, const dvec &lam_ineq,
-                    double mu, double wE, double wI, double tolE, double violI,
-                    double reg, double sigma0, const std::optional<dvec> &lb,
-                    const std::optional<dvec> &ub) {
+    [[nodiscard]] SOCResult soc_correction_(
+        ModelC* model, const dvec& x, const dvec& p, const LinOp& Hop,
+        const std::optional<dmat>& Hdense, const std::optional<spmat>& Hsparse,
+        const dvec& lam_ineq, double mu, double wE, double wI, double tolE,
+        double violI, double reg, double sigma0, const std::optional<dvec>& lb,
+        const std::optional<dvec>& ub) {
         (void)Hop;
         (void)lam_ineq;
         (void)mu;
@@ -1789,8 +1754,7 @@ private:
 
         const double theta0 = model->constraint_violation(x_trial);
         R.theta0 = theta0;
-        if (theta0 <= cfg_.constraint_tol)
-            return R;
+        if (theta0 <= cfg_.constraint_tol) return R;
 
         const int mI = model->get_mI();
         const int mE = model->get_mE();
@@ -1811,12 +1775,10 @@ private:
         // Bound within SOC radius and TR metric
         const double soc_radius = cfg_.soc_radius_fraction * delta_;
         const double qn = tr_norm_(q);
-        if (qn > soc_radius && qn > 1e-16)
-            q *= (soc_radius / qn);
+        if (qn > soc_radius && qn > 1e-16) q *= (soc_radius / qn);
 
         q = clip_correction_to_radius_(p, q);
-        if (box_.active())
-            q = box_.enforce_correction(x_trial, q);
+        if (box_.active()) q = box_.enforce_correction(x_trial, q);
 
         const double theta1 = model->constraint_violation(x_trial + q);
         R.theta1 = theta1;
@@ -1824,24 +1786,18 @@ private:
         if (soc_acceptance_test_(theta0, theta1)) {
             R.q = q;
             R.applied = true;
-            if (cfg_.soc_use_funnel)
-                current_theta_ = theta1;
+            if (cfg_.soc_use_funnel) current_theta_ = theta1;
         }
         return R;
     }
 
     [[nodiscard]] double adjust_growth_for_curvature_(double growth,
                                                       double curv) const {
-        if (!std::isfinite(curv))
-            return growth;
-        if (curv <= -1e-10)
-            return 1.0;
-        if (curv < 1e-12)
-            return std::min(1.2, growth);
-        if (curv < 1e-4)
-            return std::min(2.0, std::max(1.2, growth));
-        if (curv < 1e-2)
-            return std::min(2.5, std::max(1.4, growth));
+        if (!std::isfinite(curv)) return growth;
+        if (curv <= -1e-10) return 1.0;
+        if (curv < 1e-12) return std::min(1.2, growth);
+        if (curv < 1e-4) return std::min(2.0, std::max(1.2, growth));
+        if (curv < 1e-2) return std::min(2.5, std::max(1.4, growth));
         return std::min(3.0, std::max(1.6, 1.25 * growth));
     }
 
@@ -1855,10 +1811,9 @@ private:
     //     return N.ldlt().solve(A.transpose() * b);
     // }
 
-    [[nodiscard]] dvec solve_regularized_ls_(const dmat &A, const dvec &b,
+    [[nodiscard]] dvec solve_regularized_ls_(const dmat& A, const dvec& b,
                                              double reg) const {
-        if (A.size() == 0)
-            return dvec::Zero(b.size());
+        if (A.size() == 0) return dvec::Zero(b.size());
 
         // Build normal equations with a tiny floor on reg for numerical safety
         const double reg_eff = std::max(reg, 1e-12);
@@ -1871,18 +1826,18 @@ private:
         return solve_sym_spd_qdldl(N, rhs);
     }
 
-    [[nodiscard]] dvec solve_regularized_metric_ls_(const dmat &A,
-                                                    const dvec &b,
-                                                    const dmat &M,
+    [[nodiscard]] dvec solve_regularized_metric_ls_(const dmat& A,
+                                                    const dvec& b,
+                                                    const dmat& M,
                                                     double reg) const {
         if (A.size() == 0)
-            return dvec::Zero(M.cols()); // n=cols(M). (No rows in A ⇒ x=0)
+            return dvec::Zero(M.cols());  // n=cols(M). (No rows in A ⇒ x=0)
 
         try {
             // Factor M = L Lᵀ (with minimal shift inside helper for robustness)
             const double reg_eff = std::max(reg, 1e-12);
             const dmat L =
-                psd_cholesky_with_shift(M, reg_eff); // Lower-triangular
+                psd_cholesky_with_shift(M, reg_eff);  // Lower-triangular
 
             // We need: (A M^{-1} Aᵀ + reg I) y = b, then x = M^{-1} Aᵀ y
             // Compute Minv Aᵀ via two triangular solves on a dense multi-RHS:
@@ -1891,7 +1846,7 @@ private:
             const dmat At = A.transpose();
             dmat Y = L.triangularView<Eigen::Lower>().solve(At);
             dmat Z = L.transpose().triangularView<Eigen::Upper>().solve(
-                Y); // Z = M^{-1}Aᵀ
+                Y);  // Z = M^{-1}Aᵀ
 
             // Build S = A * Z = A * M^{-1} * Aᵀ, add Tikhonov reg on the
             // diagonal
@@ -1944,14 +1899,12 @@ private:
 
     // ---------- Jacobian condition estimate (stacked blocks, tight) ----------
     [[nodiscard]] double estimate_jacobian_condition_(
-        const std::optional<dmat> &JE, const std::optional<dmat> &JI,
-        const std::optional<dvec> &cI, double tol) const {
-
+        const std::optional<dmat>& JE, const std::optional<dmat>& JI,
+        const std::optional<dvec>& cI, double tol) const {
         std::vector<dmat> blocks;
         blocks.reserve(2);
 
-        if (JE && JE->size())
-            blocks.push_back(*JE);
+        if (JE && JE->size()) blocks.push_back(*JE);
 
         if (JI && JI->size() && cI) {
             const auto mask = (cI->array().abs() <= 10 * tol);
@@ -1959,18 +1912,15 @@ private:
                 const int m = (int)mask.count();
                 dmat JI_act(m, JI->cols());
                 for (int i = 0, k = 0; i < cI->size(); ++i)
-                    if (mask[i])
-                        JI_act.row(k++) = JI->row(i);
+                    if (mask[i]) JI_act.row(k++) = JI->row(i);
                 blocks.push_back(std::move(JI_act));
             }
         }
 
-        if (blocks.empty())
-            return 1.0;
+        if (blocks.empty()) return 1.0;
 
         int rows = 0, cols = blocks[0].cols();
-        for (const auto &B : blocks)
-            rows += B.rows();
+        for (const auto& B : blocks) rows += B.rows();
 
         dmat J(rows, cols);
         for (int ofs = 0, i = 0; i < (int)blocks.size(); ++i) {
@@ -1979,9 +1929,9 @@ private:
         }
 
         try {
-            Eigen::JacobiSVD<dmat> svd(J, Eigen::ComputeThinU |
-                                              Eigen::ComputeThinV);
-            const auto &s = svd.singularValues();
+            Eigen::JacobiSVD<dmat> svd(
+                J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+            const auto& s = svd.singularValues();
             if (s.size() == 0 || s.tail(1)[0] <= 1e-16)
                 return cfg_.max_jacobian_condition;
             return std::min(s.head(1)[0] / s.tail(1)[0],
@@ -1994,8 +1944,7 @@ private:
     // ---------- SOC acceptance ----------
     [[nodiscard]] bool soc_acceptance_test_(double theta0,
                                             double theta1) const {
-        if (!std::isfinite(theta0) || !std::isfinite(theta1))
-            return false;
+        if (!std::isfinite(theta0) || !std::isfinite(theta1)) return false;
         if (cfg_.soc_use_funnel) {
             const double sufficient = cfg_.soc_theta_reduction * theta0;
             const double funnel = cfg_.funnel_gamma * current_theta_;
@@ -2006,12 +1955,11 @@ private:
 
     // ---------- SOC step (single pass build, minimal temporaries) ----------
     [[nodiscard]] dvec compute_soc_step_(
-        const std::optional<dvec> &cE, const std::optional<dvec> &cI,
-        const std::optional<dmat> &JE, const std::optional<dmat> &JI, double wE,
+        const std::optional<dvec>& cE, const std::optional<dvec>& cI,
+        const std::optional<dmat>& JE, const std::optional<dmat>& JI, double wE,
         double wI, double tolE, double violI, double reg, double sigma0,
-        const std::optional<dmat> &Hdense,
-        const std::optional<spmat> &Hsparse) const {
-
+        const std::optional<dmat>& Hdense,
+        const std::optional<spmat>& Hsparse) const {
         std::vector<dmat> Jblocks;
         Jblocks.reserve(2);
         std::vector<dvec> rblocks;
@@ -2059,8 +2007,7 @@ private:
         }
 
         int rows = 0, cols = Jblocks[0].cols();
-        for (const auto &J : Jblocks)
-            rows += J.rows();
+        for (const auto& J : Jblocks) rows += J.rows();
 
         dmat J(rows, cols);
         dvec r(rows);
@@ -2080,4 +2027,4 @@ private:
                                      reg * std::max(1.0, jacobian_condition_));
     }
 
-}; // namespace trl
+};  // namespace trl

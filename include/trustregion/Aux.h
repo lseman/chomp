@@ -23,11 +23,10 @@
 #include <vector>
 
 // ====== Project ======
-#include "definitions.h"
-#include "filter.h"
-#include "model.h"
-
-#include "tr_definitions.h"
+#include "../blocks/filter.h"
+#include "../definitions.h"
+#include "../model.h"
+#include "Definitions.h"
 
 enum class TRBackend { PCG, DOGLEG, GLTR };
 
@@ -35,11 +34,10 @@ enum class TRBackend { PCG, DOGLEG, GLTR };
 struct DoglegResult {
     dvec p;
     int iters = 1;
-    const char *status = "dogleg";
+    const char* status = "dogleg";
 };
 
-
-DoglegResult dogleg_step_(const dmat &Hspd, const dvec &g, const Metric &M,
+DoglegResult dogleg_step_(const dmat& Hspd, const dvec& g, const Metric& M,
                           double delta) {
     // Symmetrize (cheap) for safety
     const dmat Hs = 0.5 * (Hspd + Hspd.transpose());
@@ -63,7 +61,7 @@ DoglegResult dogleg_step_(const dmat &Hspd, const dvec &g, const Metric &M,
         }
     }
 
-    auto normM = [&](const dvec &v) -> double {
+    auto normM = [&](const dvec& v) -> double {
         return M.valid ? M.norm(v) : v.norm();
     };
 
@@ -93,24 +91,23 @@ struct CGResult {
     int iters;
 };
 
-[[nodiscard]] inline CGResult steihaug_pcg(const LinOp &H, const dvec &g,
-                                           const Metric &M, double Delta,
+[[nodiscard]] inline CGResult steihaug_pcg(const LinOp& H, const dvec& g,
+                                           const Metric& M, double Delta,
                                            double tol, int maxiter,
-                                           double neg_curv_tol, const Prec &P,
-                                           TRWorkspace &W) {
+                                           double neg_curv_tol, const Prec& P,
+                                           TRWorkspace& W) {
     const int n = H.n;
     W.ensure(n);
-    auto &p = W.p_try;
+    auto& p = W.p_try;
     p.setZero();
-    auto &r = W.r;
+    auto& r = W.r;
     r = -g;
-    auto &z = W.z;
+    auto& z = W.z;
     P.apply_into(r, z);
-    auto &d = W.d;
+    auto& d = W.d;
     d = z;
 
-    if (r.norm() <= tol)
-        return {p, TRStatus::SUCCESS, 0};
+    if (r.norm() <= tol) return {p, TRStatus::SUCCESS, 0};
 
     double rz = r.dot(z);
     for (int k = 0; k < maxiter; ++k) {
@@ -138,8 +135,7 @@ struct CGResult {
         p.swap(W.tmp);
 
         r.noalias() -= alpha * W.Hd;
-        if (r.norm() <= tol)
-            return {p, TRStatus::SUCCESS, k + 1};
+        if (r.norm() <= tol) return {p, TRStatus::SUCCESS, k + 1};
 
         P.apply_into(r, W.z_next);
         const double rz_next = r.dot(W.z_next);
@@ -150,7 +146,8 @@ struct CGResult {
     return {p, TRStatus::MAX_ITER, maxiter};
 }
 
-// [[nodiscard]] GLTRResult gltr_step_(const LinOp &H, const dvec &g, const Metric &M, double delta, double tol, int maxiter) {
+// [[nodiscard]] GLTRResult gltr_step_(const LinOp &H, const dvec &g, const
+// Metric &M, double delta, double tol, int maxiter) {
 //     GLTRResult res;
 //     int n = g.size();
 //     if (n == 0 || g.norm() <= tol) {
@@ -170,10 +167,10 @@ struct CGResult {
 //         LinOp new_H;
 //         new_H.n = n;
 //         new_H.mv = [&M, &H](const dvec &v, dvec &out) {
-//             dvec tmp = M.L.transpose().triangularView<Eigen::Upper>().solve(v);
-//             dvec Htmp;
-//             H_apply(H, tmp, Htmp);
-//             out = M.L.triangularView<Eigen::Lower>().solve(Htmp);
+//             dvec tmp =
+//             M.L.transpose().triangularView<Eigen::Upper>().solve(v); dvec
+//             Htmp; H_apply(H, tmp, Htmp); out =
+//             M.L.triangularView<Eigen::Lower>().solve(Htmp);
 //         };
 //         H_op = new_H;
 //     }
@@ -221,7 +218,8 @@ struct CGResult {
 //         T_new(k, k) = a;
 //         T = std::move(T_new);
 
-//         // Solve reduced TR: min 1/2 h^T T h + gnorm h(0) s.t. ||h|| <= delta_op
+//         // Solve reduced TR: min 1/2 h^T T h + gnorm h(0) s.t. ||h|| <=
+//         delta_op
 
 //         Eigen::SelfAdjointEigenSolver<dmat> es(T);
 //         double lambda_min = es.eigenvalues().minCoeff();
@@ -247,13 +245,14 @@ struct CGResult {
 //                 interior = true;
 //                 break;
 //             }
-//             if (lambda > 0.0 && std::abs(hnorm - delta_op) <= 1e-6 * delta_op) {
+//             if (lambda > 0.0 && std::abs(hnorm - delta_op) <= 1e-6 *
+//             delta_op) {
 //                 interior = false;
 //                 break;
 //             }
-//             double dlambda = (hnorm^2) / (h.dot(ldlt.solve(h))) * (hnorm - delta_op) / delta_op;
-//             lambda += dlambda;
-//             lambda = std::max(lambda, -lambda_min + 1e-8);
+//             double dlambda = (hnorm^2) / (h.dot(ldlt.solve(h))) * (hnorm -
+//             delta_op) / delta_op; lambda += dlambda; lambda =
+//             std::max(lambda, -lambda_min + 1e-8);
 //         }
 
 //         if (interior == false && std::abs(phi) > 1e-6 * delta_op) {
