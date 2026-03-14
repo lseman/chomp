@@ -5,12 +5,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CHOMP — Modern NLP Solver (SQP • Interior-Point • DFO-L1 • Auto)</title>
+  <meta name="description"
+    content="CHOMP is an open-source nonlinear optimization library with SQP, interior-point, derivative-free trust-region methods, and automatic differentiation." />
+  <meta property="og:title" content="CHOMP — Nonlinear Optimization Library" />
+  <meta property="og:description"
+    content="A research-focused optimization library for constrained nonlinear programming, sparse KKT systems, and automatic differentiation." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet" />
 
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
 
   <!-- Prism.js (CSS + core + autoloader + line-numbers) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/line-numbers/prism-line-numbers.css">
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-core.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/autoloader/prism-autoloader.min.js" defer></script>
@@ -28,121 +38,596 @@
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 
   <style>
-    html { scroll-behavior: smooth }
-    .card { backdrop-filter: blur(4px) }
-    .theorem{ background:#eff6ff; border-left:4px solid #3b82f6; padding:.75rem 1rem; border-radius:.5rem}
-    .def{ background:#f0fdf4; border-left:4px solid #22c55e; padding:.75rem 1rem; border-radius:.5rem}
-    .warn{ background:#fef2f2; border-left:4px solid #ef4444; padding:.75rem 1rem; border-radius:.5rem}
-    .insight{ background:#fefce8; border-left:4px solid #eab308; padding:.75rem 1rem; border-radius:.5rem}
-    .step{ background:#f8fafc; border:2px solid #e2e8f0; padding:1rem; border-radius:.75rem; margin:1rem 0}
-    code{ background:#f1f5f9; padding:.15rem .35rem; border-radius:.35rem; font-size:.85em !important;}
-    pre code{ background:transparent; padding:0 }
-    .step-number{ background:#3b82f6; color:#fff; border-radius:50%; width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:14px}
-    .math-nowrap{ overflow-x:auto; white-space:nowrap }
-    .kbd{ border:1px solid #cbd5e1; background:#000000; border-radius:.375rem; padding:.125rem .375rem; font-size:.75rem}
-    .bg-grid{
+    :root {
+      --bg-base: #050816;
+      --bg-elev: #0a1124;
+      --panel: rgba(10, 17, 36, 0.82);
+      --panel-strong: rgba(8, 12, 26, 0.96);
+      --line: rgba(148, 163, 184, 0.16);
+      --line-strong: rgba(129, 140, 248, 0.34);
+      --text: #e6ecff;
+      --muted: #95a2c6;
+      --soft: #64759f;
+      --accent: #818cf8;
+      --accent-2: #22d3ee;
+      --accent-3: #34d399;
+      --nav-h: 72px;
+    }
+
+    * {
+      font-family: 'Manrope', system-ui, sans-serif;
+    }
+
+    code,
+    pre,
+    .kbd {
+      font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace !important;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--bg-base);
+    }
+
+    body {
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 12%, rgba(99, 102, 241, 0.2), transparent 28%),
+        radial-gradient(circle at 82% 18%, rgba(34, 211, 238, 0.16), transparent 24%),
+        radial-gradient(circle at 50% 100%, rgba(52, 211, 153, 0.08), transparent 28%),
+        var(--bg-base);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
       background-image:
-        linear-gradient(to right, rgba(15,23,42,.06) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(15,23,42,.06) 1px, transparent 1px);
-      background-size:24px 24px;
-      mask-image: radial-gradient(ellipse at 50% 20%, rgba(0,0,0,.9), rgba(0,0,0,.15) 60%, transparent 75%);
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: radial-gradient(ellipse at center, black 30%, transparent 82%);
+      opacity: 0.16;
     }
-    .glow{ position:absolute; inset:-20% -10% auto -10%; height:55vh;
-      background: radial-gradient(60% 60% at 50% 40%, rgba(79,70,229,.25), rgba(34,197,94,.18) 40%, rgba(14,165,233,.12) 70%, transparent 75%);
-      filter:blur(40px); pointer-events:none;}
-    .fade-up{ opacity:0; transform: translateY(12px); animation: fadeUp .7s ease forwards .1s;}
-    @keyframes fadeUp{ to{ opacity:1; transform:none; } }
-    .nav-link{ position:relative; }
-    .nav-link.active{ color:rgb(15 23 42); font-weight:700; }
-    .nav-link.active::after{
-      content:""; position:absolute; left:0; right:0; bottom:-8px; height:2px; background:rgb(15 23 42); border-radius:9999px;
+
+    a {
+      transition: color .18s ease, border-color .18s ease, background-color .18s ease, transform .18s ease, box-shadow .18s ease;
     }
-  </style>
-  <style>
-    :root{ --nav-h:72px; }
-    .alt-section{ scroll-margin-top: calc(var(--nav-h) + 12px); }
+
+    .card {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(8, 12, 26, 0.94));
+      border: 1px solid var(--line);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+      backdrop-filter: blur(18px);
+    }
+
+    .card:hover {
+      border-color: var(--line-strong);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(129, 140, 248, 0.08) inset;
+      transform: translateY(-2px);
+    }
+
+    .theorem,
+    .def,
+    .warn,
+    .insight {
+      padding: .9rem 1rem;
+      border-radius: .9rem;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+    }
+
+    .theorem {
+      background: rgba(59, 130, 246, 0.08);
+      border-left-color: #60a5fa;
+    }
+
+    .def {
+      background: rgba(52, 211, 153, 0.08);
+      border-left-color: #34d399;
+    }
+
+    .warn {
+      background: rgba(248, 113, 113, 0.08);
+      border-left-color: #f87171;
+    }
+
+    .insight {
+      background: rgba(250, 204, 21, 0.08);
+      border-left-color: #facc15;
+    }
+
+    .step {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.78), rgba(7, 10, 22, 0.92));
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+      padding: 1.4rem;
+      border-radius: 1.25rem;
+      margin: 1rem 0;
+    }
+
+    code {
+      background: rgba(129, 140, 248, 0.14);
+      color: #c7d2fe;
+      padding: .15rem .35rem;
+      border-radius: .35rem;
+      border: 1px solid rgba(129, 140, 248, 0.18);
+      font-size: .85em !important;
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      border: none;
+    }
+
+    pre[class*="language-"] {
+      background: #040814 !important;
+      border: 1px solid rgba(148, 163, 184, 0.14) !important;
+      border-radius: 1rem !important;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+      margin: 0 !important;
+    }
+
+    code[class*="language-"] {
+      font-size: .82rem !important;
+    }
+
+    .line-numbers .line-numbers-rows {
+      border-right-color: rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .line-numbers-rows>span::before {
+      color: rgba(255, 255, 255, 0.2) !important;
+    }
+
+    .step-number {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+      border-radius: 999px;
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      box-shadow: 0 10px 24px rgba(99, 102, 241, 0.3);
+    }
+
+    .math-nowrap {
+      overflow-x: auto;
+      white-space: nowrap;
+      padding-bottom: .25rem;
+    }
+
+    .kbd {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      color: #dbe6ff;
+      border-radius: .5rem;
+      padding: .125rem .375rem;
+      font-size: .75rem;
+    }
+
+    .bg-grid {
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 52px 52px;
+      mask-image: radial-gradient(ellipse at 50% 30%, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0.18) 72%, transparent 88%);
+    }
+
+    .glow {
+      position: absolute;
+      inset: -18% -12% auto -8%;
+      height: 65vh;
+      background: radial-gradient(55% 60% at 25% 20%, rgba(99, 102, 241, 0.28), transparent 70%),
+        radial-gradient(40% 45% at 78% 24%, rgba(34, 211, 238, 0.18), transparent 72%),
+        radial-gradient(40% 42% at 60% 62%, rgba(52, 211, 153, 0.12), transparent 78%);
+      filter: blur(34px);
+      pointer-events: none;
+    }
+
+    .fade-up {
+      opacity: 0;
+      transform: translateY(12px);
+      animation: fadeUp .7s ease forwards .1s;
+    }
+
+    @keyframes fadeUp {
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .nav-link {
+      position: relative;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .nav-link:hover {
+      color: var(--text);
+    }
+
+    .nav-link.active {
+      color: #c7d2fe;
+      font-weight: 700;
+    }
+
+    .nav-link.active::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -8px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      border-radius: 9999px;
+    }
+
+    .grad {
+      background: linear-gradient(135deg, #c7d2fe 0%, #818cf8 45%, #22d3ee 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
+      padding: .4rem .78rem;
+      border-radius: 999px;
+      font-size: .76rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(129, 140, 248, 0.22);
+      color: #c7d2fe;
+    }
+
+    .hero-kicker {
+      font-size: .76rem;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 800;
+      margin-bottom: 1rem;
+    }
+
+    .hero-metrics {
+      margin-top: 2rem;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: .9rem;
+    }
+
+    .metric {
+      padding: 1rem 1.1rem;
+      border-radius: 1rem;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--line);
+    }
+
+    .metric-value {
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .metric-label {
+      font-size: .78rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--soft);
+      margin-top: .35rem;
+    }
+
+    .terminal {
+      background: #060b17;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 1.1rem;
+      overflow: hidden;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .term-bar {
+      display: flex;
+      align-items: center;
+      gap: .42rem;
+      padding: .8rem 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .tdot {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+    }
+
+    .panel-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: .92rem 1rem;
+      border-radius: 1rem;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--line);
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .panel-link:hover {
+      background: rgba(99, 102, 241, 0.09);
+      border-color: var(--line-strong);
+    }
+
+    .section-head {
+      text-align: center;
+      max-width: 44rem;
+      margin: 0 auto 2.8rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .section-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .45rem .85rem;
+      border-radius: 999px;
+      border: 1px solid rgba(129, 140, 248, 0.22);
+      background: rgba(99, 102, 241, 0.08);
+      color: #c7d2fe;
+      font-size: .76rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .section-head p {
+      margin-top: .9rem;
+      color: var(--soft);
+      font-size: 1rem;
+      line-height: 1.75;
+    }
+
+    .alt-section {
+      position: relative;
+      scroll-margin-top: calc(var(--nav-h) + 16px);
+    }
+
+    .alt-section::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 18%, transparent 82%, rgba(255, 255, 255, 0.02));
+    }
+
+    .alt-section:nth-of-type(odd) {
+      background: rgba(255, 255, 255, 0.015);
+    }
+
+    .alt-section:nth-of-type(even) {
+      background: rgba(99, 102, 241, 0.025);
+    }
+
+    .alt-section .bg-white:not(pre),
+    .alt-section .bg-slate-50:not(pre) {
+      background: rgba(255, 255, 255, 0.03) !important;
+      border-color: var(--line) !important;
+      color: var(--text);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    }
+
+    .text-slate-400,
+    .text-slate-500 {
+      color: var(--soft) !important;
+    }
+
+    .text-slate-600,
+    .text-slate-700,
+    .text-slate-800 {
+      color: var(--muted) !important;
+    }
+
+    .text-slate-200,
+    .text-slate-900 {
+      color: var(--text) !important;
+    }
+
+    .border-slate-200,
+    .border-slate-700 {
+      border-color: var(--line) !important;
+    }
+
+    .bg-slate-900 {
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.98)) !important;
+    }
+
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.06) !important;
+      color: #dbe6ff !important;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(10px);
+    }
+
+    .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.12) !important;
+    }
+
+    details {
+      margin-top: 1rem;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 1rem;
+      padding: 1rem 1.1rem;
+    }
+
+    summary {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    footer {
+      background: rgba(4, 8, 20, 0.94);
+    }
+
+    .section-divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(129, 140, 248, 0.28), rgba(34, 211, 238, 0.24), transparent);
+    }
+
+    @media (max-width: 1024px) {
+      .hero-metrics {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 
-<body class="min-h-screen text-slate-800 bg-gradient-to-br from-slate-50 to-indigo-50">
+<body class="min-h-screen">
 
   <!-- ======= Sticky Nav ======= -->
-  <nav id="topnav" class="fixed top-0 inset-x-0 z-50 transition-colors">
-    <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
+  <nav id="topnav" class="fixed top-0 inset-x-0 z-50 transition-all duration-300">
+    <div class="mx-auto max-w-7xl px-6 h-[72px] flex items-center justify-between">
       <a href="#" class="flex items-center gap-2">
         <img src="logo.png" alt="CHOMP logo" class="w-8 h-8 object-contain">
-        <span class="font-extrabold tracking-tight text-slate-900">CHOMP</span>
+        <span class="font-extrabold tracking-tight text-white">CHOMP</span>
       </a>
       <div class="hidden md:flex items-center gap-5 text-sm">
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#get">Get</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#algorithms">Algorithms</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#ad">AutoDiff</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#l1">DFO-L1</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#usage">Usage</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#api">API</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#examples">Examples</a>
+        <a class="nav-link" href="#get">Get</a>
+        <a class="nav-link" href="#algorithms">Algorithms</a>
+        <a class="nav-link" href="#ad">AutoDiff</a>
+        <a class="nav-link" href="#l1">DFO-L1</a>
+        <a class="nav-link" href="#usage">Usage</a>
+        <a class="nav-link" href="#api">API</a>
+        <a class="nav-link" href="#examples">Examples</a>
         <a target="_blank" rel="noopener" href="https://github.com/lseman/chomp"
-          class="px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-black">GitHub</a>
+          class="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 shadow-lg shadow-indigo-950/40">GitHub</a>
       </div>
     </div>
   </nav>
 
   <!-- ======= Full-Viewport Hero ======= -->
-  <header class="relative h-[100svh] flex items-center">
+  <header class="relative min-h-[100svh] flex items-center overflow-hidden pt-20">
     <div aria-hidden="true" class="absolute inset-0 bg-grid"></div>
     <div aria-hidden="true" class="glow"></div>
 
     <div class="relative mx-auto max-w-7xl px-6 w-full">
-      <img src="logo.png" alt="CHOMP logo"
-        class="block mx-auto mb-8 w-40 sm:w-56 md:w-64 lg:w-72 xl:w-80 h-auto object-contain" />
-      <div class="flex items-center gap-3 mb-6">
-        <div>
-          <h1 class="text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-[1.05]">
-            CHOMP — <span class="text-indigo-600">A Modern NLP Solver</span>
-          </h1>
-          <p class="mt-1 text-xs tracking-wide text-slate-500"><b>C</b>HOMP <b>H</b>andles <b>O</b>ptimization of
-            <b>M</b>any <b>P</b>roblems
-          </p>
-        </div>
-      </div>
       <div class="grid lg:grid-cols-[1.2fr_.8fr] gap-10 items-center">
-        <!-- Hero copy -->
         <div class="fade-up">
-          <p class="mt-5 text-lg md:text-xl text-slate-700 max-w-2xl">
-            A modular nonlinear programming solver that chomps through tough constrained problems using
-            <b>SQP</b>, <b>Interior-Point</b>, and <b>DFO-L1 Exact Penalty</b>, plus an <b>Auto</b> strategy selector —
-            powered by automatic differentiation, sparse linear algebra, and robust regularization.
+          <div class="flex flex-wrap gap-2 mb-6">
+            <span class="badge">Constrained NLP</span>
+            <span class="badge">Sparse KKT</span>
+            <span class="badge">Automatic Differentiation</span>
+          </div>
+
+          <p class="hero-kicker">Open-source optimization library</p>
+
+          <div class="flex items-start gap-4">
+            <img src="logo.png" alt="CHOMP logo"
+              class="w-16 sm:w-20 md:w-24 h-auto object-contain shrink-0 drop-shadow-[0_18px_35px_rgba(99,102,241,0.25)]" />
+            <div>
+              <h1 class="text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight text-white leading-[1.02]">
+                CHOMP for <span class="grad">nonlinear optimization</span>
+              </h1>
+              <p class="mt-3 text-xs tracking-[0.28em] uppercase text-slate-500">
+                CHOMP Handles Optimization of Many Problems
+              </p>
+            </div>
+          </div>
+
+          <p class="mt-8 text-lg md:text-xl text-slate-700 max-w-3xl leading-8">
+            A research-focused solver library for constrained problems, combining <b>SQP</b>, <b>interior-point</b>,
+            and <b>DFO-L1 trust-region</b> methods with sparse linear algebra, robust regularization, and a native
+            automatic differentiation engine.
           </p>
 
           <div class="mt-8 flex flex-wrap gap-3">
             <a href="#get"
-              class="px-5 py-3 rounded-xl bg-indigo-600 text-white font-semibold shadow hover:bg-indigo-700">Get
+              class="px-6 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 shadow-lg shadow-indigo-950/40">Get
               CHOMP</a>
             <a href="#algorithms"
-              class="px-5 py-3 rounded-xl bg-white ring-1 ring-slate-200 shadow-sm font-semibold hover:bg-slate-50">Explore
+              class="px-6 py-3 rounded-xl bg-white/5 border border-white/10 text-white font-semibold hover:bg-white/10">Explore
               Algorithms</a>
             <a href="#examples"
-              class="px-5 py-3 rounded-xl bg-white ring-1 ring-slate-200 shadow-sm font-semibold hover:bg-slate-50">See
+              class="px-6 py-3 rounded-xl bg-white/5 border border-white/10 text-white font-semibold hover:bg-white/10">See
               Examples</a>
+          </div>
+
+          <div class="hero-metrics">
+            <div class="metric">
+              <div class="metric-value">3 solver modes</div>
+              <div class="metric-label">SQP, IP, DFO-L1</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value">Sparse + native</div>
+              <div class="metric-label">KKT, LDLᵀ, HYKKT</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value">Python + C++</div>
+              <div class="metric-label">nanobind and CMake</div>
+            </div>
           </div>
         </div>
 
-        <!-- Hero side card -->
         <aside class="fade-up w-full lg:w-auto">
-          <div class="bg-white/70 border border-slate-200 rounded-2xl p-5 shadow card">
-            <h3 class="text-lg font-semibold mb-2">Project Links</h3>
-            <div class="space-y-2">
+          <div class="rounded-[28px] p-6 shadow card">
+            <div class="section-kicker">Library Snapshot</div>
+            <h3 class="text-2xl font-bold text-white mt-4">Built for solver experiments and production-grade numerics.</h3>
+            <p class="text-sm text-slate-600 mt-3 leading-7">
+              CHOMP packages advanced constrained optimization methods behind a compact interface, while still exposing
+              the linear algebra and algorithmic knobs that matter in practice.
+            </p>
+
+            <div class="terminal mt-6">
+              <div class="term-bar">
+                <div class="tdot" style="background:#ff5f56"></div>
+                <div class="tdot" style="background:#ffbd2e"></div>
+                <div class="tdot" style="background:#27c93f"></div>
+                <span class="ml-3 text-xs text-slate-500">terminal</span>
+              </div>
+              <div class="p-4 text-left text-sm leading-7">
+                <div><span class="text-indigo-400">$</span> git clone https://github.com/lseman/chomp</div>
+                <div><span class="text-indigo-400">$</span> cd chomp</div>
+                <div><span class="text-indigo-400">$</span> pip install -e .</div>
+              </div>
+            </div>
+
+            <div class="grid sm:grid-cols-2 gap-3 mt-6">
               <a target="_blank" rel="noopener" href="https://github.com/lseman/chomp"
-                class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900 text-white hover:bg-black">
-                <span class="font-semibold">GitHub: lseman/chomp</span>
+                class="panel-link">
+                <span>GitHub Repo</span>
                 <span class="kbd">↗</span>
               </a>
-              <a href="#get"
-                class="block px-3 py-2 rounded-lg bg-indigo-600 text-white text-center hover:bg-indigo-700">Install
-                &amp; Build</a>
+              <a href="#usage" class="panel-link">
+                <span>Quick Start</span>
+                <span class="kbd">→</span>
+              </a>
+              <a href="#ad" class="panel-link">
+                <span>AD Engine</span>
+                <span class="kbd">→</span>
+              </a>
+              <a href="#examples" class="panel-link">
+                <span>Examples</span>
+                <span class="kbd">→</span>
+              </a>
             </div>
-            <p class="text-xs text-slate-500 mt-3">
-              Open-source research code. SQP • Interior-Point • DFO-L1 • Sparse KKT • AD
+
+            <p class="text-xs text-slate-500 mt-5">
+              Open-source research code with SQP, interior-point, derivative-free optimization, sparse KKT systems,
+              and lane-based automatic differentiation.
             </p>
           </div>
         </aside>
@@ -151,19 +636,25 @@
 
     <!-- Scroll cue -->
     <a href="#get"
-      class="absolute bottom-6 left-1/2 -translate-x-1/2 inline-flex flex-col items-center gap-1 text-slate-500 hover:text-slate-700"
+      class="absolute bottom-6 left-1/2 -translate-x-1/2 inline-flex flex-col items-center gap-1 text-slate-500 hover:text-slate-200"
       aria-label="Scroll to Get section">
-      <span class="text-xs tracking-wide">Scroll</span>
+      <span class="text-xs tracking-[0.28em] uppercase">Scroll</span>
       <svg class="w-5 h-5 animate-bounce" viewBox="0 0 24 24" fill="none" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
       </svg>
     </a>
   </header>
 
+  <div class="section-divider"></div>
+
   <!-- ======= Get ======= -->
   <section id="get" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Get CHOMP</h2>
+      <div class="section-head">
+        <div class="section-kicker">Installation</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Get CHOMP</h2>
+        <p>Clone the project, build native kernels, and start solving constrained nonlinear programs from Python or C++.</p>
+      </div>
 
       <div class="grid lg:grid-cols-1 gap-6">
         <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
@@ -224,7 +715,11 @@ cmake --build . -j</code></pre>
   <!-- ======= Algorithms ======= -->
   <section id="algorithms" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Core Algorithms</h2>
+      <div class="section-head">
+        <div class="section-kicker">Solvers</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Core Algorithms</h2>
+        <p>Three complementary solver paths cover smooth constrained NLPs, barrier methods, and derivative-free regimes.</p>
+      </div>
 
       <!-- 2-column: SQP + IP -->
       <div class="grid md:grid-cols-2 gap-6 mb-6">
@@ -382,7 +877,11 @@ cmake --build . -j</code></pre>
   <!-- ======= AutoDiff ======= -->
   <section id="ad" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Automatic Differentiation & Graph Engine</h2>
+      <div class="section-head">
+        <div class="section-kicker">Automatic Differentiation</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Automatic Differentiation & Graph Engine</h2>
+        <p>A lane-parallel graph engine feeds gradients, Jacobians, Hessian-vector products, and sparse KKT assembly.</p>
+      </div>
 
       <div class="grid lg:grid-cols-2 gap-6">
         <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
@@ -458,7 +957,11 @@ print("vᵀHv =", float(v @ Hv))</code></pre>
   <!-- ======= DFO-L1 ======= -->
   <section id="l1" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Derivative-Free L1 Exact Penalty (Trust-Region)</h2>
+      <div class="section-head">
+        <div class="section-kicker">Derivative-Free</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Derivative-Free L1 Exact Penalty (Trust-Region)</h2>
+        <p>When derivatives are unavailable or unreliable, CHOMP falls back to a trust-region exact-penalty strategy.</p>
+      </div>
 
       <div class="grid lg:grid-cols-3 gap-6">
         <article class="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 shadow card">
@@ -520,7 +1023,11 @@ print("vᵀHv =", float(v @ Hv))</code></pre>
   <!-- ======= Usage ======= -->
   <section id="usage" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Quick Start</h2>
+      <div class="section-head">
+        <div class="section-kicker">Usage</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Quick Start</h2>
+        <p>The Python-facing API stays compact whether you work with raw callables or symbolic models.</p>
+      </div>
 
       <div class="grid md:grid-cols-1 gap-8">
         <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
@@ -594,7 +1101,11 @@ print("x* =", x_star, info.status)</code></pre>
   <!-- ======= API ======= -->
   <section id="api" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">API Cheatsheet</h2>
+      <div class="section-head">
+        <div class="section-kicker">Reference</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">API Cheatsheet</h2>
+        <p>The main classes and configuration objects you reach for most often when embedding CHOMP in applications.</p>
+      </div>
       <div class="grid md:grid-cols-2 gap-6">
         <div class="border border-slate-200 rounded-xl p-4 bg-white">
           <h3 class="font-semibold mb-2">Key Classes</h3>
@@ -627,7 +1138,11 @@ print("x* =", x_star, info.status)</code></pre>
   <!-- ======= Examples ======= -->
   <section id="examples" class="alt-section py-14">
     <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Worked Examples</h2>
+      <div class="section-head">
+        <div class="section-kicker">Examples</div>
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Worked Examples</h2>
+        <p>Minimal examples that mirror common constrained optimization workflows and solver configurations.</p>
+      </div>
       <div class="grid lg:grid-cols-1 gap-8">
         <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
           <h3 class="text-lg font-semibold mb-2">Quadratic with Linear Constraints (SQP)</h3>
@@ -676,11 +1191,14 @@ print(x, info.status)</code></pre>
   </section>
 
   <!-- ======= Footer ======= -->
-  <footer class="py-10 bg-slate-900 text-slate-200">
+  <footer class="py-10 bg-slate-900 text-slate-200 border-t border-slate-700">
     <div class="max-w-7xl mx-auto px-6">
       <div class="flex flex-col md:flex-row items-center justify-between gap-4">
-        <p class="text-sm">© <span id="year"></span> CHOMP — Nonlinear Optimization Solver</p>
-        <div class="text-xs text-slate-400">SQP • Interior-Point • DFO-L1 • Auto • Sparse KKT • AD</div>
+        <div class="text-center md:text-left">
+          <p class="text-sm font-semibold">© <span id="year"></span> CHOMP — Nonlinear Optimization Library</p>
+          <p class="text-xs text-slate-400 mt-1">Research-oriented tooling for constrained nonlinear programming.</p>
+        </div>
+        <div class="text-xs text-slate-400 uppercase tracking-[0.22em]">SQP • Interior-Point • DFO-L1 • Auto • Sparse KKT • AD</div>
       </div>
     </div>
     <div class="mt-4 pt-4 border-t border-slate-700 text-center text-xs text-slate-400">
@@ -731,8 +1249,8 @@ print(x, info.status)</code></pre>
       const nav = document.getElementById('topnav');
       const hero = document.querySelector('header');
 
-      const solid = () => nav && nav.classList.add('backdrop-blur', 'bg-white/80', 'border-b', 'border-slate-200');
-      const clear = () => nav && nav.classList.remove('backdrop-blur', 'bg-white/80', 'border-b', 'border-slate-200');
+      const solid = () => nav && nav.classList.add('backdrop-blur-xl', 'bg-slate-950/80', 'border-b', 'border-white/10', 'shadow-2xl', 'shadow-black/20');
+      const clear = () => nav && nav.classList.remove('backdrop-blur-xl', 'bg-slate-950/80', 'border-b', 'border-white/10', 'shadow-2xl', 'shadow-black/20');
 
       solid();
 
@@ -811,27 +1329,12 @@ print(x, info.status)</code></pre>
           const id = location.hash.slice(1);
           setActive(id);
           const target = document.getElementById(id);
-          if (target) target.scrollIntoView({ behavior: 'instant', block: 'start' });
+          if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
         } else {
           chooseAndSetActive();
         }
       };
       requestAnimationFrame(init);
-
-      // Alternating section backgrounds
-      const applyAlternating = () => {
-        const secs = Array.from(document.querySelectorAll('.alt-section'));
-        secs.forEach((sec, idx) => {
-          sec.classList.remove('bg-white', 'bg-slate-50');
-          sec.classList.add(idx % 2 === 0 ? 'bg-white' : 'bg-slate-50');
-        });
-      };
-      requestAnimationFrame(applyAlternating);
-      window.addEventListener('resize', applyAlternating);
-
-      // Observe DOM changes
-      const mo = new MutationObserver(() => applyAlternating());
-      mo.observe(document.body, { childList: true, subtree: true });
 
       // Recompute on resize (nav height)
       window.addEventListener('resize', () => {
