@@ -21,8 +21,8 @@
 #include <variant>
 #include <vector>
 
-#include "ad/ADBindings.h" // GradFn, LagHessFn, compile_*
-#include "ad/Suspect.h"
+#include "ad/ad_bindings.h" // GradFn, LagHessFn, compile_*
+#include "ad/suspect.h"
 #include "definitions.h"
 
 struct ModelSuspectReport {

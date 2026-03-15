@@ -1,10 +1,10 @@
 // ADGraph.cpp — ULTRA-FAST C++23 VERSION (lanes, fused kernels, minimal allocs)
-#include "../../include/ad/ADGraph.h"
-#include "../../include/ad/Definitions.h"
-#include "../../include/ad/Variable.h"
+#include "../../include/ad/ad_graph.h"
+#include "../../include/ad/definitions.h"
+#include "../../include/ad/variable.h"
 
-#include "../../include/ad/OpDispatch.h"
-#include "../../include/ad/OpTraits.h"
+#include "../../include/ad/op_dispatch.h"
+#include "../../include/ad/op_traits.h"
 #include "../../include/ad/egraph.h"
 
 #include <algorithm>

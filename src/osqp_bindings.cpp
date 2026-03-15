@@ -6,7 +6,7 @@
 
 #include <optional>
 
-#include "../include/qp/OSQP.h"
+#include "../include/qp/osqp.h"
 
 namespace py = pybind11;
 using namespace sosqp;

@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "../include/qp/QDLDL.h"
+#include "../include/linear_system/qdldl.h"
 
 namespace py = pybind11;
 using namespace qdldl23;

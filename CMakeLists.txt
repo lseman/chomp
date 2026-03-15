@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 # Project
 # ------------------------------------------------------------------
 project(ad VERSION 0.1.0 LANGUAGES CXX C)
+include(CTest)
 
 # C++ standard (use features without GNU extensions)
 set(CMAKE_CXX_STANDARD 23)
@@ -14,16 +15,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Build options
-option(AD_ENABLE_OPENMP   "Enable OpenMP"                     OFF)
-option(AD_ENABLE_PIQP     "Build piqp_cpp Python bindings"    OFF)
-option(AD_ENABLE_OSQP     "Build osqp_cpp Python bindings"    OFF)
-option(AD_ENABLE_QDLDL    "Build qdldl_cpp Python bindings"   OFF)
-option(AD_ENABLE_AMDQG    "Build amdqg Python bindings"       OFF)
-option(AD_ENABLE_L1CORE   "Build l1core Python bindings"      OFF)
-option(AD_ENABLE_CHOLMOD  "Enable HYKKT via SuiteSparse"      OFF)
-option(AD_ENABLE_SPECTRA  "Fetch and enable Spectra via CPM"  OFF)
-option(AD_ENABLE_GUROBI   "Enable GUROBI linkage"             OFF)
-option(AD_ENABLE_STDEXEC "Enable stdexec usage"               ON)
+option(AD_ENABLE_OPENMP "Enable OpenMP" OFF)
+option(AD_ENABLE_PIQP "Build piqp_cpp Python bindings" OFF)
+option(AD_ENABLE_OSQP "Build osqp_cpp Python bindings" OFF)
+option(AD_ENABLE_QDLDL "Build qdldl_cpp Python bindings" OFF)
+option(AD_ENABLE_AMDQG "Build amdqg Python bindings" OFF)
+# option(AD_ENABLE_L1CORE   "Build l1core Python bindings"      OFF)
+option(AD_ENABLE_CHOLMOD "Enable HYKKT via SuiteSparse" OFF)
+option(AD_ENABLE_SPECTRA "Fetch and enable Spectra via CPM" OFF)
+option(AD_ENABLE_GUROBI "Enable GUROBI linkage" OFF)
+option(AD_ENABLE_STDEXEC "Enable stdexec usage" ON)
 # option(AD_ENABLE_FORETREE "Build foretree Python bindings"   OFF)
 
 # ------------------------------------------------------------------
@@ -45,14 +46,14 @@ endif()
 # Dependencies
 # ------------------------------------------------------------------
 
-if (AD_ENABLE_STDEXEC)
+if(AD_ENABLE_STDEXEC)
   message(STATUS "stdexec enabled")
   cpmaddpackage(
-  NAME stdexec
-  GITHUB_REPOSITORY NVIDIA/stdexec
-  GIT_TAG main
-  OPTIONS "STDEXEC_BUILD_TESTS OFF" "STDEXEC_BUILD_EXAMPLES OFF" "STDEXEC_BUILD_BENCHMARKS OFF" "STDEXEC_BUILD_DOCS OFF" "BUILD_TESTING OFF"
-)
+    NAME stdexec
+    GITHUB_REPOSITORY NVIDIA/stdexec
+    GIT_TAG main
+    OPTIONS "STDEXEC_BUILD_TESTS OFF" "STDEXEC_BUILD_EXAMPLES OFF" "STDEXEC_BUILD_BENCHMARKS OFF" "STDEXEC_BUILD_DOCS OFF" "BUILD_TESTING OFF"
+  )
 else()
   message(STATUS "stdexec disabled")
 endif()
@@ -171,11 +172,11 @@ function(_ad_link_gurobi tgt)
   if(EXISTS "${_gurobi_inc}" AND EXISTS "${_gurobi_lib}")
     target_include_directories(${tgt} PRIVATE "${_gurobi_inc}")
     find_library(GUROBI_SHARED NAMES gurobi gurobi110 PATHS "${_gurobi_lib}")
-    find_library(GUROBI_CPPA  NAMES gurobi_c++            PATHS "${_gurobi_lib}")
+    find_library(GUROBI_CPPA NAMES gurobi_c++ PATHS "${_gurobi_lib}")
     if(GUROBI_SHARED AND GUROBI_CPPA)
       target_link_libraries(${tgt} PRIVATE "${GUROBI_CPPA}" "${GUROBI_SHARED}")
       if(UNIX AND NOT APPLE)
-        set_property(TARGET ${tgt} APPEND PROPERTY BUILD_RPATH  "${_gurobi_lib}")
+        set_property(TARGET ${tgt} APPEND PROPERTY BUILD_RPATH "${_gurobi_lib}")
         set_property(TARGET ${tgt} APPEND PROPERTY INSTALL_RPATH "${_gurobi_lib}")
       endif()
     else()
@@ -183,7 +184,7 @@ function(_ad_link_gurobi tgt)
     endif()
   else()
     message(WARNING "GUROBI not found at GUROBI_ROOT='${GUROBI_ROOT}'. "
-                    "To disable, set -DAD_ENABLE_GUROBI=OFF.")
+      "To disable, set -DAD_ENABLE_GUROBI=OFF.")
   endif()
 endfunction()
 
@@ -219,7 +220,7 @@ if(AD_ENABLE_CHOLMOD)
     message(STATUS "CHOLMOD enabled via: ${AD_CHOLMOD_PROVIDER}")
   else()
     message(WARNING "AD_ENABLE_CHOLMOD=ON but CHOLMOD was not found. "
-                    "HYKKT cholmod strategy will be disabled.")
+      "HYKKT cholmod strategy will be disabled.")
   endif()
 endif()
 
@@ -248,12 +249,12 @@ function(ad__common_target_setup tgt)
   target_compile_features(${tgt} PRIVATE cxx_std_23)
   target_include_directories(${tgt}
     PRIVATE
-      "${PROJECT_SOURCE_DIR}/src"
+    "${PROJECT_SOURCE_DIR}/src"
   )
   target_link_libraries(${tgt}
     PRIVATE
-      fmt::fmt
-      Eigen3::Eigen
+    fmt::fmt
+    Eigen3::Eigen
   )
   if(AD_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
     target_link_libraries(${tgt} PRIVATE OpenMP::OpenMP_CXX)
@@ -299,7 +300,7 @@ set(AD_SOURCES
   src/ad/ADGraph.cpp
 )
 ad_add_nanobind_module(ad ${AD_SOURCES})
-target_link_libraries(ad PRIVATE m dl)  # system libs where available
+target_link_libraries(ad PRIVATE m dl) # system libs where available
 # _ad_link_gurobi(ad)                      # optional GUROBI
 
 # chomp (nanobind)
@@ -318,7 +319,7 @@ target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
 # # link openmp to chomp if available
 target_link_libraries(chomp PRIVATE OpenMP::OpenMP_CXX)
 
-  find_package(TBB COMPONENTS tbb)
+find_package(TBB COMPONENTS tbb)
 if(TARGET TBB::tbb)
   target_link_libraries(chomp PRIVATE TBB::tbb)
 else()
@@ -334,35 +335,47 @@ else()
 endif()
 
 if(AD_ENABLE_FORETREE)
-# foretree (pybind11)
-ad_add_pybind_module(foretree tree/src/foretree_pybind.cpp)
-target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
-find_package(TBB QUIET COMPONENTS tbb)
-if(TARGET TBB::tbb)
-  target_link_libraries(foreforest PRIVATE TBB::tbb)
-else()
-  message(WARNING "oneTBB not found. Building foreforest without parallel backend.")
-  target_compile_definitions(foreforest PRIVATE FF_NO_TBB)
+  # foretree (pybind11)
+  ad_add_pybind_module(foretree tree/src/foretree_pybind.cpp)
+  target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
+  find_package(TBB QUIET COMPONENTS tbb)
+  if(TARGET TBB::tbb)
+    target_link_libraries(foreforest PRIVATE TBB::tbb)
+  else()
+    message(WARNING "oneTBB not found. Building foreforest without parallel backend.")
+    target_compile_definitions(foreforest PRIVATE FF_NO_TBB)
+  endif()
 endif()
+
+if(BUILD_TESTING)
+  add_test(
+    NAME chomp_ip_smoke
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_ip_smoke.py
+  )
+  set_tests_properties(
+    chomp_ip_smoke
+    PROPERTIES ENVIRONMENT
+    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
+  )
 endif()
 
 
 # Optional modules
-if(AD_ENABLE_L1CORE)
-  ad_add_pybind_module(l1core
-    l1penalty/src/bindings.cpp
-    l1penalty/src/Solvers.cpp
-    l1penalty/src/PolynomialVector.cpp
-    l1penalty/src/pointWork.cpp
-    l1penalty/src/Overloads.cpp
-    l1penalty/src/l1Solver.cpp
-    l1penalty/src/Helpers.cpp
-    l1penalty/src/l1Fun.cpp
-    l1penalty/src/TRModel.cpp
-  )
-endif()
+# if(AD_ENABLE_L1CORE)
+#   ad_add_pybind_module(l1core
+#     l1penalty/src/bindings.cpp
+#     l1penalty/src/Solvers.cpp
+#     l1penalty/src/PolynomialVector.cpp
+#     l1penalty/src/pointWork.cpp
+#     l1penalty/src/Overloads.cpp
+#     l1penalty/src/l1Solver.cpp
+#     l1penalty/src/Helpers.cpp
+#     l1penalty/src/l1Fun.cpp
+#     l1penalty/src/TRModel.cpp
+#   )
+# endif()
 
-  ad_add_pybind_module(simplex_core src/simplex_bindings.cpp)
+# ad_add_pybind_module(simplex_core src/simplex_bindings.cpp)
 
 
 if(AD_ENABLE_PIQP)

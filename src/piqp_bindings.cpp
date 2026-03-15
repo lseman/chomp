@@ -3,7 +3,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "../include/qp/PIQP.h"
+#include "../include/qp/piqp.h"
 
 namespace py = pybind11;
 using namespace piqp;

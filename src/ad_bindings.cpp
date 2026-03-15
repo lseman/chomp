@@ -28,13 +28,13 @@
 #include <utility>
 #include <vector>
 
-#include "../include/ad/ADGraph.h"
-#include "../include/ad/Definitions.h"
-#include "../include/ad/Expression.h"
-#include "../include/ad/Variable.h"
+#include "../include/ad/ad_graph.h"
+#include "../include/ad/definitions.h"
+#include "../include/ad/expression.h"
+#include "../include/ad/variable.h"
 
 // if you use tsl::robin_* elsewhere, keep includes in your project build.
-#include "../include/ad/ADBindings.h" // pyu, pyconv
+#include "../include/ad/ad_bindings.h" // pyu, pyconv
 #include "../third_party/robin_map.h"
 #include "../third_party/robin_set.h"
 

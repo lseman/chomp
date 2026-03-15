@@ -7,7 +7,7 @@
 
 #include <cstring>  // for std::memcpy
 
-#include "../include/amd.h"  // <-- put your C++ AMD/CSR + Supernode code here (no main())
+#include "../include/linear_system/amd.h"  // <-- put your C++ AMD/CSR + Supernode code here (no main())
 
 namespace py = pybind11;
 using i32 = int32_t;

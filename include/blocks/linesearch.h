@@ -31,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-#include "../ip/Aux.h"  // RichardsonExtrapolator
+#include "../ip/aux.h"  // RichardsonExtrapolator
 #include "../model.h"
 #include "filter.h"  // Filter class
 #include "funnel.h"  // FunnelConfig, Funnel
@@ -114,6 +114,69 @@ static inline bool getattr_or_bool(const nb::object& obj, const char* name,
 
 static inline double safe_log_barrier(double val, double eps) {
     return std::log(std::max(val, eps));
+}
+
+struct BoundBarrierData {
+    std::optional<dvec> lb;
+    std::optional<dvec> ub;
+};
+
+static inline bool compute_bound_barrier_log_sum(const dvec& x,
+                                                 const BoundBarrierData& bounds,
+                                                 double barrier_eps,
+                                                 double positivity_eps,
+                                                 double& out_sum) {
+    out_sum = 0.0;
+
+    if (bounds.lb && bounds.lb->size() == x.size()) {
+        const dvec& lb = *bounds.lb;
+        for (Eigen::Index i = 0; i < x.size(); ++i) {
+            if (!std::isfinite(lb[i])) continue;
+            const double dist = x[i] - lb[i];
+            if (dist <= positivity_eps) return false;
+            out_sum += safe_log_barrier(dist, barrier_eps);
+        }
+    }
+
+    if (bounds.ub && bounds.ub->size() == x.size()) {
+        const dvec& ub = *bounds.ub;
+        for (Eigen::Index i = 0; i < x.size(); ++i) {
+            if (!std::isfinite(ub[i])) continue;
+            const double dist = ub[i] - x[i];
+            if (dist <= positivity_eps) return false;
+            out_sum += safe_log_barrier(dist, barrier_eps);
+        }
+    }
+
+    return std::isfinite(out_sum);
+}
+
+static inline double bound_barrier_directional_derivative(
+    const dvec& x, const dvec& dx, const BoundBarrierData& bounds, double mu,
+    double barrier_eps) {
+    if (x.size() != dx.size()) return 0.0;
+
+    double deriv = 0.0;
+
+    if (bounds.lb && bounds.lb->size() == x.size()) {
+        const dvec& lb = *bounds.lb;
+        for (Eigen::Index i = 0; i < x.size(); ++i) {
+            if (!std::isfinite(lb[i])) continue;
+            const double dist = std::max(x[i] - lb[i], barrier_eps);
+            deriv -= mu * dx[i] / dist;
+        }
+    }
+
+    if (bounds.ub && bounds.ub->size() == x.size()) {
+        const dvec& ub = *bounds.ub;
+        for (Eigen::Index i = 0; i < x.size(); ++i) {
+            if (!std::isfinite(ub[i])) continue;
+            const double dist = std::max(ub[i] - x[i], barrier_eps);
+            deriv += mu * dx[i] / dist;
+        }
+    }
+
+    return deriv;
 }
 
 static inline double compute_theta(const dvec* cE, const dvec* cI,
@@ -281,6 +344,7 @@ class LineSearcher {
         }
 
         const double barrier_eps = std::max(cfg_.ls_theta_eps, 1e-8 * mu);
+        const BoundBarrierData bounds{model->get_lb(), model->get_ub()};
         double phi0 = f0;
         if (s.size() > 0) {
             // phi0 = f0 - mu * sum(log(s))
@@ -288,13 +352,52 @@ class LineSearcher {
                              return safe_log_barrier(v, barrier_eps);
                          })).sum();
         }
+        double bound_log_sum0 = 0.0;
+        if (!compute_bound_barrier_log_sum(x, bounds, barrier_eps,
+                                           cfg_.ls_theta_eps,
+                                           bound_log_sum0)) {
+            return {cfg_.ls_min_alpha, 0, true, dvec(), dvec()};
+        }
+        phi0 -= mu * bound_log_sum0;
         if (!std::isfinite(phi0))
             return {cfg_.ls_min_alpha, 0, true, dvec(), dvec()};
 
         double theta0 = theta0_opt ? *theta0_opt : compute_theta(cE0, cI0, s);
+        const double d_phi_total =
+            d_phi +
+            bound_barrier_directional_derivative(x, dx, bounds, mu, barrier_eps);
+        const double filter_theta_min =
+            std::max(cfg_.ls_theta_eps,
+                     getattr_or_double(cfg_obj_, "filter_theta_min", 1e-8));
+        const double filter_gamma_theta =
+            std::clamp(getattr_or_double(cfg_obj_, "filter_gamma_theta", 1e-5),
+                       0.0, 0.5);
+        const double filter_gamma_phi =
+            std::clamp(getattr_or_double(cfg_obj_, "filter_gamma_f", 1e-5),
+                       0.0, 0.5);
+        const auto filter_accepts_trial =
+            [&](double alpha_trial, double theta_trial,
+                double phi_trial) -> bool {
+            if (!filter_) return false;
+            if (!filter_->is_acceptable(theta_trial, phi_trial)) return false;
+
+            // IPOPT-style filter globalization switches to Armijo on the
+            // barrier merit once we are effectively feasible. Without this,
+            // bound-only problems (theta == 0) can accept uphill steps.
+            if (theta0 <= filter_theta_min) {
+                return phi_trial <= phi0 + cfg_.ls_sufficient_decrease *
+                                                alpha_trial * d_phi_total;
+            }
+
+            const bool theta_progress =
+                theta_trial <= (1.0 - filter_gamma_theta) * theta0;
+            const bool phi_progress =
+                phi_trial <= phi0 - filter_gamma_phi * theta0;
+            return theta_progress || phi_progress;
+        };
 
         // Descent check
-        if (d_phi >= -cfg_.ls_theta_eps) {
+        if (d_phi_total >= -cfg_.ls_theta_eps) {
             return {alpha_max, 0, true, dvec(), dvec()};
         }
 
@@ -367,6 +470,15 @@ class LineSearcher {
 
             // Evaluate f, cE, cI at x + α dx
             dvec x_t = x + alpha * dx;
+            double bound_log_sum_t = 0.0;
+            if (!compute_bound_barrier_log_sum(x_t, bounds, barrier_eps,
+                                               cfg_.ls_theta_eps,
+                                               bound_log_sum_t)) {
+                alpha *= cfg_.ls_backtrack;
+                ++it;
+                ++watchdog;
+                continue;
+            }
             if (!eval_step_(model, x_t)) {  // step eval failed
                 alpha *= cfg_.ls_backtrack;
                 ++it;
@@ -387,12 +499,13 @@ class LineSearcher {
                 phi_t -= mu * (s_t.array().unaryExpr([&](double v) {
                                   return safe_log_barrier(v, barrier_eps);
                               })).sum();
-                if (!std::isfinite(phi_t)) {
-                    alpha *= cfg_.ls_backtrack;
-                    ++it;
-                    ++watchdog;
-                    continue;
-                }
+            }
+            phi_t -= mu * bound_log_sum_t;
+            if (!std::isfinite(phi_t)) {
+                alpha *= cfg_.ls_backtrack;
+                ++it;
+                ++watchdog;
+                continue;
             }
 
             if (phi_t < best_phi) {
@@ -414,8 +527,8 @@ class LineSearcher {
                     return {alpha, it, false, dvec(), dvec()};
                 }
             } else if (filter_) {
-                if (filter_->is_acceptable(theta_t, f_t)) {
-                    filter_->add_if_acceptable(theta_t, f_t);
+                if (filter_accepts_trial(alpha, theta_t, phi_t)) {
+                    filter_->add_if_acceptable(theta_t, phi_t);
                     push_phi_(phi_t);
                     return {alpha, it, false, dvec(), dvec()};
                 }
@@ -427,7 +540,8 @@ class LineSearcher {
                     phi_ref = phi_hist_.max() + cfg_.nm_safeguard;
                 }
                 if (phi_t <=
-                    phi_ref + cfg_.ls_sufficient_decrease * alpha * d_phi) {
+                    phi_ref +
+                        cfg_.ls_sufficient_decrease * alpha * d_phi_total) {
                     push_phi_(phi_t);
                     return {alpha, it, false, dvec(), dvec()};
                 }
@@ -477,9 +591,13 @@ class LineSearcher {
 
                     dvec x_ref = x + alpha_ref * dx_ref;
                     dvec s_ref = s.size() ? (s + alpha_ref * ds_ref) : dvec();
+                    double bound_log_sum_ref = 0.0;
 
-                    if (s_ref.size() == 0 ||
-                        (s_ref.array() > cfg_.ls_theta_eps).all()) {
+                    if ((s_ref.size() == 0 ||
+                         (s_ref.array() > cfg_.ls_theta_eps).all()) &&
+                        compute_bound_barrier_log_sum(
+                            x_ref, bounds, barrier_eps, cfg_.ls_theta_eps,
+                            bound_log_sum_ref)) {
                         if (eval_step_(model, x_ref)) {
                             const double f_ref = step_f_;
                             if (std::isfinite(f_ref)) {
@@ -492,6 +610,7 @@ class LineSearcher {
                                                 v, barrier_eps);
                                         })).sum();
                                 }
+                                phi_ref_acc -= mu * bound_log_sum_ref;
                                 if (std::isfinite(phi_ref_acc)) {
                                     const dvec* cE_r = step_cE_;
                                     const dvec* cI_r = step_cI_;
@@ -507,11 +626,11 @@ class LineSearcher {
                                                 theta0, f0, theta_ref, f_ref,
                                                 pred_df, pred_dtheta);
                                     } else if (filter_) {
-                                        ok = filter_->is_acceptable(theta_ref,
-                                                                    f_ref);
+                                        ok = filter_accepts_trial(
+                                            alpha_ref, theta_ref, phi_ref_acc);
                                         if (ok)
                                             filter_->add_if_acceptable(
-                                                theta_ref, f_ref);
+                                                theta_ref, phi_ref_acc);
                                     } else {
                                         double phi_ref_cmp = phi0;
                                         if (cfg_.merit_mode ==
@@ -522,7 +641,7 @@ class LineSearcher {
                                         ok = (phi_ref_acc <=
                                               phi_ref_cmp +
                                                   cfg_.ls_sufficient_decrease *
-                                                      alpha_ref * d_phi);
+                                                      alpha_ref * d_phi_total);
                                     }
                                     if (ok) {
                                         push_phi_(phi_ref_acc);

@@ -3,8 +3,8 @@
 #pragma once
 #include <queue>
 
-#include "ADGraph.h"
-#include "Definitions.h"
+#include "ad_graph.h"
+#include "definitions.h"
 #include "egraph.h"
 
 // Forward decls from your codebase
