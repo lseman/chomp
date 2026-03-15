@@ -647,10 +647,12 @@ private:
     }
 
 public:
-    ModelSuspectReport run_convexity_analysis() const;
+    ModelSuspectReport run_convexity_analysis(
+        bool print_summary = false) const;
 };
 
-inline ModelSuspectReport ModelC::run_convexity_analysis() const {
+inline ModelSuspectReport ModelC::run_convexity_analysis(
+    bool print_summary) const {
     using namespace suspect_adapter;
     using Traits = suspect::SuspectTraits<ModelView, ADNodePtr>;
 
@@ -733,7 +735,7 @@ inline ModelSuspectReport ModelC::run_convexity_analysis() const {
     const auto                             &info = A.analyze(/*max_iter=*/10, /*tol=*/1e-12);
 
     ModelSuspectReport R;
-    R.summary   = A.buildSummary();
+    R.summary   = A.buildSummary(print_summary);
     R.node_info = info; // keep if you want node-level diagnostics
     return R;
 }

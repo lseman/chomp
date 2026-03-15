@@ -26,8 +26,11 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "../include/ip/stepper.h"
 #include "../include/model.h"
@@ -128,6 +131,11 @@ static void print_iteration_row(int k, const SolverInfo &info, const std::string
 
 class chomp {
 public:
+    ~chomp() {
+        close();
+        unregister_instance_(this);
+    }
+
     chomp(nb::object  f,
           nb::object  c_ineq_list, // list[Callable] or None
           nb::object  c_eq_list,   // list[Callable] or None
@@ -136,6 +144,7 @@ public:
           const dvec &x0,          // 1-D
           nb::object  cfg_or_none)  // None or config-like
     {
+        register_instance_(this);
         // --- config ---
         cfg_ = cfg_or_none.is_none() ? make_default_config_object() : cfg_or_none;
         ensure_config_aliases(cfg_);
@@ -180,15 +189,18 @@ public:
         if (mode != "ip" && mode != "sqp" && mode != "auto" && mode != "dfo") mode = "auto";
         mode_ = mode;
 
-        ModelC *m = nullptr;
         try {
-            m = new ModelC(f, c_ineq_list, c_eq_list, n_, lb_or_none, ub_or_none);
+            model_owner_ = std::make_unique<ModelC>(f, c_ineq_list, c_eq_list, n_,
+                                                    lb_or_none, ub_or_none);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("chomp: ModelC construction failed: ") + e.what());
         }
+        ModelC *m = model_owner_.get();
 
         try {
-            m->run_convexity_analysis();
+            const bool print_convexity_analysis =
+                get_bool_attr_or(cfg_, "print_convexity_analysis", false);
+            m->run_convexity_analysis(print_convexity_analysis);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("chomp: convexity analysis failed: ") + e.what());
         }
@@ -196,14 +208,14 @@ public:
         // IP stepper + state
         try {
             ip_state_   = IPState(); // default-init
-            ip_stepper_ = new InteriorPointStepper(cfg_, m);
+            ip_stepper_ = std::make_unique<InteriorPointStepper>(cfg_, m);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("chomp: IP stepper construction failed: ") + e.what());
         }
 
         // SQP stepper
         try {
-            sqp_stepper_ = new SQPStepper(cfg_, nb::none(), m);
+            sqp_stepper_ = std::make_unique<SQPStepper>(cfg_, nb::none(), m);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("chomp: SQP stepper construction failed: ") + e.what());
         }
@@ -215,8 +227,43 @@ public:
         reject_streak_ = small_alpha_streak_ = no_progress_streak_ = 0;
     }
 
+    void close() {
+        if (closed_) return;
+        closed_ = true;
+
+        sqp_stepper_.reset();
+        ip_stepper_.reset();
+        model_owner_.reset();
+
+        cfg_ = nb::none();
+        x_.resize(0);
+        lam_.resize(0);
+        nu_.resize(0);
+        n_ = mI_ = mE_ = 0;
+        mode_ = "closed";
+        prev_theta_.reset();
+        reject_streak_ = small_alpha_streak_ = no_progress_streak_ = 0;
+    }
+
+    static void cleanup_live_instances() {
+        std::vector<chomp *> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(live_instances_mutex_());
+            snapshot = live_instances_();
+        }
+        for (chomp *instance : snapshot) {
+            if (instance) {
+                try {
+                    instance->close();
+                } catch (...) {
+                }
+            }
+        }
+    }
+
     // Solve; returns the final x as an Eigen vector (NumPy array in Python)
     dvec solve(int max_iter = 100, double tol = 1e-8, bool verbose = true) {
+        if (closed_) return x_;
         const double tol_stat = get_float_attr_or(cfg_, "tol_stat", 1e-6);
         const double tol_feas = get_float_attr_or(cfg_, "tol_feas", 1e-6);
         const double tol_comp = get_float_attr_or(cfg_, "tol_comp", 1e-6);
@@ -254,6 +301,28 @@ public:
     }
 
 private:
+    static std::vector<chomp *> &live_instances_() {
+        static std::vector<chomp *> instances;
+        return instances;
+    }
+
+    static std::mutex &live_instances_mutex_() {
+        static std::mutex m;
+        return m;
+    }
+
+    static void register_instance_(chomp *instance) {
+        std::lock_guard<std::mutex> lock(live_instances_mutex_());
+        live_instances_().push_back(instance);
+    }
+
+    static void unregister_instance_(chomp *instance) {
+        std::lock_guard<std::mutex> lock(live_instances_mutex_());
+        auto &instances = live_instances_();
+        instances.erase(std::remove(instances.begin(), instances.end(), instance),
+                        instances.end());
+    }
+
     // ---- steps --------------------------------------------------------------
     SolverInfo ip_step_(int it) {
         auto [x_out, lam_out, nu_out, info] = ip_stepper_->step(x_, lam_, nu_, it, ip_state_);
@@ -311,22 +380,19 @@ private:
 private:
     // Core problem bits
     nb::object cfg_;
-    nb::object model_;
-    nb::object hess_;
-    nb::object rest_;
-    nb::object reg_;
-    nb::object qp_;
+    std::unique_ptr<ModelC> model_owner_;
 
     // Steppers
-    InteriorPointStepper *ip_stepper_ = nullptr;
-    IPState               ip_state_;
-    SQPStepper           *sqp_stepper_ = nullptr;
+    std::unique_ptr<InteriorPointStepper> ip_stepper_;
+    IPState                               ip_state_;
+    std::unique_ptr<SQPStepper>           sqp_stepper_;
 
     // State
     dvec x_;
     dvec lam_;
     dvec nu_;
     int  n_{0}, mI_{0}, mE_{0};
+    bool closed_{false};
 
     // Mode + trackers
     std::string           mode_;
@@ -421,6 +487,7 @@ NB_MODULE(chomp, m) {
         .def_rw("constraint_tol", &ChompConfig::constraint_tol)
         .def_rw("max_active_set_iter", &ChompConfig::max_active_set_iter)
         .def_rw("curvature_aware", &ChompConfig::curvature_aware)
+        .def_rw("feasibility_emphasis", &ChompConfig::feasibility_emphasis)
         .def_rw("use_prec", &ChompConfig::use_prec)
         .def_rw("prec_kind", &ChompConfig::prec_kind)
         .def_rw("box_mode", &ChompConfig::box_mode)
@@ -503,6 +570,17 @@ NB_MODULE(chomp, m) {
         .def(nb::init<nb::object, nb::object, nb::object, nb::object, nb::object, const dvec &, nb::object>(), arg("f"),
              arg("c_ineq") = nb::none(), arg("c_eq") = nb::none(), arg("lb") = nb::none(), arg("ub") = nb::none(),
              arg("x0"), arg("config") = nb::none())
+        .def("close", &chomp::close, "Release solver-owned Python/C++ resources early.")
+        .def("__enter__", [](chomp &self) -> chomp & { return self; }, nb::rv_policy::reference_internal)
+        .def("__exit__", [](chomp &self, nb::args) {
+            self.close();
+            return false;
+        })
         .def("solve", &chomp::solve, arg("max_iter") = 100, arg("tol") = 1e-8, arg("verbose") = true,
              "Run hybrid solve; returns the final x (Eigen/NumPy).");
+
+    m.def("_cleanup_live_solvers", &chomp::cleanup_live_instances);
+
+    nb::module_ atexit = nb::module_::import_("atexit");
+    atexit.attr("register")(m.attr("_cleanup_live_solvers"));
 }

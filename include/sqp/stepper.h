@@ -66,6 +66,11 @@ class SQPStepper {
         dopt = new dopt::DOptStabilizer(dopt_cfg);
     }
 
+    ~SQPStepper() {
+        delete dopt;
+        dopt = nullptr;
+    }
+
     // --- termination bookkeeping ---
     double prev_f_{std::numeric_limits<double>::quiet_NaN()};
     double prev_theta_{std::numeric_limits<double>::quiet_NaN()};
@@ -416,6 +421,20 @@ class SQPStepper {
             get_attr_or<bool>(cfg, "curvature_aware", tc.curvature_aware);
         tc.criticality_enabled = get_attr_or<bool>(cfg, "criticality_enabled",
                                                    tc.criticality_enabled);
+        tc.constraint_weight =
+            get_attr_or<double>(cfg, "constraint_weight", tc.constraint_weight);
+        tc.feasibility_restoration = get_attr_or<bool>(
+            cfg, "feasibility_emphasis", tc.feasibility_restoration);
+        tc.restoration_max_iter = get_attr_or<int>(
+            cfg, "restoration_max_iter", tc.restoration_max_iter);
+        tc.restoration_eta =
+            get_attr_or<double>(cfg, "restoration_eta", tc.restoration_eta);
+        tc.restoration_backtrack = get_attr_or<double>(
+            cfg, "restoration_backtrack", tc.restoration_backtrack);
+        tc.restoration_weight_eq = get_attr_or<double>(
+            cfg, "restoration_weight_eq", tc.restoration_weight_eq);
+        tc.restoration_weight_ineq = get_attr_or<double>(
+            cfg, "restoration_weight_ineq", tc.restoration_weight_ineq);
 
         // Optional extras (present in your TRConfig)
         tc.cg_tol = get_attr_or<double>(cfg, "cg_tol", tc.cg_tol);
@@ -459,6 +478,13 @@ class SQPStepper {
         ensure_default("tiny_delta_stop",
                        true);  // stop when Δ is tiny & no progress
         ensure_default("max_stall_iters", 5);  // stall window
+        ensure_default("constraint_weight", 0.3);
+        ensure_default("feasibility_emphasis", true);
+        ensure_default("restoration_max_iter", 4);
+        ensure_default("restoration_eta", 1e-4);
+        ensure_default("restoration_backtrack", 0.5);
+        ensure_default("restoration_weight_eq", 10.0);
+        ensure_default("restoration_weight_ineq", 1.0);
     }
 
     template <class T>

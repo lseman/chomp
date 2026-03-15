@@ -352,8 +352,35 @@ if(BUILD_TESTING)
     NAME chomp_ip_smoke
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_ip_smoke.py
   )
+  add_test(
+    NAME chomp_binding_lifetimes
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_binding_lifetimes.py
+  )
+  add_test(
+    NAME chomp_convexity_suspect
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_convexity_suspect.py
+  )
+  add_test(
+    NAME chomp_sqp_smoke
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_sqp_smoke.py
+  )
   set_tests_properties(
     chomp_ip_smoke
+    PROPERTIES ENVIRONMENT
+    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
+  )
+  set_tests_properties(
+    chomp_binding_lifetimes
+    PROPERTIES ENVIRONMENT
+    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
+  )
+  set_tests_properties(
+    chomp_convexity_suspect
+    PROPERTIES ENVIRONMENT
+    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
+  )
+  set_tests_properties(
+    chomp_sqp_smoke
     PROPERTIES ENVIRONMENT
     "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
   )

@@ -134,7 +134,7 @@ class AdvancedSOC {
             use_shifted, tau_shift, bound_shift, Sg, analysis, solve_kkt);
 
         // Select best candidate
-        auto best = select_best_candidate(candidates, step);
+        auto best = select_best_candidate(candidates);
 
         if (best.is_acceptable) {
             best.fill_step_data(step, mu_target);
@@ -300,7 +300,8 @@ class AdvancedSOC {
             }
 
             case TriggerMode::StagnationBased: {
-                if (progress_history_.size() >= config_.stagnation_lookback) {
+                if (progress_history_.size() >=
+                    static_cast<std::size_t>(config_.stagnation_lookback)) {
                     double current_progress =
                         std::min(step.alpha_pri, step.alpha_dual);
                     double avg_recent = 0.0;
@@ -347,7 +348,9 @@ class AdvancedSOC {
         std::vector<Candidate> candidates;
 
         for (Strategy strategy : config_.strategy_sequence) {
-            if (candidates.size() >= config_.max_candidates) break;
+            if (candidates.size() >=
+                static_cast<std::size_t>(config_.max_candidates))
+                break;
 
             Candidate candidate;
             candidate.strategy_used = strategy;
@@ -399,7 +402,6 @@ class AdvancedSOC {
                          const Analysis& analysis,
                          const std::optional<spmat>& JI) const {
         const int n = base_step.dx.size();
-        const int mI = s.size();
         dvec rhs_x = dvec::Zero(n);
 
         switch (strategy) {
@@ -507,6 +509,7 @@ class AdvancedSOC {
                                  double tau_shift, double bound_shift,
                                  const Sigmas& Sg, const Analysis& analysis,
                                  const std::optional<spmat>& JI) const {
+        (void)lam;
         const int n = base_step.dx.size();
         dvec rhs_x = dvec::Zero(n);
 
@@ -569,6 +572,8 @@ class AdvancedSOC {
                                 double mu_target, bool use_shifted,
                                 double tau_shift, double bound_shift,
                                 const Analysis& analysis) const {
+        (void)lam;
+        (void)tau_shift;
         const int n = base_step.dx.size();
         dvec rhs_x = dvec::Zero(n);
 
@@ -912,8 +917,8 @@ class AdvancedSOC {
         }
     }
 
-    Candidate select_best_candidate(const std::vector<Candidate>& candidates,
-                                    const auto& base_step) const {
+    Candidate select_best_candidate(
+        const std::vector<Candidate>& candidates) const {
         Candidate best;
         best.is_acceptable = false;
 
@@ -964,6 +969,7 @@ class AdvancedSOC {
 
     void update_state(const Candidate& applied_candidate,
                       const Analysis& analysis) const {
+        (void)analysis;
         // Update progress history
         double current_progress =
             std::min(applied_candidate.alpha_pri, applied_candidate.alpha_dual);
@@ -1015,7 +1021,8 @@ class AdvancedSOC {
                                }),
                 filter_.end());
 
-            if (filter_.size() > config_.filter_max_size) {
+            if (filter_.size() >
+                static_cast<std::size_t>(config_.filter_max_size)) {
                 filter_.erase(filter_.begin());
             }
         }

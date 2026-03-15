@@ -143,7 +143,15 @@ struct Interval {
 
         tryPow(lo);
         tryPow(hi);
-        if (lo < 0.0 && hi > 0.0 && p > 0.0 && p < 1.0) push(0.0);
+        if (lo <= 0.0 && hi >= 0.0) {
+            if (p > 0.0 && p < 1.0) {
+                push(0.0);
+            } else if (isInt(p) && (static_cast<long long>(std::llround(p)) % 2 == 0)) {
+                push(0.0);
+            } else if (lo < 0.0 && !isInt(p)) {
+                push(0.0);
+            }
+        }
 
         if (cand.empty()) return Full();
         auto mm = std::minmax_element(cand.begin(), cand.end());
@@ -180,6 +188,107 @@ struct ISuspectDetector {
 template <class GraphT, class NodeT>
 struct SuspectTraits;
 
+template <class Traits, class NodeT>
+static bool is_affine_expr_(const NodeT& n) {
+    auto op = Traits::op(n);
+    if (Traits::is_const(n) || Traits::is_var(n)) return true;
+
+    auto ins = Traits::inputs(n);
+    switch (op) {
+    case Traits::Op::Neg:
+        return ins.size() == 1 && is_affine_expr_<Traits>(ins[0]);
+    case Traits::Op::Add:
+        if (ins.empty()) return true;
+        for (auto& child : ins) {
+            if (!is_affine_expr_<Traits>(child)) return false;
+        }
+        return true;
+    case Traits::Op::Subtract:
+        return ins.size() == 2 && is_affine_expr_<Traits>(ins[0]) &&
+               is_affine_expr_<Traits>(ins[1]);
+    case Traits::Op::Multiply: {
+        int nonconst = 0;
+        std::optional<NodeT> affine_child;
+        for (auto& child : ins) {
+            if (Traits::is_const(child)) continue;
+            nonconst++;
+            if (!affine_child.has_value()) affine_child = child;
+        }
+        return nonconst <= 1 &&
+               (!affine_child.has_value() || is_affine_expr_<Traits>(*affine_child));
+    }
+    case Traits::Op::Divide:
+        return ins.size() == 2 && is_affine_expr_<Traits>(ins[0]) &&
+               Traits::is_const(ins[1]) &&
+               std::abs(Traits::const_value(ins[1])) > 1e-12;
+    default:
+        return false;
+    }
+}
+
+template <class Traits, class NodeT>
+static bool is_affine_square_expr_(const NodeT& n) {
+    auto op = Traits::op(n);
+    if (op == Traits::Op::Multiply) {
+        auto ti = Traits::inputs(n);
+        return ti.size() == 2 && Traits::id(ti[0]) == Traits::id(ti[1]) &&
+               is_affine_expr_<Traits>(ti[0]);
+    }
+    if (op == Traits::Op::Pow) {
+        auto ti = Traits::inputs(n);
+        return std::abs(Traits::pow_exponent(n) - 2.0) < 1e-12 &&
+               !ti.empty() && is_affine_expr_<Traits>(ti[0]);
+    }
+    return false;
+}
+
+template <class Traits, class NodeT>
+static bool is_sum_affine_squares_plus_nonneg_constant_(const NodeT& n,
+                                                        bool require_constant_term) {
+    if (Traits::op(n) != Traits::Op::Add) return false;
+    bool saw_constant = !require_constant_term;
+    bool saw_square = false;
+    for (auto& t : Traits::inputs(n)) {
+        if (Traits::is_const(t)) {
+            if (Traits::const_value(t) < 0.0) return false;
+            saw_constant = true;
+            continue;
+        }
+        if (!is_affine_square_expr_<Traits>(t)) return false;
+        saw_square = true;
+    }
+    return saw_constant && saw_square;
+}
+
+template <class Traits, class NodeT>
+static std::optional<std::pair<NodeT, double>> extract_power_rewrite_(const NodeT& n) {
+    if (Traits::op(n) != Traits::Op::Exp) return std::nullopt;
+    auto exp_inputs = Traits::inputs(n);
+    if (exp_inputs.size() != 1) return std::nullopt;
+
+    const NodeT& mul = exp_inputs[0];
+    if (Traits::op(mul) != Traits::Op::Multiply) return std::nullopt;
+
+    double scale = 1.0;
+    std::optional<NodeT> log_node;
+    for (auto& child : Traits::inputs(mul)) {
+        if (Traits::is_const(child)) {
+            scale *= Traits::const_value(child);
+            continue;
+        }
+        if (Traits::op(child) == Traits::Op::Log && !log_node.has_value()) {
+            log_node = child;
+            continue;
+        }
+        return std::nullopt;
+    }
+
+    if (!log_node.has_value()) return std::nullopt;
+    auto log_inputs = Traits::inputs(*log_node);
+    if (log_inputs.size() != 1) return std::nullopt;
+    return std::make_pair(log_inputs[0], scale);
+}
+
 // ============================== Built-in detectors ==========================
 template <class GraphT, class NodeT>
 struct SocNormDetector final : ISuspectDetector<GraphT, NodeT> {
@@ -190,19 +299,7 @@ struct SocNormDetector final : ISuspectDetector<GraphT, NodeT> {
         auto ins = T::inputs(n);
 
         auto looksLikeSumSquares = [&](const NodeT& s) -> bool {
-            if (T::op(s) != T::Op::Add) return false;
-            for (auto &t : T::inputs(s)) {
-                auto ot = T::op(t);
-                if (ot == T::Op::Multiply) {
-                    auto ti = T::inputs(t);
-                    if (ti.size()!=2 || T::id(ti[0]) != T::id(ti[1])) return false; // x*x
-                } else if (ot == T::Op::Pow) {
-                    if (std::abs(T::pow_exponent(t)-2.0) > 1e-12) return false; // pow(x,2)
-                } else {
-                    return false;
-                }
-            }
-            return true;
+            return is_sum_affine_squares_plus_nonneg_constant_<T>(s, false);
         };
 
         // sqrt(sum_i x_i^2)
@@ -215,6 +312,33 @@ struct SocNormDetector final : ISuspectDetector<GraphT, NodeT> {
             double p = T::pow_exponent(n);
             if (std::abs(p - 0.5) < 1e-12 && looksLikeSumSquares(ins[0])) {
                 info.cvx = CvxTag::Convex; info.hint = "||x||_2 is convex.";
+                return true;
+            }
+            if (std::abs(p - 0.5) < 1e-12 &&
+                is_sum_affine_squares_plus_nonneg_constant_<T>(ins[0], true)) {
+                info.cvx = CvxTag::Convex;
+                info.hint = "Shifted Euclidean norm is convex.";
+                return true;
+            }
+        }
+        if (op == T::Op::Sqrt && !ins.empty() &&
+            is_sum_affine_squares_plus_nonneg_constant_<T>(ins[0], true)) {
+            info.cvx = CvxTag::Convex;
+            info.hint = "Shifted Euclidean norm is convex.";
+            return true;
+        }
+        if (auto power = extract_power_rewrite_<T>(n)) {
+            const auto& [base, p] = *power;
+            if (std::abs(p - 0.5) < 1e-12 &&
+                is_sum_affine_squares_plus_nonneg_constant_<T>(base, true)) {
+                info.cvx = CvxTag::Convex;
+                info.hint = "Shifted Euclidean norm is convex.";
+                return true;
+            }
+            if (std::abs(p - 0.5) < 1e-12 &&
+                is_sum_affine_squares_plus_nonneg_constant_<T>(base, false)) {
+                info.cvx = CvxTag::Convex;
+                info.hint = "Euclidean norm is convex.";
                 return true;
             }
         }
@@ -230,23 +354,38 @@ struct QuadraticSimpleDetector final : ISuspectDetector<GraphT, NodeT> {
         auto op  = T::op(n);
         auto ins = T::inputs(n);
 
-        if (op == T::Op::Multiply && ins.size()==2 && T::id(ins[0])==T::id(ins[1])) {
-            info.cvx = CvxTag::Convex; info.hint = "x^2 is convex.";
-            return true;
+        if (op == T::Op::Multiply && ins.size()==2 && T::id(ins[0])==T::id(ins[1]) && !kids.empty()) {
+            if (kids[0].cvx == CvxTag::Affine ||
+                (kids[0].bounds.nonnegative() &&
+                 (kids[0].cvx == CvxTag::Convex || kids[0].cvx == CvxTag::Affine)) ||
+                (kids[0].bounds.nonpositive() &&
+                 (kids[0].cvx == CvxTag::Concave || kids[0].cvx == CvxTag::Affine))) {
+                info.cvx = CvxTag::Convex; info.hint = "x^2 is convex on affine/sign-compatible input.";
+                return true;
+            }
         }
         if (op == T::Op::Pow && std::abs(T::pow_exponent(n)-2.0)<1e-12) {
-            if (kids.size()>=1 && (kids[0].cvx == CvxTag::Affine)) {
-                info.cvx = CvxTag::Convex; info.hint = "(affine)^2 is convex.";
+            if (kids.size()>=1 && (
+                    kids[0].cvx == CvxTag::Affine ||
+                    (kids[0].bounds.nonnegative() &&
+                     (kids[0].cvx == CvxTag::Convex || kids[0].cvx == CvxTag::Affine)) ||
+                    (kids[0].bounds.nonpositive() &&
+                     (kids[0].cvx == CvxTag::Concave || kids[0].cvx == CvxTag::Affine))
+                )) {
+                info.cvx = CvxTag::Convex; info.hint = "x^2 is convex on affine/sign-compatible input.";
                 return true;
             }
         }
         if (op == T::Op::Add) {
             bool allSquares = true;
-            for (auto &ch : ins) {
+            for (size_t i = 0; i < ins.size(); ++i) {
+                auto &ch = ins[i];
                 auto oc = T::op(ch);
                 bool isSq = (oc==T::Op::Multiply && T::id(T::inputs(ch)[0])==T::id(T::inputs(ch)[1]))
                          || (oc==T::Op::Pow && std::abs(T::pow_exponent(ch)-2.0)<1e-12);
-                if (!isSq) { allSquares=false; break; }
+                const bool convex_square =
+                    (i < kids.size() && kids[i].cvx == CvxTag::Convex);
+                if (!isSq || !convex_square) { allSquares=false; break; }
             }
             if (allSquares) { info.cvx = CvxTag::Convex; info.hint = "Sum of squares is convex."; return true; }
         }
@@ -263,15 +402,41 @@ struct FractionalAffineDetector final : ISuspectDetector<GraphT, NodeT> {
         auto ins = T::inputs(n);
         if (op != T::Op::Divide || ins.size()!=2) return false;
 
-        // Minimal safe rule: c / convex(positive) is convex if c>=0, concave if c<0
-        if (T::is_const(ins[0]) && (kids[1].cvx == CvxTag::Convex || kids[1].cvx == CvxTag::Affine)
+        // Safe DCP-style rule: c / concave(positive) is convex if c>=0,
+        // concave if c<0, since inv_pos is convex and decreasing.
+        if (T::is_const(ins[0]) && (kids[1].cvx == CvxTag::Concave || kids[1].cvx == CvxTag::Affine)
             && kids[1].bounds.positive()) {
             double c = T::const_value(ins[0]);
             info.cvx = (c>=0.0) ? CvxTag::Convex : CvxTag::Concave;
-            info.hint = "c / convex with positive denominator.";
+            info.hint = "c / concave positive denominator.";
             return true;
         }
         return false;
+    }
+};
+
+template <class GraphT, class NodeT>
+struct QuadOverLinDetector final : ISuspectDetector<GraphT, NodeT> {
+    using T = SuspectTraits<GraphT, NodeT>;
+    bool detect(const GraphT&, const NodeT& n,
+                const std::vector<NodeInfo>& kids, NodeInfo& info) override {
+        auto op  = T::op(n);
+        auto ins = T::inputs(n);
+        if (op != T::Op::Divide || ins.size() != 2 || kids.size() != 2)
+            return false;
+
+        const bool denom_ok =
+            kids[1].cvx == CvxTag::Affine && kids[1].bounds.positive();
+        if (!denom_ok) return false;
+
+        const bool numer_ok =
+            is_affine_square_expr_<T>(ins[0]) ||
+            is_sum_affine_squares_plus_nonneg_constant_<T>(ins[0], false);
+        if (!numer_ok) return false;
+
+        info.cvx = CvxTag::Convex;
+        info.hint = "Quadratic-over-linear form is convex with positive affine denominator.";
+        return true;
     }
 };
 
@@ -346,7 +511,7 @@ public:
         return (it == info_.end()) ? nullptr : &it->second;
     }
 
-    Summary buildSummary() const {
+    Summary buildSummary(bool print_summary = false) const {
         Summary S;
 
         // Objective
@@ -422,7 +587,7 @@ public:
                                    : (S.objective.cvx == CvxTag::Concave || S.objective.cvx == CvxTag::Affine);
         S.is_convex_problem  = obj_ok && all_ok;
 
-        printSummary_(S);
+        if (print_summary) printSummary_(S);
         return S;
     }
 
@@ -439,6 +604,7 @@ private:
         registerDetector(std::make_shared<SocNormDetector<GraphT, NodeT>>());
         registerDetector(std::make_shared<QuadraticSimpleDetector<GraphT, NodeT>>());
         registerDetector(std::make_shared<FractionalAffineDetector<GraphT, NodeT>>());
+        registerDetector(std::make_shared<QuadOverLinDetector<GraphT, NodeT>>());
     }
 
     // ------------------- Topological sort (parents adjacency) -------------------
@@ -617,9 +783,22 @@ private:
         switch (op) {
         case Op::cte: return Interval::Point(T::const_value(n));
         case Op::Neg: return get(0).neg();
-        case Op::Add: return get(0).add(get(1));
+        case Op::Add: {
+            Interval acc = Interval::Point(0.0);
+            for (size_t i = 0; i < ins.size(); ++i)
+                acc = acc.add(get(static_cast<int>(i)));
+            return acc;
+        }
         case Op::Subtract: return get(0).add(get(1).neg());
-        case Op::Multiply: return get(0).mul(get(1));
+        case Op::Multiply: {
+            if (ins.size() == 2 && T::id(ins[0]) == T::id(ins[1]))
+                return get(0).pow(2.0);
+            if (ins.empty()) return Interval::Point(1.0);
+            Interval acc = get(0);
+            for (size_t i = 1; i < ins.size(); ++i)
+                acc = acc.mul(get(static_cast<int>(i)));
+            return acc;
+        }
         case Op::Divide:   return get(0).div(get(1));
         case Op::Pow:      return get(0).pow(T::pow_exponent(n));
         case Op::Abs: {
@@ -687,6 +866,12 @@ private:
         if (b == CvxTag::Affine) return a;
         return (a == b) ? a : CvxTag::Unknown;
     }
+    static bool isConvexLike(CvxTag c) {
+        return c == CvxTag::Convex || c == CvxTag::Affine;
+    }
+    static bool isConcaveLike(CvxTag c) {
+        return c == CvxTag::Concave || c == CvxTag::Affine;
+    }
 
     MonoTag evalMono_(const NodeT &n) {
         using Op = typename T::Op;
@@ -702,9 +887,14 @@ private:
         case Op::cte: return MonoTag::Unknown;
         case Op::Neg: return negate(mono(0));
         case Op::Add: {
-            MonoTag a = mono(0), b = mono(1);
-            if (a == MonoTag::Nondecreasing && b == MonoTag::Nondecreasing) return MonoTag::Nondecreasing;
-            if (a == MonoTag::Nonincreasing && b == MonoTag::Nonincreasing) return MonoTag::Nonincreasing;
+            bool all_nd = true, all_ni = true;
+            for (size_t i = 0; i < ins.size(); ++i) {
+                MonoTag mi = mono(static_cast<int>(i));
+                all_nd = all_nd && (mi == MonoTag::Nondecreasing);
+                all_ni = all_ni && (mi == MonoTag::Nonincreasing);
+            }
+            if (all_nd) return MonoTag::Nondecreasing;
+            if (all_ni) return MonoTag::Nonincreasing;
             return MonoTag::Unknown;
         }
         case Op::Subtract: {
@@ -806,14 +996,35 @@ private:
 
         switch (op) {
         case Op::Neg: return finish_with_plugins(negate(cvx(0)));
-        case Op::Add: return finish_with_plugins(addCvx(cvx(0), cvx(1)));
+        case Op::Add: {
+            CvxTag acc = CvxTag::Affine;
+            for (size_t i = 0; i < ins.size(); ++i)
+                acc = addCvx(acc, cvx(static_cast<int>(i)));
+            return finish_with_plugins(acc);
+        }
         case Op::Subtract: return finish_with_plugins(addCvx(cvx(0), negate(cvx(1))));
         case Op::Abs:
-            ni.hint = "Abs is convex; use epigraph: t >= |x|.";
-            return finish_with_plugins(CvxTag::Convex);
+            if (bnd(0).nonnegative()) {
+                ni.hint = "Abs reduces to identity on nonnegative domain.";
+                return finish_with_plugins(cvx(0));
+            }
+            if (bnd(0).nonpositive()) {
+                ni.hint = "Abs reduces to negation on nonpositive domain.";
+                return finish_with_plugins(negate(cvx(0)));
+            }
+            if (cvx(0) == CvxTag::Affine) {
+                ni.hint = "Abs is convex for affine arguments.";
+                return finish_with_plugins(CvxTag::Convex);
+            }
+            ni.hint = "Abs is only DCP-safe here for affine or sign-fixed arguments.";
+            return finish_with_plugins(CvxTag::Unknown);
         case Op::Exp:
-            ni.hint = "Exp is convex; exp(f) convex if f convex/affine.";
-            return finish_with_plugins(CvxTag::Convex);
+            if (isConvexLike(cvx(0))) {
+                ni.hint = "Exp is convex and increasing, so convex/affine input is allowed.";
+                return finish_with_plugins(CvxTag::Convex);
+            }
+            ni.hint = "Exp requires convex/affine input under DCP composition.";
+            return finish_with_plugins(CvxTag::Unknown);
         case Op::Log:
             if (bnd(0).positive() && (cvx(0) == CvxTag::Concave || cvx(0) == CvxTag::Affine)) {
                 ni.hint = "Log is concave on positive domain.";
@@ -829,6 +1040,28 @@ private:
             ni.hint = "Sqrt requires nonnegative concave/affine argument.";
             return finish_with_plugins(CvxTag::Unknown);
         case Op::Multiply: {
+            if (ins.size() != 2) {
+                int nonconst = 0, nonconst_idx = -1;
+                double scale = 1.0;
+                for (size_t i = 0; i < ins.size(); ++i) {
+                    if (T::is_const(ins[i])) {
+                        scale *= T::const_value(ins[i]);
+                    } else {
+                        nonconst++;
+                        nonconst_idx = static_cast<int>(i);
+                    }
+                }
+                if (nonconst == 0) return finish_with_plugins(CvxTag::Affine);
+                if (nonconst == 1) {
+                    CvxTag result =
+                        (scale > 0.0) ? cvx(nonconst_idx)
+                                      : (scale < 0.0) ? negate(cvx(nonconst_idx))
+                                                      : CvxTag::Affine;
+                    return finish_with_plugins(result);
+                }
+                ni.hint = "N-ary product is only certified when all but one factors are constant.";
+                return finish_with_plugins(CvxTag::Unknown);
+            }
             if (T::is_const(ins[0])) {
                 double c      = T::const_value(ins[0]);
                 CvxTag result = (c > 0) ? cvx(1) : (c < 0) ? negate(cvx(1)) : CvxTag::Affine;
@@ -840,8 +1073,20 @@ private:
                 return finish_with_plugins(result);
             }
             if (T::id(ins[0]) == T::id(ins[1])) {
-                ni.hint = "x*x = x^2 is convex for affine x.";
-                return finish_with_plugins(CvxTag::Convex);
+                if (cvx(0) == CvxTag::Affine) {
+                    ni.hint = "x*x = x^2 is convex for affine x.";
+                    return finish_with_plugins(CvxTag::Convex);
+                }
+                if (bnd(0).nonnegative() && isConvexLike(cvx(0))) {
+                    ni.hint = "x^2 is convex for nonnegative convex input.";
+                    return finish_with_plugins(CvxTag::Convex);
+                }
+                if (bnd(0).nonpositive() && isConcaveLike(cvx(0))) {
+                    ni.hint = "x^2 is convex for nonpositive concave input.";
+                    return finish_with_plugins(CvxTag::Convex);
+                }
+                ni.hint = "x*x is only certified for affine or sign-compatible input.";
+                return finish_with_plugins(CvxTag::Unknown);
             }
             ni.hint = "Bilinear term: consider McCormick/perspective.";
             return finish_with_plugins(CvxTag::Unknown);
@@ -852,10 +1097,10 @@ private:
                 CvxTag result = (c > 0) ? cvx(0) : (c < 0) ? negate(cvx(0)) : CvxTag::Unknown;
                 return finish_with_plugins(result);
             }
-            if (T::is_const(ins[0]) && bnd(1).positive() && (cvx(1) == CvxTag::Convex || cvx(1)==CvxTag::Affine)) {
+            if (T::is_const(ins[0]) && bnd(1).positive() && (cvx(1) == CvxTag::Concave || cvx(1)==CvxTag::Affine)) {
                 double c      = T::const_value(ins[0]);
                 CvxTag result = (c >= 0.0) ? CvxTag::Convex : CvxTag::Concave;
-                ni.hint       = "c/convex with positive denom.";
+                ni.hint       = "c/concave with positive denominator.";
                 return finish_with_plugins(result);
             }
             ni.hint = "General quotient: check DCP or add auxiliaries.";
@@ -882,13 +1127,16 @@ private:
             return finish_with_plugins(CvxTag::Unknown);
         }
         case Op::Max: {
-            CvxTag acc = CvxTag::Affine;
+            bool ok = true;
             for (auto &a : ins) {
-                acc = addCvx(acc, info_.at(T::id(a)).cvx);
-                if (acc == CvxTag::Unknown) break;
+                if (!isConvexLike(info_.at(T::id(a)).cvx)) { ok = false; break; }
             }
-            ni.hint = "Max of convex functions is convex.";
-            return finish_with_plugins(acc);
+            if (ok) {
+                ni.hint = "Max of convex functions is convex.";
+                return finish_with_plugins(CvxTag::Convex);
+            }
+            ni.hint = "Max requires convex/affine arguments.";
+            return finish_with_plugins(CvxTag::Unknown);
         }
         case Op::Min: {
             bool ok = true;

@@ -355,6 +355,12 @@ struct TRConfig {
     // extras
     double jacobian_reg_min = 1e-12;
     double constraint_weight = 0.3;
+    bool feasibility_restoration = true;
+    int restoration_max_iter = 4;
+    double restoration_eta = 1e-4;
+    double restoration_backtrack = 0.5;
+    double restoration_weight_eq = 10.0;
+    double restoration_weight_ineq = 1.0;
     bool adaptive_eta_thresholds = true;
     double eta_adaptive_factor = 0.1;
     bool constraint_based_growth = false;
@@ -552,6 +558,16 @@ class TrustRegionManager {
     double delta_;
     mutable double current_kkt_residual_ =
         std::numeric_limits<double>::quiet_NaN();
+
+    struct AcceptanceTrial {
+        bool accepted = false;
+        dvec step;
+        std::string accepted_by = "rejected";
+        std::optional<double> f_trial;
+        std::optional<double> theta_trial;
+        double predicted = std::numeric_limits<double>::quiet_NaN();
+        double actual = std::numeric_limits<double>::quiet_NaN();
+    };
 
     // --------------- metric core ---------------
     template <class Mat>
@@ -1037,12 +1053,16 @@ class TrustRegionManager {
         std::optional<double> f_trial, theta_trial;
         std::optional<double> f_old = f_old_opt;
         std::optional<double> theta_old;
+        double predicted_override = std::numeric_limits<double>::quiet_NaN();
+        double actual_override = std::numeric_limits<double>::quiet_NaN();
         if (model) {
             if (box_.x) {
                 auto current_ft = eval_model_f_theta_(
                     model, box_.x, dvec::Zero(g.size()));
                 if (!f_old) f_old = current_ft.first;
                 theta_old = current_ft.second;
+                if (theta_old && std::isfinite(*theta_old))
+                    current_theta_ = *theta_old;
             }
             if (!f_old) {
                 try {
@@ -1072,17 +1092,35 @@ class TrustRegionManager {
 
         // backtracking if rejected
         if (!accepted) {
-            auto [ok, p_new, by, f_bt, th_bt] = _backtrack_on_reject_(
-                model, box_.x, p, box_.lb, box_.ub, delta_, f_old, 3);
-            if (ok) {
-                if (filter_enabled_ && f_bt && th_bt && std::isfinite(*f_bt) &&
-                    std::isfinite(*th_bt))
-                    (void)filter_.add_if_acceptable(*th_bt, *f_bt, delta_);
-                p = p_new;
+            auto retry = _backtrack_on_reject_(model, box_.x, p, box_.lb,
+                                               box_.ub, delta_, f_old,
+                                               theta_old, 3);
+            if (retry.accepted) {
+                p = retry.step;
                 accepted = true;
-                accepted_by = by;
-                f_trial = f_bt;
-                theta_trial = th_bt;
+                accepted_by = retry.accepted_by;
+                f_trial = retry.f_trial;
+                theta_trial = retry.theta_trial;
+                predicted_override = retry.predicted;
+                actual_override = retry.actual;
+                info.step_norm = tr_norm_(p);
+                info.model_reduction =
+                    model_reduction_quad_into(Hop, g, p, W_.Hp);
+                info.model_reduction_quad = info.model_reduction;
+            }
+        }
+        if (!accepted) {
+            auto restoration =
+                restoration_phase_(model, box_.x, box_.lb, box_.ub, delta_,
+                                   f_old, theta_old);
+            if (restoration.accepted) {
+                p = restoration.step;
+                accepted = true;
+                accepted_by = restoration.accepted_by;
+                f_trial = restoration.f_trial;
+                theta_trial = restoration.theta_trial;
+                predicted_override = restoration.predicted;
+                actual_override = restoration.actual;
                 info.step_norm = tr_norm_(p);
                 info.model_reduction =
                     model_reduction_quad_into(Hop, g, p, W_.Hp);
@@ -1095,21 +1133,17 @@ class TrustRegionManager {
 
         // radius update
         if (info.accepted) {
-            const double predicted = choose_predicted_(info);
-            double actual = std::numeric_limits<double>::quiet_NaN();
-            if (f_old && f_trial && std::isfinite(*f_old) &&
-                std::isfinite(*f_trial))
+            const double predicted =
+                std::isfinite(predicted_override) ? predicted_override
+                                                 : choose_predicted_(info);
+            double actual = actual_override;
+            if (!std::isfinite(actual) && f_old && f_trial &&
+                std::isfinite(*f_old) && std::isfinite(*f_trial))
                 actual = (*f_old) - (*f_trial);
-            if (theta_old && theta_trial && std::isfinite(*theta_old) &&
-                std::isfinite(*theta_trial)) {
-                const double theta_actual =
+            if (!std::isfinite(actual) && theta_old && theta_trial &&
+                std::isfinite(*theta_old) && std::isfinite(*theta_trial))
+                actual =
                     cfg_.constraint_weight * ((*theta_old) - (*theta_trial));
-                if (!std::isfinite(actual)) {
-                    actual = theta_actual;
-                } else if (accepted_by == "filter" || accepted_by == "ls-filter") {
-                    actual = std::max(actual, theta_actual);
-                }
-            }
             info.rho =
                 (std::isfinite(predicted) && std::abs(predicted) > 1e-16 &&
                  std::isfinite(actual))
@@ -1662,22 +1696,56 @@ class TrustRegionManager {
         }
     }
 
+    [[nodiscard]] std::optional<double> exact_penalty_merit_(
+        const std::optional<double>& f_t,
+        const std::optional<double>& theta_t) const {
+        if (!(f_t && theta_t) || !std::isfinite(*f_t) || !std::isfinite(*theta_t))
+            return std::nullopt;
+        return *f_t + cfg_.constraint_weight * *theta_t;
+    }
+
+    [[nodiscard]] bool filter_accepts_(const std::optional<double>& f_t,
+                                       const std::optional<double>& th_t,
+                                       double delta) const {
+        return filter_enabled_ && f_t && th_t && std::isfinite(*f_t) &&
+               std::isfinite(*th_t) &&
+               filter_.is_acceptable(*th_t, *f_t, delta);
+    }
+
+    [[nodiscard]] double linearized_constraint_violation_(
+        const std::optional<dvec>& cE, const std::optional<dvec>& cI,
+        const std::optional<dmat>& JE, const std::optional<dmat>& JI,
+        const dvec& s) const {
+        const int n = (int)s.size();
+        const int mE = (cE && JE) ? (int)cE->size() : 0;
+        const int mI = (cI && JI) ? (int)cI->size() : 0;
+        const double scale =
+            std::max<double>(1.0, std::max<double>(n, mI + mE));
+
+        double theta = 0.0;
+        if (cI && JI && JI->rows() == cI->size()) {
+            dvec viol = *cI + (*JI) * s;
+            theta += viol.array().max(0.0).sum() / scale;
+        }
+        if (cE && JE && JE->rows() == cE->size()) {
+            dvec resid = *cE + (*JE) * s;
+            theta += resid.array().abs().sum() / scale;
+        }
+        return std::isfinite(theta) ? theta
+                                    : std::numeric_limits<double>::infinity();
+    }
+
     // ---------- Backtracking (factor common checks, keep semantics) ----------
-    [[nodiscard]] std::tuple<bool, dvec, std::string, std::optional<double>,
-                             std::optional<double>>
+    [[nodiscard]] AcceptanceTrial
     _backtrack_on_reject_(ModelC* model, const std::optional<dvec>& x,
                           const dvec& s, const std::optional<dvec>& lb,
                           const std::optional<dvec>& ub, double delta,
-                          std::optional<double> base_f, int max_tries = 3) {
+                          std::optional<double> base_f,
+                          std::optional<double> base_theta,
+                          int max_tries = 3) {
         static constexpr std::array<double, 3> alphas{0.5, 0.25, 0.125};
         const int tries = std::min(max_tries, (int)alphas.size());
-
-        auto acceptable = [&](const std::optional<double>& f_t,
-                              const std::optional<double>& th_t) -> bool {
-            return filter_enabled_ && f_t && th_t && std::isfinite(*f_t) &&
-                   std::isfinite(*th_t) &&
-                   filter_.is_acceptable(*th_t, *f_t, delta);
-        };
+        const auto merit0 = exact_penalty_merit_(base_f, base_theta);
 
         for (int k = 0; k < tries; ++k) {
             dvec sa = alphas[(size_t)k] * s;
@@ -1685,23 +1753,157 @@ class TrustRegionManager {
 
             auto [f_t, th_t] = eval_model_f_theta_(model, x, sa);
 
-            if (acceptable(f_t, th_t)) {
+            if (filter_accepts_(f_t, th_t, delta)) {
                 (void)filter_.add_if_acceptable(*th_t, *f_t, delta);
-                return {true, sa, "ls-filter", f_t, th_t};
+                return AcceptanceTrial{
+                    .accepted = true,
+                    .step = std::move(sa),
+                    .accepted_by = "ls-filter",
+                    .f_trial = f_t,
+                    .theta_trial = th_t};
             }
 
-            if (base_f && f_t && std::isfinite(*base_f) &&
-                std::isfinite(*f_t)) {
-                // Simple Armijo on f; keep constants as before
-                if (*f_t <=
-                    *base_f - 1e-4 * alphas[(size_t)k] * std::abs(*base_f)) {
-                    if (filter_enabled_ && th_t && std::isfinite(*th_t))
-                        (void)filter_.add_if_acceptable(*th_t, *f_t, delta);
-                    return {true, sa, "ls-armijo", f_t, th_t};
+            const auto merit_t = exact_penalty_merit_(f_t, th_t);
+            if (merit0 && merit_t) {
+                const double armijo_rhs =
+                    *merit0 - 1e-4 * alphas[(size_t)k] *
+                                  std::max(1.0, std::abs(*merit0));
+                if (*merit_t <= armijo_rhs) {
+                    return AcceptanceTrial{
+                        .accepted = true,
+                        .step = std::move(sa),
+                        .accepted_by = "ls-merit",
+                        .f_trial = f_t,
+                        .theta_trial = th_t};
+                }
+            }
+
+            if (base_theta && th_t && std::isfinite(*base_theta) &&
+                std::isfinite(*th_t)) {
+                const double theta_rhs =
+                    *base_theta -
+                    cfg_.restoration_eta * alphas[(size_t)k] *
+                        std::max(1.0, *base_theta);
+                if (*th_t <= theta_rhs) {
+                    return AcceptanceTrial{
+                        .accepted = true,
+                        .step = std::move(sa),
+                        .accepted_by = "ls-theta",
+                        .f_trial = f_t,
+                        .theta_trial = th_t,
+                        .predicted =
+                            cfg_.constraint_weight *
+                            std::max(0.0, *base_theta - theta_rhs),
+                        .actual =
+                            cfg_.constraint_weight *
+                            std::max(0.0, *base_theta - *th_t)};
                 }
             }
         }
-        return {false, s, std::string("rejected"), std::nullopt, std::nullopt};
+        return AcceptanceTrial{.accepted = false,
+                               .step = s,
+                               .accepted_by = "rejected"};
+    }
+
+    [[nodiscard]] AcceptanceTrial restoration_phase_(
+        ModelC* model, const std::optional<dvec>& x,
+        const std::optional<dvec>& lb, const std::optional<dvec>& ub,
+        double delta, const std::optional<double>& f_old,
+        const std::optional<double>& theta_old) {
+        if (!cfg_.feasibility_restoration || !model || !x || !theta_old ||
+            !std::isfinite(*theta_old) || *theta_old <= cfg_.constraint_tol) {
+            return AcceptanceTrial{.accepted = false,
+                                   .step = x ? dvec::Zero(x->size()) : dvec()};
+        }
+
+        const std::vector<std::string> need{"f", "cE", "cI", "JE", "JI"};
+        model->eval_all(*x, need);
+
+        const int mI = model->get_mI();
+        const int mE = model->get_mE();
+        const int n = model->get_n();
+
+        const auto f_base = f_old ? f_old : model->get_f();
+        const std::optional<dvec> cE =
+            (mE > 0) ? std::optional<dvec>(model->get_cE().value())
+                     : std::nullopt;
+        const std::optional<dvec> cI =
+            (mI > 0) ? std::optional<dvec>(model->get_cI().value())
+                     : std::nullopt;
+        const std::optional<dmat> JE =
+            (mE > 0) ? std::optional<dmat>(dmat(model->get_JE().value()))
+                     : std::nullopt;
+        const std::optional<dmat> JI =
+            (mI > 0) ? std::optional<dmat>(dmat(model->get_JI().value()))
+                     : std::nullopt;
+
+        dvec d_rest = compute_soc_step_(
+            cE, cI, JE, JI, cfg_.restoration_weight_eq,
+            cfg_.restoration_weight_ineq, cfg_.constraint_tol, 0.0,
+            std::max(cfg_.jacobian_reg_min, 1e-12), 0.0, std::nullopt,
+            std::nullopt);
+        if (d_rest.size() != n || !d_rest.allFinite())
+            return AcceptanceTrial{.accepted = false,
+                                   .step = dvec::Zero(n)};
+
+        const double dn = tr_norm_(d_rest);
+        if (dn > delta && dn > 1e-16) d_rest *= (delta / dn);
+        if (box_.active()) d_rest = box_.enforce_step(d_rest);
+        if (tr_norm_(d_rest) <= 1e-14)
+            return AcceptanceTrial{.accepted = false,
+                                   .step = dvec::Zero(n)};
+
+        const auto merit0 = exact_penalty_merit_(f_base, theta_old);
+        double alpha = 1.0;
+        const int tries = std::max(1, cfg_.restoration_max_iter);
+        for (int k = 0; k < tries; ++k) {
+            dvec sa = alpha * d_rest;
+            if (box_.active()) sa = box_.enforce_step(sa);
+            if (tr_norm_(sa) <= 1e-14) break;
+
+            const double theta_pred = linearized_constraint_violation_(
+                cE, cI, JE, JI, sa);
+            auto [f_t, th_t] = eval_model_f_theta_(model, x, sa);
+            if (!(th_t && std::isfinite(*th_t))) {
+                alpha *= cfg_.restoration_backtrack;
+                continue;
+            }
+
+            const bool filter_ok = filter_accepts_(f_t, th_t, delta);
+            const double theta_floor =
+                *theta_old - cfg_.restoration_eta * alpha *
+                                 std::max(1.0, *theta_old);
+            const bool theta_improves = *th_t <= theta_floor;
+            const auto merit_t = exact_penalty_merit_(f_t, th_t);
+            const bool merit_improves =
+                merit0 && merit_t &&
+                (*merit_t <=
+                 *merit0 -
+                     1e-4 * alpha * std::max(1.0, std::abs(*merit0)));
+
+            if (filter_ok || theta_improves || merit_improves) {
+                if (filter_ok)
+                    (void)filter_.add_if_acceptable(*th_t, *f_t, delta);
+                return AcceptanceTrial{
+                    .accepted = true,
+                    .step = std::move(sa),
+                    .accepted_by =
+                        filter_ok ? "restoration-filter" : "restoration",
+                    .f_trial = f_t,
+                    .theta_trial = th_t,
+                    .predicted =
+                        cfg_.constraint_weight *
+                        std::max(0.0, *theta_old - theta_pred),
+                    .actual = cfg_.constraint_weight *
+                              std::max(0.0, *theta_old - *th_t)};
+            }
+
+            alpha *= cfg_.restoration_backtrack;
+        }
+
+        return AcceptanceTrial{.accepted = false,
+                               .step = dvec::Zero(n),
+                               .accepted_by = "rejected"};
     }
 
     // ---------- Status text ----------
@@ -1947,7 +2149,9 @@ class TrustRegionManager {
         if (!std::isfinite(theta0) || !std::isfinite(theta1)) return false;
         if (cfg_.soc_use_funnel) {
             const double sufficient = cfg_.soc_theta_reduction * theta0;
-            const double funnel = cfg_.funnel_gamma * current_theta_;
+            const double funnel_ref =
+                std::isfinite(current_theta_) ? current_theta_ : theta0;
+            const double funnel = cfg_.funnel_gamma * funnel_ref;
             return theta1 <= std::max(sufficient, funnel);
         }
         return theta1 <= cfg_.soc_theta_reduction * theta0;
