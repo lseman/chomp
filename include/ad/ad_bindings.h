@@ -61,8 +61,8 @@ template <typename T>
 concept PyHandle = std::same_as<T, nb::handle> || std::same_as<T, nb::object>;
 
 // ---------- ndarray aliases ----------
-using Arr1D = nb::ndarray<double, nb::shape<-1>, nb::c_contig>;
-using Arr2D = nb::ndarray<double, nb::shape<-1, -1>, nb::c_contig>;
+using Arr1D = nb::ndarray<double, nb::numpy, nb::shape<-1>, nb::c_contig>;
+using Arr2D = nb::ndarray<double, nb::numpy, nb::shape<-1, -1>, nb::c_contig>;
 
 // ---------- small helpers ----------
 [[gnu::always_inline, gnu::hot]]
@@ -99,6 +99,29 @@ static inline Arr1D create_zeros_1d(ssize_t n) {
 static inline Arr2D create_zeros_2d(ssize_t m, ssize_t n) {
     auto np = nb::module_::import_("numpy");
     return nb::cast<Arr2D>(np.attr("zeros")(nb::make_tuple(m, n), "dtype"_a = "float64"));
+}
+
+// Allocate an *uninitialized* owning numpy array directly in C++ (no Python
+// numpy.zeros round-trip, no wasted zero-fill). The caller is responsible for
+// writing every element. A capsule frees the buffer when the array dies. The
+// nb::numpy framework tag (already on Arr1D/Arr2D) makes nanobind export an
+// actual numpy.ndarray. Out1D/Out2D are semantic aliases marking C++-owned
+// outputs.
+using Out1D = Arr1D;
+using Out2D = Arr2D;
+
+[[gnu::always_inline]]
+static inline Out1D create_uninit_1d(ssize_t n) {
+    double     *buf = new double[(size_t)n];
+    nb::capsule owner(buf, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    return Out1D(buf, {(size_t)n}, owner);
+}
+
+[[gnu::always_inline]]
+static inline Out2D create_uninit_2d(ssize_t m, ssize_t n) {
+    double     *buf = new double[(size_t)m * (size_t)n];
+    nb::capsule owner(buf, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    return Out2D(buf, {(size_t)m, (size_t)n}, owner);
 }
 
 [[gnu::always_inline]]
@@ -405,7 +428,7 @@ public:
         if (f_out) *f_out = fval;
     }
 
-    [[gnu::hot]] Arr1D call_numpy(Arr1D x_in) {
+    [[gnu::hot]] Out1D call_numpy(Arr1D x_in) {
         set_inputs_from_arr(var_nodes, x_in);
         {
             nb::gil_scoped_release nogil;
@@ -415,7 +438,7 @@ public:
             g->initiateBackwardPass(expr_root);
         }
         const ssize_t n   = (ssize_t)var_nodes.size();
-        Arr1D         out = create_zeros_1d(n);
+        Out1D         out = create_uninit_1d(n);
         double       *om  = out.data();
         for (ssize_t i = 0; i < n; ++i) om[i] = var_nodes[(size_t)i]->gradient;
         return out;
@@ -433,7 +456,7 @@ public:
         return fval;
     }
 
-    [[gnu::hot]] std::pair<double, Arr1D> value_grad_numpy(Arr1D x_in) {
+    [[gnu::hot]] std::pair<double, Out1D> value_grad_numpy(Arr1D x_in) {
         auto x = as_span_1d(x_in);
         if (x.size() != var_nodes.size()) [[unlikely]]
             throw std::invalid_argument("GradFn.value_grad: wrong input length");
@@ -449,7 +472,7 @@ public:
             set_epoch_value(expr_root->gradient, expr_root->grad_epoch, g->cur_grad_epoch_, 1.0);
             g->initiateBackwardPass(expr_root);
         }
-        Arr1D   grad = create_zeros_1d((ssize_t)var_nodes.size());
+        Out1D   grad = create_uninit_1d((ssize_t)var_nodes.size());
         double *gd   = grad.data();
         for (size_t i = 0; i < var_nodes.size(); ++i) gd[i] = var_nodes[i]->gradient;
         return {fval, std::move(grad)};
@@ -458,13 +481,13 @@ public:
 
 class HessFn {
 public:
-    ADGraphPtr               g;
-    ADNodePtr                expr_root;
-    std::vector<ADNodePtr>   var_nodes;
-    bool                     vector_mode{};
-    nb::object               python_func;
-    bool                     order_ready_{false};
-    std::vector<int>         x2g_, g2x_;
+    ADGraphPtr             g;
+    ADNodePtr              expr_root;
+    std::vector<ADNodePtr> var_nodes;
+    bool                   vector_mode{};
+    nb::object             python_func;
+    bool                   order_ready_{false};
+    std::vector<int>       x2g_, g2x_;
 
     [[gnu::pure]] std::string expr_str() const {
         return (g && expr_root) ? g->getExpression(expr_root) : std::string{};
@@ -490,8 +513,7 @@ public:
         g2x_.assign(n, -1);
         for (size_t i = 0; i < n; ++i) {
             const int k = var_nodes[i]->order;
-            if (k < 0 || static_cast<size_t>(k) >= n)
-                throw std::runtime_error("HessFn: bad variable order");
+            if (k < 0 || static_cast<size_t>(k) >= n) throw std::runtime_error("HessFn: bad variable order");
             x2g_[i] = k;
             g2x_[k] = static_cast<int>(i);
         }
@@ -499,21 +521,21 @@ public:
     }
 
     std::vector<double> x_to_graph_order_(std::span<const double> v_x) const {
-        const size_t n = var_nodes.size();
+        const size_t        n = var_nodes.size();
         std::vector<double> v_g(n, 0.0);
         for (size_t i = 0; i < n; ++i) v_g[static_cast<size_t>(x2g_[i])] = v_x[i];
         return v_g;
     }
 
     std::vector<double> graph_to_x_order_(const std::vector<double> &w_g) const {
-        const size_t n = var_nodes.size();
+        const size_t        n = var_nodes.size();
         std::vector<double> w_x(n, 0.0);
         for (size_t k = 0; k < n; ++k) w_x[static_cast<size_t>(g2x_[k])] = w_g[k];
         return w_x;
     }
 
     [[gnu::hot]]
-    Arr2D call_numpy(Arr1D x_in) {
+    Out2D call_numpy(Arr1D x_in) {
         set_inputs_arr(x_in);
         const size_t n = var_nodes.size();
         build_permutations_once_();
@@ -522,18 +544,18 @@ public:
             g->resetForwardPass();
         }
 
-        Arr2D   H    = create_zeros_2d((ssize_t)n, (ssize_t)n);
+        Out2D   H    = create_uninit_2d((ssize_t)n, (ssize_t)n);
         double *data = H.data();
 
-        const size_t L = std::min<size_t>(16, std::max<size_t>(1, n));
+        const size_t        L = std::min<size_t>(16, std::max<size_t>(1, n));
         std::vector<double> V(n * L, 0.0), Y(n * L, 0.0);
 
         for (size_t base = 0; base < n; base += L) {
             const size_t k = std::min(L, n - base);
             std::fill(V.begin(), V.end(), 0.0);
             for (size_t j = 0; j < k; ++j) {
-                const size_t xj = base + j;
-                const int gij = x2g_[xj];
+                const size_t xj                     = base + j;
+                const int    gij                    = x2g_[xj];
                 V[static_cast<size_t>(gij) * L + j] = 1.0;
             }
 
@@ -545,7 +567,7 @@ public:
             for (size_t j = 0; j < k; ++j) {
                 const size_t col_x = base + j;
                 for (size_t gi = 0; gi < n; ++gi) {
-                    const size_t xi = static_cast<size_t>(g2x_[gi]);
+                    const size_t xi      = static_cast<size_t>(g2x_[gi]);
                     data[xi * n + col_x] = Y[gi * L + j];
                 }
             }
@@ -560,14 +582,14 @@ public:
         auto v = as_span_1d(v_in);
         if (v.size() != var_nodes.size()) [[unlikely]]
             throw std::invalid_argument("HessFn.hvp: wrong vector length");
-        const auto v_g = x_to_graph_order_(v);
+        const auto          v_g = x_to_graph_order_(v);
         std::vector<double> Hv_g;
         {
             nb::gil_scoped_release nogil;
             g->resetForwardPass();
             Hv_g = g->hessianVectorProduct(expr_root, v_g);
         }
-        auto Hv = graph_to_x_order_(Hv_g);
+        auto  Hv  = graph_to_x_order_(Hv_g);
         Arr1D out = create_zeros_1d((ssize_t)v.size());
         std::memcpy(out.data(), Hv.data(), Hv.size() * sizeof(double));
         return out;
@@ -1021,6 +1043,19 @@ static inline std::shared_ptr<HessFn> get_or_make_hess(nb::object f, size_t n, b
                                      [&] { return std::make_shared<HessFn>(f, n, vec); });
 }
 
+// Release every cached GradFn/HessFn (and the Python callables they own) while
+// the interpreter is still alive. Registered with Python's atexit in NB_MODULE.
+// Without this, the thread_local caches are torn down by C++ TLS destructors
+// after Py_Finalize, where dropping the captured nb::object segfaults in
+// func_dealloc.
+static inline void clear_fn_caches() noexcept {
+    tl_grad_cache.clear();
+    tl_hess_cache.clear();
+    std::unique_lock wlk(g_cache_mtx);
+    g_grad_cache.clear();
+    g_hess_cache.clear();
+}
+
 // ============================================================================
 // High-level APIs (thin wrappers; all algebra via Expression)
 // ============================================================================
@@ -1100,40 +1135,40 @@ static nb::list py_gradient(nb::object f, nb::args xs) {
 
 // fused value+grad (cached)
 [[gnu::hot]]
-static std::pair<double, Arr1D> py_value_grad_numpy(nb::object f, Arr1D x_in) {
-    auto         gf   = get_or_make_grad(f, (size_t)as_span_1d(x_in).size(), /*vec=*/true);
-    const double fval = gf->value_numpy(x_in);
-    auto         grad = gf->call_numpy(x_in);
-    return {fval, std::move(grad)};
+static std::pair<double, Out1D> py_value_grad_numpy(nb::object f, Arr1D x_in) {
+    auto gf = get_or_make_grad(f, (size_t)as_span_1d(x_in).size(), /*vec=*/true);
+    // Single forward+backward pass yields both value and gradient; the previous
+    // value_numpy()+call_numpy() did the forward pass twice.
+    return gf->value_grad_numpy(x_in);
 }
 
 [[gnu::hot]]
-static Arr1D py_gradient_numpy(nb::object f, Arr1D x_in) {
+static Out1D py_gradient_numpy(nb::object f, Arr1D x_in) {
     auto gf = get_or_make_grad(f, (size_t)as_span_1d(x_in).size(), /*vec=*/true);
     return gf->call_numpy(x_in);
 }
 
 [[gnu::hot]]
-static Arr2D py_hessian_numpy(nb::object f, Arr1D x_in) {
+static Out2D py_hessian_numpy(nb::object f, Arr1D x_in) {
     auto hf = get_or_make_hess(f, (size_t)as_span_1d(x_in).size(), /*vec=*/true);
     return hf->call_numpy(x_in);
 }
 
 // Batch fused value+grad over compiled GradFn objects
 [[gnu::hot]]
-static std::pair<Arr1D, Arr2D> batch_value_grad_from_gradfns(const std::vector<std::shared_ptr<GradFn>> &gfs,
+static std::pair<Out1D, Out2D> batch_value_grad_from_gradfns(const std::vector<std::shared_ptr<GradFn>> &gfs,
                                                              Arr1D                                       x_in) {
     const auto    x = as_span_1d(x_in);
     const ssize_t m = (ssize_t)gfs.size();
-    if (m == 0) return {create_zeros_1d(0), create_zeros_2d(0, (ssize_t)x.size())};
+    if (m == 0) return {create_uninit_1d(0), create_uninit_2d(0, (ssize_t)x.size())};
 
     for (const auto &gf : gfs) {
         if (!gf) throw std::invalid_argument("batch_valgrad: null GradFn");
         if (gf->var_nodes.size() != (size_t)x.size()) throw std::invalid_argument("batch_valgrad: inconsistent arity");
     }
 
-    Arr1D         vals = create_zeros_1d(m);
-    Arr2D         J    = create_zeros_2d(m, (ssize_t)x.size());
+    Out1D         vals = create_uninit_1d(m);
+    Out2D         J    = create_uninit_2d(m, (ssize_t)x.size());
     double       *vd   = vals.data();
     double       *Jd   = J.data();
     const ssize_t n    = (ssize_t)x.size();
@@ -1160,7 +1195,7 @@ static std::pair<Arr1D, Arr2D> batch_value_grad_from_gradfns(const std::vector<s
 
 // Overload: list of Python callables → compile/cache transparently
 [[gnu::hot]]
-static std::pair<Arr1D, Arr2D> batch_value_grad_from_callables(nb::list funcs, Arr1D x_in) {
+static std::pair<Out1D, Out2D> batch_value_grad_from_callables(nb::list funcs, Arr1D x_in) {
     const ssize_t                        m = nb::len(funcs);
     std::vector<std::shared_ptr<GradFn>> gfs;
     gfs.reserve((size_t)m);
@@ -1240,7 +1275,7 @@ batch_value_grad_from_gradfns_sparse(const std::vector<std::shared_ptr<GradFn>> 
 }
 
 [[gnu::hot]]
-static std::pair<Arr1D, Arr2D> batch_value_grad_numpy(nb::sequence grads, Arr1D x_in) {
+static std::pair<Out1D, Out2D> batch_value_grad_numpy(nb::sequence grads, Arr1D x_in) {
     const std::size_t m = static_cast<std::size_t>(nb::len(grads));
     auto              x = as_span_1d(x_in);
     const std::size_t n = x.size();
@@ -1254,9 +1289,9 @@ static std::pair<Arr1D, Arr2D> batch_value_grad_numpy(nb::sequence grads, Arr1D 
         gptrs.push_back(nb::cast<std::shared_ptr<GradFn>>(h).get());
     }
 
-    // Allocate outputs (C-contiguous row-major)
-    Arr1D   vals   = create_zeros_1d(static_cast<ssize_t>(m));
-    Arr2D   J      = create_zeros_2d(static_cast<ssize_t>(m), static_cast<ssize_t>(n));
+    // Allocate outputs (C-contiguous row-major); every entry is written below.
+    Out1D   vals   = create_uninit_1d(static_cast<ssize_t>(m));
+    Out2D   J      = create_uninit_2d(static_cast<ssize_t>(m), static_cast<ssize_t>(n));
     double *vals_d = vals.data();
     double *J_d    = J.data(); // row j starts at J_d + j*n
 

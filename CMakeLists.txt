@@ -66,6 +66,7 @@ if(NOT fmt_FOUND)
 endif()
 
 # pybind11
+set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 CONFIG QUIET)
 if(NOT pybind11_FOUND)
   message(STATUS "pybind11 not found; fetching via CPM")
@@ -100,8 +101,17 @@ if(NOT Eigen3_FOUND)
 endif()
 
 # Python 3 — Interpreter + Development.Module (for nanobind) + Development
-find_package(Python3 3.13
+find_package(Python3 3.13 EXACT
   COMPONENTS Interpreter Development Development.Module
+  REQUIRED
+)
+
+# Force unversioned FindPython consumers to reuse the exact Python3 toolchain.
+set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
+set(Python_ROOT_DIR "${Python3_PREFIX}")
+find_package(Python 3.13 EXACT
+  COMPONENTS Interpreter Development Development.Module
+  OPTIONAL_COMPONENTS Development.SABIModule
   REQUIRED
 )
 
@@ -317,7 +327,9 @@ target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
 
 # _ad_link_gurobi(chomp)
 # # link openmp to chomp if available
-target_link_libraries(chomp PRIVATE OpenMP::OpenMP_CXX)
+if(AD_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+  target_link_libraries(chomp PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 find_package(TBB COMPONENTS tbb)
 if(TARGET TBB::tbb)

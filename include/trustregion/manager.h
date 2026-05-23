@@ -1090,6 +1090,16 @@ class TrustRegionManager {
             }
         }
 
+        if (!accepted && theta_old && theta_trial &&
+            std::isfinite(*theta_old) && std::isfinite(*theta_trial)) {
+            const double theta_rhs =
+                *theta_old - cfg_.restoration_eta * std::max(1.0, *theta_old);
+            if (*theta_trial <= theta_rhs) {
+                accepted = true;
+                accepted_by = "theta";
+            }
+        }
+
         // backtracking if rejected
         if (!accepted) {
             auto retry = _backtrack_on_reject_(model, box_.x, p, box_.lb,
@@ -1133,17 +1143,28 @@ class TrustRegionManager {
 
         // radius update
         if (info.accepted) {
-            const double predicted =
+            double predicted =
                 std::isfinite(predicted_override) ? predicted_override
                                                  : choose_predicted_(info);
             double actual = actual_override;
             if (!std::isfinite(actual) && f_old && f_trial &&
                 std::isfinite(*f_old) && std::isfinite(*f_trial))
                 actual = (*f_old) - (*f_trial);
-            if (!std::isfinite(actual) && theta_old && theta_trial &&
-                std::isfinite(*theta_old) && std::isfinite(*theta_trial))
-                actual =
+            if (theta_old && theta_trial && std::isfinite(*theta_old) &&
+                std::isfinite(*theta_trial)) {
+                const double theta_actual =
                     cfg_.constraint_weight * ((*theta_old) - (*theta_trial));
+                const bool feasibility_step =
+                    theta_actual > 0.0 &&
+                    (accepted_by.find("theta") != std::string::npos ||
+                     accepted_by.find("filter") != std::string::npos ||
+                     accepted_by.find("restoration") != std::string::npos ||
+                     !std::isfinite(actual) || actual < 0.0);
+                if (feasibility_step) {
+                    actual = theta_actual;
+                    predicted = theta_actual;
+                }
+            }
             info.rho =
                 (std::isfinite(predicted) && std::abs(predicted) > 1e-16 &&
                  std::isfinite(actual))
@@ -1205,7 +1226,9 @@ class TrustRegionManager {
         const std::optional<dvec>& x, const std::optional<dvec>& lb,
         const std::optional<dvec>& ub) {
         TRInfo info;
-        {
+        const bool eq_feasible_at_origin =
+            (beq.lpNorm<Eigen::Infinity>() <= cfg_.constraint_tol);
+        if (eq_feasible_at_origin) {
             auto [c, s] = maybe_apply_criticality_(g, Aeq);
             info.criticality = c;
             info.criticality_shrinks = s;
@@ -1379,8 +1402,13 @@ class TrustRegionManager {
         const std::optional<dvec>& x, const std::optional<dvec>& lb,
         const std::optional<dvec>& ub) {
         TRInfo info;
-        {
-            auto [c, s] = maybe_apply_criticality_(g, std::nullopt);
+        const dvec v0 = bineq;
+        const bool ineq_feasible_at_origin =
+            !(v0.array() > cfg_.constraint_tol).any();
+        if (ineq_feasible_at_origin) {
+            auto [c, s] = maybe_apply_criticality_(
+                g, std::nullopt, std::make_optional(Aineq),
+                std::make_optional(bineq), std::make_optional(Hop));
             info.criticality = c;
             info.criticality_shrinks = s;
         }

@@ -41,10 +41,9 @@ def assert_source_regressions_fixed() -> None:
     assert "const double funnel_ref =" in manager_src
     assert "std::isfinite(current_theta_) ? current_theta_ : theta0;" in manager_src
     assert "std::max(actual, theta_actual)" not in manager_src
-    assert (
-        "if (!std::isfinite(actual) && theta_old && theta_trial &&"
-        in manager_src
-    )
+    assert "const double theta_actual =" in manager_src
+    assert 'accepted_by.find("theta")' in manager_src
+    assert "predicted = theta_actual;" in manager_src
     assert "exact_penalty_merit_(" in manager_src
     assert "restoration_phase_(" in manager_src
     assert '"ls-merit"' in manager_src
@@ -68,5 +67,44 @@ assert np.all(np.isfinite(sol)), f"non-finite SQP solve output: {sol}"
 assert np.linalg.norm(sol - np.array([1.0, 2.0], dtype=float)) < 1e-5, sol
 assert abs(float(equality(sol))) < 1e-7, sol
 assert float(objective(sol)) < 1e-10, sol
+
+
+def inequality_active_objective(x):
+    return x[0] ** 2
+
+
+def inequality_inactive_objective(x):
+    return (x[0] - 2.0) ** 2
+
+
+def lower_bound_constraint(x):
+    return 1.0 - x[0]
+
+
+active_solver = chomp(
+    inequality_active_objective,
+    [lower_bound_constraint],
+    [],
+    None,
+    None,
+    np.array([0.0], dtype=float),
+    make_cfg(),
+)
+active_sol = np.asarray(active_solver.solve(max_iter=60, tol=1e-8, verbose=False), dtype=float)
+assert np.linalg.norm(active_sol - np.array([1.0], dtype=float)) < 1e-5, active_sol
+assert lower_bound_constraint(active_sol) <= 1e-7, active_sol
+
+inactive_solver = chomp(
+    inequality_inactive_objective,
+    [lower_bound_constraint],
+    [],
+    None,
+    None,
+    np.array([0.0], dtype=float),
+    make_cfg(),
+)
+inactive_sol = np.asarray(inactive_solver.solve(max_iter=60, tol=1e-8, verbose=False), dtype=float)
+assert np.linalg.norm(inactive_sol - np.array([2.0], dtype=float)) < 1e-5, inactive_sol
+assert lower_bound_constraint(inactive_sol) <= 1e-7, inactive_sol
 
 assert_source_regressions_fixed()

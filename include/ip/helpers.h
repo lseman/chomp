@@ -33,7 +33,7 @@
 #include "../model.h"
 
 #ifndef IP_PROFILE
-#define IP_PROFILE 1
+#define IP_PROFILE 0
 #endif
 
 #if IP_PROFILE
@@ -71,10 +71,11 @@ struct ScopedTimer {
 #define IP_LAP(label) __ip_timer__.lap(label)
 #define IP_LOG(msg) std::cout << "[IP] " << msg << "\n"
 #else
-#define IP_TIMER(name)           \
-    struct {                     \
-        void lap(const char*) {} \
-    } __ip_timer__(name)
+struct ScopedTimerNoop {
+    explicit ScopedTimerNoop(const char*) {}
+    void lap(const char*) {}
+};
+#define IP_TIMER(name) ScopedTimerNoop __ip_timer__(name)
 #define IP_LAP(label) \
     do {              \
     } while (0)
@@ -179,75 +180,35 @@ class AdaptiveShiftManager {
         shift_stall_count_ = 0;
     }
     double compute_slack_shift(const dvec& s, const dvec& cI, const dvec& lam,
-                               int it) {
+                               int it, double mu_cur = -1.0) {
         if (!s.size()) return 0.0;
         assert(s.size() == cI.size() && lam.size() == cI.size());
 
-        const double base = get_attr_or<double>(cfg_, "ip_shift_tau", 1e-3);
-        const double beta = get_attr_or<double>(cfg_, "ip_shift_beta", 0.25);
-        const double k_mu =
-            get_attr_or<double>(cfg_, "ip_shift_tau_k_mu", 0.50);
-        const double k_active =
-            get_attr_or<double>(cfg_, "ip_shift_tau_k_active", 0.50);
-        const double k_stall =
-            get_attr_or<double>(cfg_, "ip_shift_tau_k_stall", 0.25);
-        const double active_tol =
-            get_attr_or<double>(cfg_, "ip_active_tol", 1e-3);
-        const double mu_target =
-            get_attr_or<double>(cfg_, "ip_mu_target", 1e-4);
+        // Slack shift for the shifted barrier log(s + tau). The shift exists
+        // only to keep the slack off s=0 (the fraction-to-boundary rule would
+        // otherwise pin it and stall infeasible-start problems). It is a barrier
+        // perturbation, so it must stay SMALL and vanish as mu -> 0: a shift of
+        // size tau relaxes the constraint cI <= 0 into cI <= tau, so an O(1)
+        // shift converges to the unconstrained minimizer. The previous additive
+        // heuristic (base + k_mu*sqrt(mu) + complementarity + iteration-growing
+        // stall boost) produced tau ~ 0.1-1.0 and did exactly that.
+        //
+        // Rule: tau = clamp(kappa * mu, tau_floor, tau_max).
+        // A small POSITIVE floor matters: if tau shrinks faster than the slack
+        // can follow, the moving boundary -tau overtakes s and the barrier blows
+        // up. A stable small shift (tau_floor) avoids both the s=0 pinning and
+        // the boundary-chase. kappa*mu only raises tau above the floor early on.
+        const double kappa = get_attr_or<double>(cfg_, "ip_shift_tau_kappa", 1e-3);
+        const double tau_floor = get_attr_or<double>(cfg_, "ip_shift_tau_floor", 1e-4);
+        const double tau_max = get_attr_or<double>(cfg_, "ip_shift_tau_max", 1.0);
+        const double tau_min = get_attr_or<double>(cfg_, "ip_shift_tau_min", 0.0);
 
-        // Single pass to compute active set stats
-        int near_active_ct = 0;
-        double s_sum = 0.0, lam_sum = 0.0;
-        int sample_count = 0;
-        constexpr int max_samples = 1000;  // Limit samples for large vectors
-        const int step = std::max(1, static_cast<int>(s.size()) / max_samples);
+        const double mu = (mu_cur >= 0.0)
+                              ? mu_cur
+                              : get_attr_or<double>(cfg_, "ip_mu_target", 1e-4);
 
-        for (int i = 0; i < cI.size(); i += step) {
-            if (cI[i] >= -active_tol) {
-                s_sum += std::max(s[i], 1e-12);
-                lam_sum += std::max(std::abs(lam[i]), 1e-12);
-                ++near_active_ct;
-                ++sample_count;
-            }
-        }
-
-        const double frac_active =
-            (cI.size() > 0) ? static_cast<double>(near_active_ct) / cI.size()
-                            : 0.0;
-        const double s_p10 =
-            sample_count > 0
-                ? s_sum / sample_count
-                : percentile_(s,
-                              0.10);  // Fallback to full percentile if needed
-        const double lam_med = sample_count > 0
-                                   ? lam_sum / sample_count
-                                   : percentile_(lam.cwiseAbs(), 0.50);
-
-        // Complementarity-driven target τ
-        const double tau_from_comp =
-            (lam_med > 0.0) ? std::max(0.0, mu_target / lam_med - s_p10) : 0.0;
-
-        // Stall-aware boost
-        const bool stallish = (s_p10 < 1e-6) && (frac_active > 0.25);
-        if (stallish) ++shift_stall_count_;
-        const double stall_boost =
-            stallish ? (k_stall * (1.0 + 0.05 * it)) : 0.0;
-
-        // Compose and smooth τ
-        double tau_raw = base + k_mu * std::sqrt(std::max(mu_target, 0.0)) +
-                         k_active * frac_active * std::max(0.0, tau_from_comp) +
-                         stall_boost;
-        if (!tau_ema_init_) {
-            tau_ema_ = tau_raw;
-            tau_ema_init_ = true;
-        }
-        tau_ema_ = (1.0 - beta) * tau_ema_ + beta * tau_raw;
-        const double tau_max =
-            get_attr_or<double>(cfg_, "ip_shift_tau_max", 1.0);
-        const double tau_min =
-            get_attr_or<double>(cfg_, "ip_shift_tau_min", 0.0);
-        return clamp(tau_ema_, tau_min, tau_max);
+        const double tau = std::max(tau_floor, kappa * mu);
+        return clamp(tau, tau_min, tau_max);
     }
 
     double compute_bound_shift(const dvec& x, const Bounds& B, int it) {
@@ -491,7 +452,7 @@ class MehrotraGondzioSolver {
         // Mehrotra affine predictor with corrected bound handling
         auto [alpha_aff, mu_aff, sigma] = compute_affine_predictor_(
             W, r_d, JE, r_pE, JI, r_pI, s, lam, zL, zU, B, use_shifted,
-            tau_shift, bound_shift, mu, theta);
+            tau_shift, bound_shift, mu, theta, Sg);
         IP_LAP("affine predictor");
 
         // Barrier parameter selection with multiple strategies
@@ -586,17 +547,29 @@ class MehrotraGondzioSolver {
         const std::optional<dvec>& r_pE, const std::optional<spmat>& JI,
         const std::optional<dvec>& r_pI, const dvec& s, const dvec& lam,
         const dvec& zL, const dvec& zU, const Bounds& B, bool use_shifted,
-        double tau_shift, double bound_shift, double mu, double theta) {
+        double tau_shift, double bound_shift, double mu, double theta,
+        const Sigmas& Sg) {
         const bool haveJE = JE && JE->rows() > 0 && JE->cols() > 0;
-        auto res = solve_kkt_(W, -r_d, haveJE ? JE : std::nullopt,
+        const int mI = static_cast<int>(s.size());
+        const int n = static_cast<int>(zL.size());
+
+        dvec rhs_x = -r_d;
+        if (mI > 0 && JI && Sg.Sigma_s.size() == mI && r_pI &&
+            r_pI->size() == mI) {
+            rhs_x.noalias() +=
+                (*JI).transpose() * (lam - Sg.Sigma_s.cwiseProduct(*r_pI));
+        }
+        for (int i = 0; i < n; ++i) {
+            if (B.hasL[i]) rhs_x[i] -= zL[i];
+            if (B.hasU[i]) rhs_x[i] += zU[i];
+        }
+
+        auto res = solve_kkt_(W, rhs_x, haveJE ? JE : std::nullopt,
                               (r_pE && r_pE->size() > 0) ? r_pE : std::nullopt,
                               solving_method);
 
         dvec dx_aff = std::move(res.dx);
         dx_aff_cache_ = dx_aff;  // Cache for later use in mu calculation
-
-        const int mI = static_cast<int>(s.size());
-        const int n = static_cast<int>(zL.size());
 
         // Compute affine slack and multiplier directions
         dvec ds_aff, dlam_aff;
@@ -841,20 +814,16 @@ class MehrotraGondzioSolver {
 
         // Add centering terms
         if (mI > 0 && JI && Sg.Sigma_s.size()) {
-            dvec rc_s(mI);
+            dvec ineq_rhs(mI);
             for (int i = 0; i < mI; ++i) {
-                const double ds = clamp_min(
+                const double denom = clamp_min(
                     use_shifted ? (s[i] + tau_shift) : s[i], consts::EPS_POS);
-                rc_s[i] = mu_target - ds * lam[i];
+                const double primal_res =
+                    (r_pI && r_pI->size() == mI) ? (*r_pI)[i] : 0.0;
+                ineq_rhs[i] =
+                    lam[i] - mu_target / denom - Sg.Sigma_s[i] * primal_res;
             }
-
-            dvec temp(mI);
-            for (int i = 0; i < mI; ++i) {
-                const double li = clamp_min(std::abs(lam[i]), consts::EPS_POS);
-                temp[i] = rc_s[i] / (lam[i] >= 0 ? li : -li);
-            }
-            rhs_x.noalias() +=
-                (*JI).transpose() * (Sg.Sigma_s.asDiagonal() * temp);
+            rhs_x.noalias() += (*JI).transpose() * ineq_rhs;
         }
 
         // Bound centering terms

@@ -312,7 +312,14 @@ class LineSearcher {
         ModelC* model, const dvec& x, const dvec& dx, const dvec& ds,
         const dvec& s, double mu, double d_phi,
         std::optional<double> theta0_opt = std::nullopt,
-        double alpha_max = 1.0) const {
+        double alpha_max = 1.0, double tau_shift = 0.0,
+        bool use_shifted = false) const {
+        // Shifted-barrier offset: the inequality barrier is log(s + tau_shift),
+        // so the slack may legitimately fall to -tau_shift. The fraction-to-
+        // boundary rule and barrier evaluations below must use (s + sh), not raw
+        // s, to match the rest of the IP machinery (dual update, Sigma_s). Using
+        // raw s pins the step at s=0 and stalls infeasible-start problems.
+        const double sh = use_shifted ? tau_shift : 0.0;
         if (!model || x.size() == 0 || dx.size() != x.size()) {
             return {cfg_.ls_min_alpha, 0, true, dvec(), dvec()};
         }
@@ -347,9 +354,9 @@ class LineSearcher {
         const BoundBarrierData bounds{model->get_lb(), model->get_ub()};
         double phi0 = f0;
         if (s.size() > 0) {
-            // phi0 = f0 - mu * sum(log(s))
+            // phi0 = f0 - mu * sum(log(s + sh))   (shifted barrier)
             phi0 -= mu * (s.array().unaryExpr([&](double v) {
-                             return safe_log_barrier(v, barrier_eps);
+                             return safe_log_barrier(v + sh, barrier_eps);
                          })).sum();
         }
         double bound_log_sum0 = 0.0;
@@ -362,7 +369,14 @@ class LineSearcher {
         if (!std::isfinite(phi0))
             return {cfg_.ls_min_alpha, 0, true, dvec(), dvec()};
 
-        double theta0 = theta0_opt ? *theta0_opt : compute_theta(cE0, cI0, s);
+        // theta0 must use the SAME metric as the trial theta_t computed in the
+        // loop, i.e. compute_theta with the slack-augmented residual (cI + s).
+        // The externally supplied theta0_opt (E.theta) is the no-slack violation
+        // max(cI,0); mixing the two makes every trial look like theta doubled,
+        // collapsing alpha. With slacks present, always recompute consistently.
+        double theta0 = (s.size() > 0) ? compute_theta(cE0, cI0, s)
+                                       : (theta0_opt ? *theta0_opt
+                                                     : compute_theta(cE0, cI0, s));
         const double d_phi_total =
             d_phi +
             bound_barrier_directional_derivative(x, dx, bounds, mu, barrier_eps);
@@ -404,12 +418,15 @@ class LineSearcher {
         // Fraction-to-boundary (vectorized)
         double alpha_ftb = alpha_max;
         if (ds.size() == s.size() && s.size() > 0) {
-            // For ds < 0: (1 - tau) * s / (-ds)
+            // Fraction-to-boundary: keep s + alpha*ds >= (1-tau)*s, i.e.
+            // alpha <= tau * s / (-ds) for ds < 0. (Previously used (1-tau),
+            // which throttled alpha to ~0.5% of its allowed value with
+            // tau=0.995, stalling the line search.)
             Eigen::ArrayXd mask =
                 (ds.array() < -cfg_.ls_theta_eps).cast<double>();
             if (mask.any()) {
                 Eigen::ArrayXd ratio =
-                    ((1.0 - cfg_.ip_fraction_to_boundary_tau) * s.array()) /
+                    (cfg_.ip_fraction_to_boundary_tau * (s.array() + sh)) /
                     (-ds.array());
                 double min_ratio = std::numeric_limits<double>::infinity();
                 for (Eigen::Index i = 0; i < ratio.size(); ++i)
@@ -460,7 +477,7 @@ class LineSearcher {
             dvec s_t;
             if (ds.size() == s.size()) {
                 s_t = s + alpha * ds;
-                if ((s_t.array() <= cfg_.ls_theta_eps).any()) {
+                if (((s_t.array() + sh) <= cfg_.ls_theta_eps).any()) {
                     alpha *= cfg_.ls_backtrack;
                     ++it;
                     ++watchdog;
@@ -497,7 +514,7 @@ class LineSearcher {
             double phi_t = f_t;
             if (s_t.size() > 0) {
                 phi_t -= mu * (s_t.array().unaryExpr([&](double v) {
-                                  return safe_log_barrier(v, barrier_eps);
+                                  return safe_log_barrier(v + sh, barrier_eps);
                               })).sum();
             }
             phi_t -= mu * bound_log_sum_t;
@@ -575,7 +592,7 @@ class LineSearcher {
                                 .cast<double>();
                         if (mask.any()) {
                             Eigen::ArrayXd ratio =
-                                ((1.0 - cfg_.ip_fraction_to_boundary_tau) *
+                                (cfg_.ip_fraction_to_boundary_tau *
                                  s.array()) /
                                 (-ds_ref.array());
                             double min_ratio =

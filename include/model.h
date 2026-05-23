@@ -403,7 +403,7 @@ public:
         capacity_ = new_capacity;
         if (entries_.size() > capacity_) {
             std::sort(entries_.begin(), entries_.end(),
-                             [](const EvalEntry &a, const EvalEntry &b) { return a.access_order > b.access_order; });
+                      [](const EvalEntry &a, const EvalEntry &b) { return a.access_order > b.access_order; });
             entries_.resize(capacity_);
         }
         entries_.reserve(capacity_);
@@ -476,11 +476,11 @@ public:
         f_grad_ = compile_objective_(f);
         f_hess_ = compile_lag_hess_(f, c_ineq, c_eq);
 
-        if (c_ineq) {
+        if (c_ineq && !c_ineq->is_none()) {
             auto ineq_list = nb::cast<std::vector<nb::object>>(*c_ineq);
             for (auto &obj : ineq_list) cI_compiled_.push_back(compile_constraint_(obj));
         }
-        if (c_eq) {
+        if (c_eq && !c_eq->is_none()) {
             auto eq_list = nb::cast<std::vector<nb::object>>(*c_eq);
             for (auto &obj : eq_list) cE_compiled_.push_back(compile_constraint_(obj));
         }
@@ -551,27 +551,37 @@ public:
 
         // f and g
         if ((wants("f") || wants("g")) && (!e->f || !e->g)) {
-            auto [fv, fg]  = f_grad_->value_grad_eigen(x);
-            e->f           = fv;
-            e->g           = fg;
-            current_vals.f = e->f;
-            current_vals.g = e->g;
+            auto [fv, fg] = f_grad_->value_grad_eigen(x);
+            e->f          = fv;
+            e->g          = fg;
         }
 
         // inequalities
         if ((wants("cI") || wants("JI")) && (!e->cI || !e->JI) && mI_ > 0) {
-            auto [vals, J]  = batch_value_grad_from_gradfns_sparse(cI_compiled_, x);
-            e->cI           = vals;
-            e->JI           = J;
-            current_vals.cI = e->cI;
-            current_vals.JI = e->JI;
+            auto [vals, J] = batch_value_grad_from_gradfns_sparse(cI_compiled_, x);
+            e->cI          = vals;
+            e->JI          = J;
         }
 
         // equalities
         if ((wants("cE") || wants("JE")) && (!e->cE || !e->JE) && mE_ > 0) {
-            auto [vals, J]  = batch_value_grad_from_gradfns_sparse(cE_compiled_, x);
-            e->cE           = vals;
-            e->JE           = J;
+            auto [vals, J] = batch_value_grad_from_gradfns_sparse(cE_compiled_, x);
+            e->cE          = vals;
+            e->JE          = J;
+        }
+
+        current_vals.x            = x;
+        current_vals.hash         = e->hash;
+        current_vals.access_order = e->access_order;
+        if ((wants("f") || wants("g")) && e->f && e->g) {
+            current_vals.f = e->f;
+            current_vals.g = e->g;
+        }
+        if ((wants("cI") || wants("JI")) && mI_ > 0 && e->cI && e->JI) {
+            current_vals.cI = e->cI;
+            current_vals.JI = e->JI;
+        }
+        if ((wants("cE") || wants("JE")) && mE_ > 0 && e->cE && e->JE) {
             current_vals.cE = e->cE;
             current_vals.JE = e->JE;
         }
@@ -633,8 +643,10 @@ private:
     std::shared_ptr<LagHessFn> compile_lag_hess_(const nb::object                &f,
                                                  const std::optional<nb::object> &c_ineq = nb::none(),
                                                  const std::optional<nb::object> &c_eq   = nb::none()) {
-        auto ineq_list = c_ineq ? nb::cast<std::vector<nb::object>>(*c_ineq) : std::vector<nb::object>{};
-        auto eq_list   = c_eq ? nb::cast<std::vector<nb::object>>(*c_eq) : std::vector<nb::object>{};
+        auto ineq_list =
+            (c_ineq && !c_ineq->is_none()) ? nb::cast<std::vector<nb::object>>(*c_ineq) : std::vector<nb::object>{};
+        auto eq_list =
+            (c_eq && !c_eq->is_none()) ? nb::cast<std::vector<nb::object>>(*c_eq) : std::vector<nb::object>{};
         return std::make_shared<LagHessFn>(f, ineq_list, eq_list, (size_t)n_, true);
     }
 
@@ -647,12 +659,10 @@ private:
     }
 
 public:
-    ModelSuspectReport run_convexity_analysis(
-        bool print_summary = false) const;
+    ModelSuspectReport run_convexity_analysis(bool print_summary = false) const;
 };
 
-inline ModelSuspectReport ModelC::run_convexity_analysis(
-    bool print_summary) const {
+inline ModelSuspectReport ModelC::run_convexity_analysis(bool print_summary) const {
     using namespace suspect_adapter;
     using Traits = suspect::SuspectTraits<ModelView, ADNodePtr>;
 

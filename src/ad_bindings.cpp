@@ -280,4 +280,11 @@ NB_MODULE(ad, m) {
           "grads"_a, "x"_a,
           "Fused, parallel (f_j(x), grad f_j(x)) for a list of compiled GradFn.\n"
           "Returns (vals: ndarray[m], J: ndarray[m,n]).");
+
+    // Release cached GradFn/HessFn (which own Python callables) before the
+    // interpreter finalizes; otherwise C++ TLS destructors free them too late
+    // and segfault in func_dealloc. atexit runs on the main thread while Python
+    // is still alive.
+    nb::module_::import_("atexit").attr("register")(
+        nb::cpp_function([]() { clear_fn_caches(); }));
 }

@@ -142,7 +142,7 @@ public:
           nb::object  lb_or_none,  // None or 1-D array-like
           nb::object  ub_or_none,  // None or 1-D array-like
           const dvec &x0,          // 1-D
-          nb::object  cfg_or_none)  // None or config-like
+          nb::object  cfg_or_none) // None or config-like
     {
         register_instance_(this);
         // --- config ---
@@ -190,16 +190,14 @@ public:
         mode_ = mode;
 
         try {
-            model_owner_ = std::make_unique<ModelC>(f, c_ineq_list, c_eq_list, n_,
-                                                    lb_or_none, ub_or_none);
+            model_owner_ = std::make_unique<ModelC>(f, c_ineq_list, c_eq_list, n_, lb_or_none, ub_or_none);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("chomp: ModelC construction failed: ") + e.what());
         }
         ModelC *m = model_owner_.get();
 
         try {
-            const bool print_convexity_analysis =
-                get_bool_attr_or(cfg_, "print_convexity_analysis", false);
+            const bool print_convexity_analysis = get_bool_attr_or(cfg_, "print_convexity_analysis", false);
             m->run_convexity_analysis(print_convexity_analysis);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("chomp: convexity analysis failed: ") + e.what());
@@ -240,7 +238,7 @@ public:
         lam_.resize(0);
         nu_.resize(0);
         n_ = mI_ = mE_ = 0;
-        mode_ = "closed";
+        mode_          = "closed";
         prev_theta_.reset();
         reject_streak_ = small_alpha_streak_ = no_progress_streak_ = 0;
     }
@@ -255,8 +253,7 @@ public:
             if (instance) {
                 try {
                     instance->close();
-                } catch (...) {
-                }
+                } catch (...) {}
             }
         }
     }
@@ -318,9 +315,8 @@ private:
 
     static void unregister_instance_(chomp *instance) {
         std::lock_guard<std::mutex> lock(live_instances_mutex_());
-        auto &instances = live_instances_();
-        instances.erase(std::remove(instances.begin(), instances.end(), instance),
-                        instances.end());
+        auto                       &instances = live_instances_();
+        instances.erase(std::remove(instances.begin(), instances.end(), instance), instances.end());
     }
 
     // ---- steps --------------------------------------------------------------
@@ -379,7 +375,7 @@ private:
 
 private:
     // Core problem bits
-    nb::object cfg_;
+    nb::object              cfg_;
     std::unique_ptr<ModelC> model_owner_;
 
     // Steppers
@@ -408,6 +404,7 @@ private:
 
 NB_MODULE(chomp, m) {
     m.doc() = "Hybrid NLP Solver (IP + SQP) — nanobind wrapper";
+    nb::module_::import_("ad");
 
     nb::class_<ChompConfig>(m, "ChompConfig", nb::dynamic_attr())
         .def(nb::init<>())
@@ -481,7 +478,7 @@ NB_MODULE(chomp, m) {
             "cg_maxiter", [](const ChompConfig &cfg) { return cfg.cg_maxiter; },
             [](ChompConfig &cfg, int value) {
                 cfg.cg_maxiter = value;
-                cfg.cg_maxit = value;
+                cfg.cg_maxit   = value;
             })
         .def_rw("neg_curv_tol", &ChompConfig::neg_curv_tol)
         .def_rw("constraint_tol", &ChompConfig::constraint_tol)
@@ -564,18 +561,20 @@ NB_MODULE(chomp, m) {
         });
 
     m.attr("CHOMPConfig") = m.attr("ChompConfig");
-    m.attr("CHOMPConf") = m.attr("ChompConfig");
+    m.attr("CHOMPConf")   = m.attr("ChompConfig");
 
     nb::class_<chomp>(m, "chomp")
         .def(nb::init<nb::object, nb::object, nb::object, nb::object, nb::object, const dvec &, nb::object>(), arg("f"),
              arg("c_ineq") = nb::none(), arg("c_eq") = nb::none(), arg("lb") = nb::none(), arg("ub") = nb::none(),
              arg("x0"), arg("config") = nb::none())
         .def("close", &chomp::close, "Release solver-owned Python/C++ resources early.")
-        .def("__enter__", [](chomp &self) -> chomp & { return self; }, nb::rv_policy::reference_internal)
-        .def("__exit__", [](chomp &self, nb::args) {
-            self.close();
-            return false;
-        })
+        .def(
+            "__enter__", [](chomp &self) -> chomp & { return self; }, nb::rv_policy::reference_internal)
+        .def("__exit__",
+             [](chomp &self, nb::args) {
+                 self.close();
+                 return false;
+             })
         .def("solve", &chomp::solve, arg("max_iter") = 100, arg("tol") = 1e-8, arg("verbose") = true,
              "Run hybrid solve; returns the final x (Eigen/NumPy).");
 

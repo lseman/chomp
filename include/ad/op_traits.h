@@ -1867,12 +1867,18 @@ struct OpTraits<Operator::Pow> {
         if (exp_is_const) {
             long long bi;
             if (_is_small_int(b, bi)) {
-                // ga += gu * (bi*a^(bi-1)); no gb since const
-                double d = (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
+                // First-order: ga += gu * (bi*a^(bi-1)).
+                // Second-order (needed for Hessian via fwd-over-rev):
+                //   ga += w * bi*(bi-1)*a^(bi-2) * adot.  No gb since b is cte.
+                const double d = (bi == 0) ? 0.0 : (double)bi * _powi(a, bi - 1);
+                const double ddaa =
+                    (bi == 0 || bi == 1)
+                        ? 0.0
+                        : (double)bi * (double)(bi - 1) * _powi(a, bi - 2);
                 double* __restrict ga = &g.lanes_.gdot[abase];
                 const double* __restrict ad = &g.lanes_.dot[abase];
                 for (size_t l = 0; l < L; ++l)
-                    ga[l] += gu[l] * d;  // w* second-deriv skipped (cte b)
+                    ga[l] = std::fma(gu[l], d, std::fma(w * ddaa, ad[l], ga[l]));
                 return;
             }
             // closed forms for common constants

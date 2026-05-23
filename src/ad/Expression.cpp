@@ -322,11 +322,13 @@ ExpressionPtr pow(const Expression& x, double p) {
     if (p == 2.0)    [[unlikely]] return square(x);                            // x^2
     if (p == -1.0)   [[unlikely]] return reciprocal(x);                        // x^-1
 
-    // Generic: x^p = exp(p * log(x))
-    auto ln  = make_node_1in<Operator::Log>(g, x.node);
-    auto scl = make_node_2in<Operator::Multiply>(g, ln, make_const_node_fast(g, p));
-    auto ex  = make_node_1in<Operator::Exp>(g, scl);
-    return alias_expr(g, ex);
+    // Generic: emit a Pow node with constant exponent. OpTraits<Pow> selects a
+    // by-squaring path for (small) integer exponents — correct for negative
+    // bases — and falls back to std::pow/exp2 otherwise. The previous
+    // exp(p*log(x)) lowering silently gave wrong results for x < 0 (e.g. (-3)^4)
+    // because log(x<0) is undefined.
+    auto pw = make_node_2in<Operator::Pow>(g, x.node, make_const_node_fast(g, p));
+    return alias_expr(g, pw);
 }
 
 ExpressionPtr max(const Expression& a, const Expression& b) {

@@ -373,15 +373,32 @@ class AdvancedSOC {
                 }
             }
 
-            // Fill candidate data
-            candidate.dx = soc_res.dx;
+            // Fill candidate data. The SOC RHS encodes only the *correction*,
+            // so the resulting direction must be ADDED to the base step rather
+            // than replace it. (fill_step_data overwrites step.dx with this
+            // value, so it must already be the full corrected direction.)
+            candidate.dx = base_step.dx + soc_res.dx;
             candidate.dnu = (JE && soc_res.dy.size() > 0)
-                                ? soc_res.dy
-                                : dvec::Zero(JE ? JE->rows() : 0);
+                                ? base_step.dnu + soc_res.dy
+                                : base_step.dnu;
 
-            // Compute remaining components
+            // Compute remaining components. ds/dlam must stay consistent with
+            // the *total* (base + correction) dx. Because the base step already
+            // satisfies ds_base = -(r_pI + JI*dx_base), the total is
+            // ds_total = ds_base - JI*soc_dx; recomputing from scratch with the
+            // total dx would drop the r_pI term, so derive them additively.
             complete_candidate(candidate, JI, s, lam, zL, zU, B, mu_target,
                                use_shifted, tau_shift, bound_shift);
+            if (s.size() > 0 && JI && base_step.ds.size() == s.size()) {
+                candidate.ds = base_step.ds - (*JI) * soc_res.dx;
+                candidate.dlam.resize(s.size());
+                for (int i = 0; i < s.size(); ++i) {
+                    const double d = std::max(
+                        use_shifted ? (s[i] + tau_shift) : s[i], 1e-12);
+                    candidate.dlam[i] =
+                        (mu_target - d * lam[i] - lam[i] * candidate.ds[i]) / d;
+                }
+            }
 
             // Evaluate candidate
             evaluate_candidate(candidate, base_step, s, lam, zL, zU, B,

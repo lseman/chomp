@@ -125,6 +125,9 @@ inline void dispatch_op(ADNode& n, Fn&& fn) {
         case Operator::Divide:
             fn.template operator()<Operator::Divide>();
             break;
+        case Operator::Pow:
+            fn.template operator()<Operator::Pow>();
+            break;
         case Operator::Max:
             fn.template operator()<Operator::Max>();
             break;
