@@ -440,6 +440,187 @@ struct QuadOverLinDetector final : ISuspectDetector<GraphT, NodeT> {
     }
 };
 
+// ----------------- LogSumExp Detector ---------------------------------------
+// log(sum(exp(x_i))) is convex (standard DCP atom)
+// Detected as: log(exp(x1) + exp(x2) + ... + exp(xk))
+template <class GraphT, class NodeT>
+struct LogSumExpDetector final : ISuspectDetector<GraphT, NodeT> {
+    using T = SuspectTraits<GraphT, NodeT>;
+    bool detect(const GraphT&, const NodeT& n,
+                const std::vector<NodeInfo>& kids, NodeInfo& info) override {
+        auto op = T::op(n);
+        auto ins = T::inputs(n);
+        // Must be log(sum_of_exps)
+        if (op != T::Op::Log || ins.size() != 1) return false;
+        const NodeT& inner = ins[0];
+        if (T::op(inner) != T::Op::Add || inner.inputs.size() < 2) return false;
+
+        // Check all addends are exp(affine)
+        bool all_exps = true;
+        for (const auto& term : inner.inputs) {
+            if (T::op(term) != T::Op::Exp) { all_exps = false; break; }
+        }
+        if (!all_exps) return false;
+
+        info.cvx = CvxTag::Convex;
+        info.hint = "Log-sum-exp is convex.";
+        return true;
+    }
+};
+
+// ----------------- Entropy Detector -----------------------------------------
+// -sum(x * log(x)) = sum(-x * log(x)) is concave (entropy)
+// Detected as: -(x * log(x)) or sum(-x_i * log(x_i))
+template <class GraphT, class NodeT>
+struct EntropyDetector final : ISuspectDetector<GraphT, NodeT> {
+    using T = SuspectTraits<GraphT, NodeT>;
+    bool detect(const GraphT&, const NodeT& n,
+                const std::vector<NodeInfo>& kids, NodeInfo& info) override {
+        auto op = T::op(n);
+        auto ins = T::inputs(n);
+
+        // Pattern: -x * log(x)  (single term)
+        if (op == T::Op::Multiply && ins.size() == 2) {
+            // Check if one child is -1 and other is x*log(x)
+            for (size_t i = 0; i < 2; ++i) {
+                if (T::is_const(ins[i]) && std::abs(T::const_value(ins[i]) + 1.0) < 1e-12) {
+                    const NodeT& prod = ins[1 - i];
+                    if (T::op(prod) == T::Op::Multiply && prod.inputs.size() == 2) {
+                        const auto& a = prod.inputs[0];
+                        const auto& b = prod.inputs[1];
+                        if (T::op(b) == T::Op::Log && b.inputs.size() == 1 &&
+                            a.get() == b.inputs[0].get()) {
+                            info.cvx = CvxTag::Concave;
+                            info.hint = "Negative x*log(x) = entropy term is concave.";
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pattern: sum of -x_i * log(x_i) terms
+        if (op == T::Op::Add && ins.size() >= 2) {
+            bool all_entropy = true;
+            for (const auto& term : ins) {
+                if (T::op(term) != T::Op::Multiply || term.inputs.size() < 2) {
+                    all_entropy = false; break;
+                }
+                bool is_neg_xlogx = false;
+                for (size_t i = 0; i < 2; ++i) {
+                    if (T::is_const(term.inputs[i]) &&
+                        std::abs(T::const_value(term.inputs[i]) + 1.0) < 1e-12) {
+                        const NodeT& xlogx = term.inputs[1 - i];
+                        if (T::op(xlogx) == T::Op::Multiply && xlogx.inputs.size() == 2) {
+                            const auto& a = xlogx.inputs[0];
+                            const auto& b = xlogx.inputs[1];
+                            if (T::op(b) == T::Op::Log && b.inputs.size() == 1 &&
+                                a.get() == b.inputs[0].get()) {
+                                is_neg_xlogx = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!is_neg_xlogx) { all_entropy = false; break; }
+            }
+            if (all_entropy) {
+                info.cvx = CvxTag::Concave;
+                info.hint = "Sum of negative entropy terms is concave.";
+                return true;
+            }
+        }
+
+        return false;
+    }
+};
+
+// ----------------- KL Divergence Detector -----------------------------------
+// x*log(x/y) - x + y = x*log(x) - x*log(y) - x + y
+// Standard form: sum_i (x_i * log(x_i / y_i) - x_i + y_i)
+// This is convex when x, y > 0
+template <class GraphT, class NodeT>
+struct KLDetector final : ISuspectDetector<GraphT, NodeT> {
+    using T = SuspectTraits<GraphT, NodeT>;
+    bool detect(const GraphT&, const NodeT& n,
+                const std::vector<NodeInfo>& kids, NodeInfo& info) override {
+        auto op = T::op(n);
+        auto ins = T::inputs(n);
+
+        // KL term: a * log(a / b) - a + b  (where a, b are positive)
+        // Detect: x * log(x / y) + (-x) + y  (n-ary Add)
+        if (op != T::Op::Add) return false;
+        if (ins.size() < 3) return false; // need at least 3 terms
+
+        // KL: a*log(a/b) - a + b is convex when a,b > 0
+        // Detect a*log(a/b) term: a * log(a / b)
+        auto is_kl_term = [&](const NodeT* t) -> bool {
+            if (!t || T::op(t) != T::Op::Multiply || t->inputs.size() < 2)
+                return false;
+            for (size_t i = 0; i < t->inputs.size(); ++i) {
+                auto a = t->inputs[i];
+                auto rest = t->inputs[1 - i];
+                if (T::op(rest) != T::Op::Log || rest->inputs.size() != 1)
+                    continue;
+                if (T::op(rest->inputs[0]) != T::Op::Divide ||
+                    rest->inputs[0].inputs.size() != 2) continue;
+                // rest = log(a/b)
+                if (rest->inputs[0].inputs[0].get() == a.get())
+                    return true;
+            }
+            return false;
+        };
+
+        int n_kl_terms = 0;
+        for (const auto& term : ins) {
+            if (is_kl_term(term.get()))
+                ++n_kl_terms;
+        }
+        if (n_kl_terms >= 1) {
+            info.cvx = CvxTag::Convex;
+            info.hint = "KL divergence form x*log(x/y) is convex.";
+            return true;
+        }
+
+        // Also detect relative_entropy(a||b) = a*log(a/b) - a + b
+        // as a sum with a*log(a/b) + (-a) + b
+        auto is_neg_linear = [](const NodeT* t) -> bool {
+            if (!t || T::op(t) != T::Op::Multiply) return false;
+            for (auto& inp : t->inputs) {
+                if (T::is_const(inp) && std::abs(T::const_value(inp) + 1.0) < 1e-12)
+                    return true;
+            }
+            return false;
+        };
+        auto is_pos_linear = [](const NodeT* t) -> bool {
+            if (!t || T::op(t) != T::Op::Multiply) return false;
+            for (auto& inp : t->inputs) {
+                if (T::is_const(inp) && std::abs(T::const_value(inp) - 1.0) < 1e-12)
+                    return true;
+            }
+            return false;
+        };
+
+        bool has_neg = false, has_pos = false;
+        for (const auto& term : ins) {
+            if (is_kl_term(term.get())) { n_kl_terms++; }
+            else if (is_neg_linear(term.get())) { has_neg = true; }
+            else if (is_pos_linear(term.get())) { has_pos = true; }
+        }
+        if (n_kl_terms >= 1 && has_neg && has_pos) {
+            info.cvx = CvxTag::Convex;
+            info.hint = "KL form x*log(x/y)-x+y is convex.";
+            return true;
+        }
+
+        return false;
+    }
+};
+
+// ----------------- Relative Entropy Detector --------------------------------
+// relative_entropy(a||b) = a*log(a/b) - a + b (convex for a,b > 0)
+// This is the same as KL, so KLDetector covers it. We register KLDetector here.
+
 // --------------------------- Analyzer ---------------------------------------
 template <class GraphT, class NodeT>
 class Analyzer {
@@ -605,6 +786,9 @@ private:
         registerDetector(std::make_shared<QuadraticSimpleDetector<GraphT, NodeT>>());
         registerDetector(std::make_shared<FractionalAffineDetector<GraphT, NodeT>>());
         registerDetector(std::make_shared<QuadOverLinDetector<GraphT, NodeT>>());
+        registerDetector(std::make_shared<LogSumExpDetector<GraphT, NodeT>>());
+        registerDetector(std::make_shared<EntropyDetector<GraphT, NodeT>>());
+        registerDetector(std::make_shared<KLDetector<GraphT, NodeT>>());
     }
 
     // ------------------- Topological sort (parents adjacency) -------------------

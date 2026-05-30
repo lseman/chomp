@@ -52,16 +52,22 @@ struct EGraph {
     // union-find (per e-node; parent over e-class ids)
     std::vector<int> parent;               // index by e-class id
     std::unordered_map<size_t, int> memo;  // hash(ENode)->eclass id
-    // --- before: existing non-const find ---
+    // --- non-const find: iterative with path compression (stack-safe) ---
     int find(int x) {
-        if (parent[x] == x) return x;
-        parent[x] = find(parent[x]);  // path compression
-        return parent[x];
+        // First pass: walk to root
+        int root = x;
+        while (parent[root] != root) root = parent[root];
+        // Second pass: compress path
+        while (parent[x] != root) {
+            int nxt = parent[x];
+            parent[x] = root;
+            x = nxt;
+        }
+        return root;
     }
 
-    // --- add: const overload (no compression) ---
+    // --- const overload (no compression) ---
     int find(int x) const {
-        // Walk to representative without modifying parent[]
         while (parent[x] != x) x = parent[x];
         return x;
     }
@@ -153,26 +159,35 @@ struct EGraph {
     void merge(int a, int b) { unite(a, b); }
 
     // congruence closure rebuild: re-hash with canonical reps, merging if
-    // needed
+    // needed. Uses two-pass: first collect all merge decisions, then apply
+    // them — avoids corrupting the union-find during the scan.
     void rebuild() {
-        std::unordered_map<size_t, int> fresh;
+        // Pass 1: hash all nodes, collect merge pairs (without modifying parent)
+        std::unordered_map<size_t, int> hash_to_rep;
+        std::vector<std::pair<int,int>> merges;
         for (int ec = 0; ec < (int)classes.size(); ++ec) {
             if (classes[ec].nodes.empty()) continue;
             int rep = find(ec);
-            if (rep != ec) continue;
             for (int idx : classes[ec].nodes) {
                 ENode n = arena[idx];
                 canonicalize_kids(n);
                 size_t h = hash_node(n);
-                auto it = fresh.find(h);
-                if (it == fresh.end()) {
-                    fresh[h] = rep;
+                auto it = hash_to_rep.find(h);
+                if (it == hash_to_rep.end()) {
+                    hash_to_rep[h] = rep;
                 } else {
-                    unite(rep, it->second);
+                    merges.emplace_back(it->second, rep);
                 }
             }
         }
-        memo.swap(fresh);
+        // Pass 2: apply all merges at once (safe — no mid-scan mutation)
+        for (auto& [a, b] : merges) unite(a, b);
+        // Rebuild memo: map hash -> current root
+        memo.clear();
+        for (auto& [h, rep] : hash_to_rep) {
+            int current = find(rep);
+            memo[h] = current;
+        }
     }
 };
 

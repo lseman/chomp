@@ -29,6 +29,21 @@ using VariablePtr = std::shared_ptr<Variable>;
 // ============================== Local helpers ================================
 namespace {
 
+// Check if node is a constant equal to 0
+static inline bool is_neg1_node(const ADNodePtr& n) {
+    return n && n->type == Operator::cte && std::abs(n->value + 1.0) < 1e-12;
+}
+
+// Check if node is a constant equal to 1
+static inline bool is_pos1_node(const ADNodePtr& n) {
+    return n && n->type == Operator::cte && std::abs(n->value - 1.0) < 1e-12;
+}
+
+// Check if node is a constant equal to 0
+static inline bool is_zero_node(const ADNodePtr& n) {
+    return n && n->type == Operator::cte && std::abs(n->value) < 1e-12;
+}
+
 thread_local std::vector<size_t> g_scratch_bases; // new
 // inline void ensure_base_size(size_t n) {
 //     if (g_scratch_bases.size() < n)
@@ -1059,28 +1074,29 @@ void ADGraph::simplifyGraph() {
     int iterations = 0;
     const int max_iterations = 3;
 
-    buildUseListsOnce_(); // NEW: enables fast rewrites
+    buildUseListsOnce_(); // enables fast rewrites
 
-    // auto roots = findRootNodes(); // or however you gather outputs
+    auto roots = findRootNodes();
 
     while (changed && iterations < max_iterations) {
         changed = false;
 
         constantFolding();
         algebraicSimplification();
-        // for (auto &n : nodes)
-        //     if (n)
-        //         canonicalizeOperands_(*n);
 
         if (peepholeSimplify())
             changed = true;
 
-        // NEW: non-destructive, AC-aware CSE
+        // Non-destructive, AC-aware CSE
         if (cseByKey_())
             changed = true;
 
-        // if (egraphSimplify_(roots))
-        //     changed = true;
+        // E-graph simplification: explore equivalent forms via saturation
+        if (egraphSimplify_(roots)) {
+            changed = true;
+            // Update roots in case they were replaced
+            roots = findRootNodes();
+        }
 
         size_t before_dce = nodes.size();
         eliminateDeadCode();
@@ -1355,11 +1371,110 @@ ADNodePtr ADGraph::applyAlgebraicRule(const ADNodePtr &node) {
         if (!node->inputs.empty() && isZero(node->inputs[0])) {
             return createConstantNode(1.0);
         }
+        // exp(log(x)) = x
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Log) {
+            return node->inputs[0]->inputs[0];
+        }
         break;
 
     case Operator::Log:
         // log(1) = 0
         if (!node->inputs.empty() && isOne(node->inputs[0])) {
+            return createConstantNode(0.0);
+        }
+        // log(exp(x)) = x
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Exp) {
+            return node->inputs[0]->inputs[0];
+        }
+        break;
+
+    case Operator::Sqrt:
+        // sqrt(x^2) = x when x is provably non-negative
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Multiply &&
+            node->inputs[0]->inputs.size() == 2) {
+            if (node->inputs[0]->inputs[0] == node->inputs[0]->inputs[1]) {
+                auto inner = node->inputs[0]->inputs[0];
+                if (inner && (inner->type == Operator::Exp ||
+                    (inner->type == Operator::cte && inner->value >= 0.0))) {
+                    return inner;
+                }
+            }
+        }
+        // sqrt(exp(x)) = exp(x/2)
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Exp) {
+            auto half = createNode(Operator::Multiply, {
+                node->inputs[0]->inputs[0],
+                createConstantNode(0.5)
+            });
+            return createNode(Operator::Exp, {half});
+        }
+        break;
+
+    case Operator::Abs:
+        // abs(const >= 0) = const
+        if (!node->inputs.empty() && node->inputs[0] &&
+            node->inputs[0]->type == Operator::cte &&
+            node->inputs[0]->value >= 0.0) {
+            return node->inputs[0];
+        }
+        // abs(const < 0) = -const
+        if (!node->inputs.empty() && node->inputs[0] &&
+            node->inputs[0]->type == Operator::cte &&
+            node->inputs[0]->value < 0.0) {
+            return createConstantNode(-node->inputs[0]->value);
+        }
+        // abs(exp(x)) = exp(x)
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Exp) {
+            return node->inputs[0];
+        }
+        break;
+
+    case Operator::Pow:
+        // x^1 = x
+        if (node->inputs.size() == 2 && node->inputs[1] && isOne(node->inputs[1])) {
+            return node->inputs[0];
+        }
+        // x^0 = 1
+        if (node->inputs.size() == 2 && node->inputs[1] && isZero(node->inputs[1])) {
+            return createConstantNode(1.0);
+        }
+        // x^(-1) = 1/x
+        if (node->inputs.size() == 2 && node->inputs[1] &&
+            node->inputs[1]->type == Operator::Neg &&
+            node->inputs[1]->inputs.size() == 1 &&
+            isOne(node->inputs[1]->inputs[0])) {
+            return createNode(Operator::Divide, {node->inputs[0], createConstantNode(1.0)});
+        }
+        break;
+
+    case Operator::Neg:
+        // -(-x) = x
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Neg &&
+            node->inputs[0]->inputs.size() == 1) {
+            return node->inputs[0]->inputs[0];
+        }
+        // -(cte) = -value
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::cte) {
+            return createConstantNode(-node->inputs[0]->value);
+        }
+        // -(a + b) = -a + -b
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            node->inputs[0]->type == Operator::Add &&
+            node->inputs[0]->inputs.size() == 2) {
+            auto neg_a = createNode(Operator::Neg, {node->inputs[0]->inputs[0]});
+            auto neg_b = createNode(Operator::Neg, {node->inputs[0]->inputs[1]});
+            return createNode(Operator::Add, {neg_a, neg_b});
+        }
+        // -0 = 0
+        if (node->inputs.size() == 1 && node->inputs[0] &&
+            isZero(node->inputs[0])) {
             return createConstantNode(0.0);
         }
         break;
@@ -1370,6 +1485,7 @@ ADNodePtr ADGraph::applyAlgebraicRule(const ADNodePtr &node) {
 
     return nullptr; // No simplification found
 }
+
 void ADGraph::compactNodeIds_() {
     // Build new contiguous ids keyed by raw pointer
     std::unordered_map<const ADNode *, int> new_id;
@@ -1542,6 +1658,10 @@ void ADGraph::replaceNodeReferences(const ADNodePtr &oldNode,
     if (!oldNode || !newNode || oldNode.get() == newNode.get())
         return;
 
+    // Invalidate struct hashes for affected nodes (old, new, and users)
+    oldNode->invalidate_struct_hash_();
+    newNode->invalidate_struct_hash_();
+
     // Ensure both have ids so we can safely rewire adj/radj/indeg
     const int oldId = ensure_id_(oldNode.get());
     const int newId = ensure_id_(newNode.get());
@@ -1604,6 +1724,9 @@ void ADGraph::replaceNodeReferences(const ADNodePtr &oldNode,
         }
         if (!touched)
             continue;
+
+        // Invalidate struct hash for this user (children changed)
+        u->invalidate_struct_hash_();
 
         // Rewire adjacency exactly once
         unlink_edge_(uid, oldId);
@@ -1721,14 +1844,58 @@ ECostModel::best_of(int eclass, const EGraph &G,
     auto it = memo.find(eclass);
     if (it != memo.end())
         return {it->second, -1}; // (abuse: store cost only)
+    
+    // Safety: check eclass bounds
+    if (eclass < 0 || eclass >= (int)G.classes.size()) {
+        return {1, -1}; // cheap fallback for invalid eclass
+    }
+    
+    // Safety: check if class is empty
+    if (G.classes[eclass].nodes.empty()) {
+        memo[eclass] = 1;
+        return {1, -1};
+    }
+    
     int best_cost = std::numeric_limits<int>::max();
     int best_idx = -1;
     for (int idx : G.classes[eclass].nodes) {
+        // Safety: check arena bounds
+        if (idx < 0 || idx >= (int)G.arena.size()) continue;
         const ENode &n = G.arena[idx];
         int c = op_cost(n.op);
         for (auto k : n.kids) {
-            auto sub = best_of(G.find(k.id), G, memo);
-            c += sub.first;
+            int kid_ec = G.find(k.id);
+            // Safety: check kid eclass bounds and prevent infinite recursion
+            if (kid_ec < 0 || kid_ec >= (int)G.classes.size()) {
+                c += 1; // cheap fallback
+                continue;
+            }
+            // Check if we've already computed this kid (memoization)
+            auto kid_it = memo.find(kid_ec);
+            if (kid_it != memo.end()) {
+                c += kid_it->second;
+            } else {
+                // Check for infinite recursion by limiting recursion depth
+                // If the kid's class contains only one node and it references back to current eclass, skip
+                bool has_cycle = false;
+                for (int kid_idx : G.classes[kid_ec].nodes) {
+                    if (kid_idx < 0 || kid_idx >= (int)G.arena.size()) continue;
+                    const ENode &kid_n = G.arena[kid_idx];
+                    for (auto kk : kid_n.kids) {
+                        if (G.find(kk.id) == eclass) {
+                            has_cycle = true;
+                            break;
+                        }
+                    }
+                    if (has_cycle) break;
+                }
+                if (has_cycle) {
+                    c += 1; // cheap fallback for cyclic dependency
+                } else {
+                    auto sub = best_of(kid_ec, G, memo);
+                    c += sub.first;
+                }
+            }
         }
         if (n.is_const || n.is_symbol)
             c = std::min(c, 1); // terminals cheap
@@ -1749,18 +1916,28 @@ bool ADGraph::egraphSimplify_(std::vector<ADNodePtr> &roots) {
     if (!enable_egraph_ || roots.empty())
         return false;
 
+    // Avoid e-graph explosion on huge graphs
+    if (nodes.size() > egraph_budget_.max_nodes / 4)
+        return false;
+
     EGraph EG;
     std::vector<int> rids;
     rids.reserve(roots.size());
-    for (auto &r : roots)
-        rids.push_back(EGraphBridge::to_egraph(r, EG));
+    for (size_t i = 0; i < roots.size(); ++i) {
+        if (!roots[i]) continue;
+        int ec = EGraphBridge::to_egraph(roots[i], EG);
+        rids.push_back(ec);
+    }
 
     saturate(EG, egraph_budget_);
 
     bool changed = false;
     for (size_t i = 0; i < roots.size(); ++i) {
-        ADNodePtr best = EGraphBridge::extract_expr(rids[i], EG, *this);
-        if (best && best.get() != roots[i].get()) {
+        if (!roots[i]) continue;
+        ADNodePtr old_root = roots[i];
+        ADNodePtr best = EGraphBridge::extract_subgraph(
+            old_root, rids[i], EG, *this);
+        if (best && best.get() != old_root.get()) {
             roots[i] = best;
             changed = true;
         }
@@ -2012,15 +2189,17 @@ ADGraph::CSEKey ADGraph::makeCSEKey_(const ADNode &n) const {
     }
 
     default: {
-        // Generic fallback: ordered child ids; sort if commutative
+        // Non-AC operator: use structural hash for stability across graph
+        // mutations. This catches x*y + z == x*y + w when x*y was built at
+        // different times (different node IDs) but has identical structure.
         k.op = n.type;
         k.kids_ids.reserve(n.inputs.size());
-        for (const auto &in : n.inputs)
-            k.kids_ids.push_back(key_id_of(in.get()));
+        for (const auto &in : n.inputs) {
+            k.kids_ids.push_back(in->struct_hash());
+        }
         if (is_commutative_node_(n.type)) {
             std::sort(k.kids_ids.begin(), k.kids_ids.end());
         }
-        // cbits/coeffs/exponents/small_exp remain defaults
         return k;
     }
     }

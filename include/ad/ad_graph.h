@@ -111,6 +111,50 @@ struct ADNode {
     double varUB() const { return ub; }
     std::string varName() const { return name; }
     size_t varIndex() const { return static_cast<size_t>(id); }
+
+    // Structural hash: stable across graph mutations (uses pointer identity).
+    // Hashes the expression tree structure regardless of node ID assignment.
+    mutable uint64_t _struct_hash = 0;
+    mutable bool _hash_valid = false;
+
+    uint64_t struct_hash() const {
+        if (_hash_valid) return _struct_hash;
+        _struct_hash = compute_struct_hash_();
+        _hash_valid = true;
+        return _struct_hash;
+    }
+
+    void invalidate_struct_hash_() const { _hash_valid = false; _struct_hash = 0; }
+
+private:
+    uint64_t compute_struct_hash_() const {
+        // Mix operator type with child hashes
+        auto mix = [](uint64_t a, uint64_t b) {
+            a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
+            return a;
+        };
+        uint64_t h = static_cast<uint64_t>(type) * 0xc6a4a7935bd1e995ULL;
+        h ^= 0x5bd1e995ULL; // seed
+
+        if (inputs.empty()) {
+            // Leaf: add pointer-based identity for variables/constants
+            h = mix(h, reinterpret_cast<uint64_t>(this));
+            // For constants, also hash the value for correctness
+            if (type == Operator::cte) {
+                uint64_t bits;
+                std::memcpy(&bits, &value, sizeof(bits));
+                h = mix(h, bits);
+            }
+            return h;
+        }
+
+        // Internal node: hash children
+        for (const auto& in : inputs) {
+            uint64_t child_h = in ? in->struct_hash() : 0ULL;
+            h = mix(h, child_h);
+        }
+        return h;
+    }
 };
 
 // ============================================================================
@@ -199,6 +243,9 @@ struct ADGraph {
         for (auto& k : kids)
             if (k) link_edge_((k->id >= 0) ? k->id : ensure_id_(k.get()), n->id);
         markGraphMutated_();
+        // Invalidate struct hashes for all kids (new parent added)
+        for (auto& k : kids)
+            if (k) k->invalidate_struct_hash_();
         return n;
     }
     ADNodePtr createConstantNode(double value);
@@ -341,6 +388,7 @@ struct ADGraph {
                          const std::vector<int>& topo_aff);
 
    private:
+    friend struct EGraphBridge;
     tsl::robin_map<double, ADNodePtr> constant_pool_;
 
     // ========================================================================

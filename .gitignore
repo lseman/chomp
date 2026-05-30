@@ -67,3 +67,5 @@ Desktop.ini
 *.tmp
 *.lock
 *.ipynb
+.github
+build_opt/

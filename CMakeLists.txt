@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ------------------------------------------------------------------
 # Project
 # ------------------------------------------------------------------
-project(ad VERSION 0.1.0 LANGUAGES CXX C)
+project(chomp VERSION 0.1.0 LANGUAGES CXX C)
 include(CTest)
 
 # C++ standard (use features without GNU extensions)
@@ -25,7 +25,14 @@ option(AD_ENABLE_CHOLMOD "Enable HYKKT via SuiteSparse" OFF)
 option(AD_ENABLE_SPECTRA "Fetch and enable Spectra via CPM" OFF)
 option(AD_ENABLE_GUROBI "Enable GUROBI linkage" OFF)
 option(AD_ENABLE_STDEXEC "Enable stdexec usage" ON)
-# option(AD_ENABLE_FORETREE "Build foretree Python bindings"   OFF)
+option(CHOMP_BUILD_AD_ONLY "Build only the AD module and skip the CHOMP module" OFF)
+
+# ------------------------------------------------------------------
+# Build optimisation options
+# ------------------------------------------------------------------
+option(AD_ENABLE_OPTIMISATIONS "Enable aggressive compiler optimisations (-O3, -march=native, -flto)" ON)
+option(AD_ENABLE_FAST_MATH "Enable -ffast-math (aggressive FP reassociation; may affect reproducibility)" ON)
+option(AD_ENABLE_MARCH_NATIVE "Enable -march=native (CPU-specific codegen; reduces portability)" ON)
 
 # ------------------------------------------------------------------
 # CPM bootstrap (before any CPMAddPackage)
@@ -118,7 +125,6 @@ find_package(Python 3.13 EXACT
 # define include dir python globally
 include_directories(${Python3_INCLUDE_DIRS})
 
-# nanobind (always via CPM is fine; it uses Python3 variables)
 # nanobind (always via CPM is fine; it uses Python3 variables)
 set(NANOBIND_TAG v2.9.2 CACHE STRING "nanobind version/tag to fetch via CPM")
 CPMAddPackage(
@@ -273,10 +279,59 @@ function(ad__common_target_setup tgt)
     target_link_libraries(${tgt} PRIVATE Spectra::Spectra)
     target_compile_definitions(${tgt} PRIVATE AD_HAVE_SPECTRA=1)
   endif()
-  if(MSVC)
-    target_compile_options(${tgt} PRIVATE /W4)
+
+  # ---- Aggressive optimisation flags ----
+  if(AD_ENABLE_OPTIMISATIONS)
+    # Use Release defaults with extra aggressive flags on top.
+    set(_base_opt $<IF:$<CONFIG:Release>,-O3,-O2>)
+    set(_lto_flags "")
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+      target_compile_options(${tgt} PRIVATE
+        ${_base_opt}
+        -fvisibility=hidden
+      )
+
+      if(AD_ENABLE_FAST_MATH)
+        target_compile_options(${tgt} PRIVATE -ffast-math)
+        message(STATUS "  [AD] -ffast-math enabled for ${tgt}")
+      else()
+        target_compile_options(${tgt} PRIVATE -fno-unsafe-math-optimizations)
+      endif()
+
+      if(AD_ENABLE_MARCH_NATIVE)
+        target_compile_options(${tgt} PRIVATE -march=native)
+        message(STATUS "  [AD] -march=native enabled for ${tgt}")
+      endif()
+
+      # Link-time optimisation (full LTO requires matching CXX/LD flags)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(_lto_flags "-flto=auto")
+      elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        set(_lto_flags "-flto")
+      endif()
+      if(_lto_flags)
+        target_compile_options(${tgt} PRIVATE ${_lto_flags})
+        target_link_options(${tgt} PRIVATE ${_lto_flags})
+        message(STATUS "  [AD] LTO enabled (${_lto_flags}) for ${tgt}")
+      endif()
+
+    elseif(MSVC)
+      target_compile_options(${tgt} PRIVATE
+        /O2 # same as -O3
+        /fp:fast # same as -ffast-math
+        /GL # whole-program optimisation (same as -flto)
+      )
+      target_link_options(${tgt} PRIVATE /LTCG)
+      message(STATUS "  [AD] MSVC optimisation enabled for ${tgt}")
+    endif()
   else()
-    target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wpedantic -fvisibility=hidden)
+    # Debug / minimal: keep -fvisibility=hidden but no aggressive flags
+    if(MSVC)
+      target_compile_options(${tgt} PRIVATE /W4)
+    else()
+      target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wpedantic -fvisibility=hidden)
+    endif()
   endif()
 endfunction()
 
@@ -313,50 +368,42 @@ ad_add_nanobind_module(ad ${AD_SOURCES})
 target_link_libraries(ad PRIVATE m dl) # system libs where available
 # _ad_link_gurobi(ad)                      # optional GUROBI
 
-# chomp (nanobind)
-ad_add_nanobind_module(chomp
-  src/chomp.cpp
-  src/ad/ADGraph.cpp
-  src/ad/Expression.cpp
-  src/ad/Variable.cpp
-)
-ad_use_cholmod(chomp)
-# add python dir to ad module search path
-target_include_directories(chomp PRIVATE ${Python3_INCLUDE_DIRS})
-target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
+if(NOT CHOMP_BUILD_AD_ONLY)
+  # chomp (nanobind)
+  ad_add_nanobind_module(chomp
+    src/chomp.cpp
+    src/ad/ADGraph.cpp
+    src/ad/Expression.cpp
+    src/ad/Variable.cpp
+  )
+  ad_use_cholmod(chomp)
+  # add python dir to ad module search path
+  target_include_directories(chomp PRIVATE ${Python3_INCLUDE_DIRS})
+  target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
 
-# _ad_link_gurobi(chomp)
-# # link openmp to chomp if available
-if(AD_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
-  target_link_libraries(chomp PRIVATE OpenMP::OpenMP_CXX)
+  # _ad_link_gurobi(chomp)
+  # # link openmp to chomp if available
+  if(AD_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(chomp PRIVATE OpenMP::OpenMP_CXX)
+  endif()
+else()
+  message(STATUS "CHOMP build option enabled: only building the AD module")
+  target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
 endif()
 
 find_package(TBB COMPONENTS tbb)
 if(TARGET TBB::tbb)
-  target_link_libraries(chomp PRIVATE TBB::tbb)
-else()
-  message(WARNING "oneTBB not found. Building foreforest without parallel backend.")
-  target_compile_definitions(chomp PRIVATE FF_NO_TBB)
-endif()
-
-if(TARGET TBB::tbb)
+  if(NOT CHOMP_BUILD_AD_ONLY)
+    target_link_libraries(chomp PRIVATE TBB::tbb)
+  endif()
   target_link_libraries(ad PRIVATE TBB::tbb)
 else()
-  message(WARNING "oneTBB not found. Building foreforest without parallel backend.")
-  target_compile_definitions(ad PRIVATE FF_NO_TBB)
-endif()
-
-if(AD_ENABLE_FORETREE)
-  # foretree (pybind11)
-  ad_add_pybind_module(foretree tree/src/foretree_pybind.cpp)
-  target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
-  find_package(TBB QUIET COMPONENTS tbb)
-  if(TARGET TBB::tbb)
-    target_link_libraries(foreforest PRIVATE TBB::tbb)
-  else()
-    message(WARNING "oneTBB not found. Building foreforest without parallel backend.")
-    target_compile_definitions(foreforest PRIVATE FF_NO_TBB)
+  if(NOT CHOMP_BUILD_AD_ONLY)
+    message(WARNING "oneTBB not found. Building chomp without parallel backend.")
+    target_compile_definitions(chomp PRIVATE FF_NO_TBB)
   endif()
+  message(WARNING "oneTBB not found. Building ad without parallel backend.")
+  target_compile_definitions(ad PRIVATE FF_NO_TBB)
 endif()
 
 if(BUILD_TESTING)
@@ -436,10 +483,6 @@ endif()
 # target_include_directories(ad PRIVATE ${stdexec_SOURCE_DIR}/include)
 # target_include_directories(chomp PRIVATE ${stdexec_SOURCE_DIR}/include)
 
-# ad_add_pybind_module(foreforest tree/src/foreforest.cpp)
-# target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
-# target_link_libraries(foreforest PRIVATE stdexec)
-
 # ------------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------------
@@ -459,3 +502,5 @@ message(STATUS "Build osqp_cpp        : ${AD_ENABLE_OSQP}")
 message(STATUS "Build qdldl_cpp       : ${AD_ENABLE_QDLDL}")
 message(STATUS "Link GUROBI           : ${AD_ENABLE_GUROBI} (root: ${GUROBI_ROOT})")
 message(STATUS "CHOLMOD enabled       : ${AD_ENABLE_CHOLMOD} (use: ${AD_USE_CHOLMOD})")
+message(STATUS "Build only AD module  : ${CHOMP_BUILD_AD_ONLY}")
+message(STATUS "Optimisations         : ${AD_ENABLE_OPTIMISATIONS} (fast-math: ${AD_ENABLE_FAST_MATH}, march-native: ${AD_ENABLE_MARCH_NATIVE})")
