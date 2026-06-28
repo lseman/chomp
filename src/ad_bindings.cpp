@@ -28,15 +28,15 @@
 #include <utility>
 #include <vector>
 
-#include "../include/ad/ad_graph.h"
-#include "../include/ad/definitions.h"
-#include "../include/ad/expression.h"
-#include "../include/ad/variable.h"
+#include <ad/ad_graph.h>
+#include <ad/definitions.h>
+#include <ad/expression.h>
+#include <ad/variable.h>
 
 // if you use tsl::robin_* elsewhere, keep includes in your project build.
-#include "../include/ad/ad_bindings.h" // pyu, pyconv
-#include "../third_party/robin_map.h"
-#include "../third_party/robin_set.h"
+#include <ad/ad_bindings.h> // pyu, pyconv
+#include <robin_map.h>
+#include <robin_set.h>
 
 // ---------- Module ----------
 NB_MODULE(ad, m) {

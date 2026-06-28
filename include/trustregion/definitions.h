@@ -5,7 +5,7 @@
 #include <numeric>
 #include <vector>
 
-#include "../definitions.h"
+#include <definitions.h>
 
 // -----------------------------------------------------------------------------
 // Info bundles

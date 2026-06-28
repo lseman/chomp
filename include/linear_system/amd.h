@@ -1,3 +1,5 @@
+#pragma once
+
 // amd_array_qg_sota.hpp (single translation unit demo, SoTA-leaning tweaks)
 // Build: g++ -O3 -march=native -std=c++17 amd_array_qg_sota.hpp -o amd && ./amd
 // (Optional) parallel loops: add -fopenmp
@@ -10,7 +12,9 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <queue>
 #include <random>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -45,7 +49,7 @@ static inline uint64_t mix64_(uint64_t x) {
 }
 
 template <class T>
-static inline void dedup_sorted_inplace(std::vector<T>& a) {
+static inline void dedup_sorted_inplace(std::vector<T> &a) {
     if (a.empty()) return;
     auto it = std::unique(a.begin(), a.end());
     a.erase(it, a.end());
@@ -55,9 +59,9 @@ static inline void dedup_sorted_inplace(std::vector<T>& a) {
 // CSR (pattern-only)
 //------------------------------------------------------------------------------
 struct CSR {
-    i32 n{0};
-    std::vector<i32> indptr;   // size n+1
-    std::vector<i32> indices;  // size nnz
+    i32              n{0};
+    std::vector<i32> indptr;  // size n+1
+    std::vector<i32> indices; // size nnz
 
     CSR() = default;
     explicit CSR(i32 n_) : n(n_), indptr(n_ + 1, 0) {}
@@ -66,56 +70,34 @@ struct CSR {
     // Fast strictly upper of A ∪ Aᵀ (i<j), allocation-light, optionally
     // parallel
     CSR strict_upper_union_transpose() const {
-        const i32 N = n;
-        const auto& AI = indptr;
-        const auto& AJ = indices;
+        const i32   N  = n;
+        const auto &AI = indptr;
+        const auto &AJ = indices;
+        if (N == 0) return CSR(0);
 
-        std::vector<i32> cnt(N, 0);
-
-        for (i32 i = 0; i < N; ++i) {
-            for (i32 p = AI[i]; p < AI[i + 1]; ++p) {
-                const i32 j = AJ[p];
-                if (i == j) continue;
-                const i32 a = (i < j) ? i : j;
-                ++cnt[a];
-            }
-        }
-
-        CSR U(N);
-        U.indptr.assign(N + 1, 0);
-        for (i32 i = 0; i < N; ++i) U.indptr[i + 1] = U.indptr[i] + cnt[i];
-        U.indices.resize(U.indptr.back());
-        std::vector<i32> wr(N);
-        for (i32 i = 0; i < N; ++i) wr[i] = U.indptr[i];
-
+        std::vector<std::vector<i32>> rows(static_cast<size_t>(N));
         for (i32 i = 0; i < N; ++i) {
             for (i32 p = AI[i]; p < AI[i + 1]; ++p) {
                 const i32 j = AJ[p];
                 if (i == j) continue;
                 const i32 a = (i < j) ? i : j;
                 const i32 b = (i < j) ? j : i;
-                U.indices[wr[a]++] = b;
+                rows[static_cast<size_t>(a)].push_back(b);
             }
-            auto beg = U.indices.begin() + U.indptr[i];
-            auto end = U.indices.begin() + wr[i];
-            std::sort(beg, end);
-            end = std::unique(beg, end);
-            wr[i] = (i32)std::distance(U.indices.begin(), end);
         }
 
-        // Compact if rows shrank after unique
-        if (wr.back() != (i32)U.indices.size()) {
-            std::vector<i32> nip(N + 1, 0);
-            for (i32 i = 0; i < N; ++i)
-                nip[i + 1] = nip[i] + (wr[i] - U.indptr[i]);
-            std::vector<i32> nidx(nip.back());
-            for (i32 i = 0; i < N; ++i) {
-                const i32 rb = U.indptr[i], re = wr[i], outb = nip[i];
-                std::copy(U.indices.begin() + rb, U.indices.begin() + re,
-                          nidx.begin() + outb);
-            }
-            U.indptr.swap(nip);
-            U.indices.swap(nidx);
+        CSR U(N);
+        U.indptr.assign(N + 1, 0);
+        for (i32 i = 0; i < N; ++i) {
+            auto &row = rows[static_cast<size_t>(i)];
+            std::sort(row.begin(), row.end());
+            dedup_sorted_inplace(row);
+            U.indptr[static_cast<size_t>(i) + 1] = U.indptr[static_cast<size_t>(i)] + static_cast<i32>(row.size());
+        }
+        U.indices.resize(static_cast<size_t>(U.indptr.back()));
+        for (i32 i = 0; i < N; ++i) {
+            std::copy(rows[static_cast<size_t>(i)].begin(), rows[static_cast<size_t>(i)].end(),
+                      U.indices.begin() + U.indptr[static_cast<size_t>(i)]);
         }
 
         return U;
@@ -123,7 +105,7 @@ struct CSR {
 };
 
 // inverse permutation (p[new]=old) → ip[old]=new
-static std::vector<i32> inverse_permutation(const std::vector<i32>& p) {
+static std::vector<i32> inverse_permutation(const std::vector<i32> &p) {
     std::vector<i32> ip(p.size());
     for (i32 i = 0; i < (i32)p.size(); ++i) ip[p[i]] = i;
     return ip;
@@ -133,11 +115,11 @@ static std::vector<i32> inverse_permutation(const std::vector<i32>& p) {
 // Stats
 //------------------------------------------------------------------------------
 struct AMDStats {
-    i32 original_nnz{0};
-    i32 original_bandwidth{0};
-    i32 reordered_bandwidth{0};
-    double bandwidth_reduction{0.0};
-    i32 matrix_size{0};
+    i32              original_nnz{0};
+    i32              original_bandwidth{0};
+    i32              reordered_bandwidth{0};
+    double           bandwidth_reduction{0.0};
+    i32              matrix_size{0};
     std::vector<i32> inverse_permutation;
     // extras
     i32 absorbed_elements{0};
@@ -149,81 +131,299 @@ struct AMDStats {
 // AMD (array-based) with SoTA-leaning micro-architecture
 //------------------------------------------------------------------------------
 class AMDReorderingArray {
-   public:
-    explicit AMDReorderingArray(bool aggressive_absorption = true,
-                                int dense_cutoff = -1)
-        : aggressive_absorption_(aggressive_absorption),
-          dense_cutoff_(dense_cutoff) {}
+public:
+    explicit AMDReorderingArray(bool aggressive_absorption = true, int dense_cutoff = -1)
+        : aggressive_absorption_(aggressive_absorption), dense_cutoff_(dense_cutoff) {}
 
     // Main API: permutation p[new] = old
-    std::vector<i32> amd_order(const CSR& A, bool symmetrize = true) {
-        CSR Aup = symmetrize ? A.strict_upper_union_transpose() : A;
-        n_ = Aup.n;
-        if (n_ == 0) return {};
-        initialize_from_upper_(Aup);
-        initialize_buckets_();
-        eliminate_all_();
+    std::vector<i32> amd_order(const CSR &A, bool symmetrize = true) {
+        validate_csr_(A);
+        CSR Awork        = symmetrize ? A.strict_upper_union_transpose() : A;
+        n_               = Awork.n;
+        stats_absorbed_  = 0;
+        stats_coalesced_ = 0;
+        stats_iw_peak_   = Awork.nnz();
+        perm_            = approximate_minimum_degree_order_(Awork, dense_cutoff_, &stats_coalesced_, &stats_absorbed_);
         return perm_;
     }
 
-    std::pair<std::vector<i32>, AMDStats> compute_fill_reducing_permutation(
-        const CSR& A, bool symmetrize = true) {
+    std::pair<std::vector<i32>, AMDStats> compute_fill_reducing_permutation(const CSR &A, bool symmetrize = true) {
         AMDStats st;
-        st.original_nnz = A.nnz();
-        st.original_bandwidth = bandwidth_(A);
-        auto p = amd_order(A, symmetrize);
-        CSR Apr = permute_(A, p);
+        st.original_nnz        = A.nnz();
+        st.original_bandwidth  = bandwidth_(A);
+        auto p                 = amd_order(A, symmetrize);
+        CSR  Apr               = permute_(A, p);
         st.reordered_bandwidth = bandwidth_(Apr);
-        st.bandwidth_reduction =
-            (st.original_bandwidth == 0)
-                ? 0.0
-                : double(st.original_bandwidth - st.reordered_bandwidth) /
-                      double(st.original_bandwidth);
-        st.matrix_size = A.n;
+        st.bandwidth_reduction = (st.original_bandwidth == 0) ? 0.0
+                                                              : double(st.original_bandwidth - st.reordered_bandwidth) /
+                                                                    double(st.original_bandwidth);
+        st.matrix_size         = A.n;
         st.inverse_permutation = inverse_permutation(p);
-        st.absorbed_elements = stats_absorbed_;
+        st.absorbed_elements   = stats_absorbed_;
         st.coalesced_variables = stats_coalesced_;
-        st.iw_capacity_peak = stats_iw_peak_;
+        st.iw_capacity_peak    = stats_iw_peak_;
         return {p, st};
     }
 
-   private:
+private:
+    static void validate_csr_(const CSR &A) {
+        if (A.n < 0) throw std::invalid_argument("CSR.n must be nonnegative");
+        if (A.indptr.size() != static_cast<size_t>(A.n + 1))
+            throw std::invalid_argument("CSR.indptr length must be n+1");
+        if (A.indptr.empty()) return;
+        if (A.indptr.front() != 0) throw std::invalid_argument("CSR.indptr[0] must be zero");
+        for (i32 i = 0; i < A.n; ++i) {
+            const i32 p0 = A.indptr[static_cast<size_t>(i)];
+            const i32 p1 = A.indptr[static_cast<size_t>(i) + 1];
+            if (p0 > p1) throw std::invalid_argument("CSR.indptr must be nondecreasing");
+            if (p0 < 0 || p1 < 0 || p1 > static_cast<i32>(A.indices.size()))
+                throw std::invalid_argument("CSR.indptr contains out-of-range offsets");
+            for (i32 p = p0; p < p1; ++p) {
+                const i32 j = A.indices[static_cast<size_t>(p)];
+                if (j < 0 || j >= A.n) throw std::invalid_argument("CSR.indices contains an out-of-range column");
+            }
+        }
+        if (A.indptr.back() != static_cast<i32>(A.indices.size()))
+            throw std::invalid_argument("CSR.indptr.back() must equal indices length");
+    }
+
+    static uint64_t hash_pattern_(const std::vector<i32> &pattern) {
+        uint64_t h = 0x9e3779b97f4a7c15ULL ^ static_cast<uint64_t>(pattern.size());
+        for (i32 v : pattern) {
+            h = mix64_(h ^ (static_cast<uint64_t>(static_cast<u32>(v)) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2)));
+        }
+        return h;
+    }
+
+    static std::vector<i32> approximate_minimum_degree_order_(const CSR &A, int dense_cutoff, i32 *coalesced_out,
+                                                              i32 *dense_out) {
+        const i32 n = A.n;
+        if (n == 0) return {};
+
+        std::vector<i32> input_degree(static_cast<size_t>(n), 0);
+        for (i32 i = 0; i < n; ++i) {
+            for (i32 p = A.indptr[static_cast<size_t>(i)]; p < A.indptr[static_cast<size_t>(i) + 1]; ++p) {
+                if (A.indices[static_cast<size_t>(p)] != i) ++input_degree[static_cast<size_t>(i)];
+            }
+        }
+
+        std::vector<std::unordered_set<i32>> adj(static_cast<size_t>(n));
+        for (i32 i = 0; i < n; ++i) {
+            adj[static_cast<size_t>(i)].reserve(static_cast<size_t>(input_degree[static_cast<size_t>(i)]));
+        }
+        for (i32 i = 0; i < n; ++i) {
+            for (i32 p = A.indptr[static_cast<size_t>(i)]; p < A.indptr[static_cast<size_t>(i) + 1]; ++p) {
+                const i32 j = A.indices[static_cast<size_t>(p)];
+                if (i == j) continue;
+                adj[static_cast<size_t>(i)].insert(j);
+                adj[static_cast<size_t>(j)].insert(i);
+            }
+        }
+
+        std::unordered_map<uint64_t, std::vector<i32>> groups_by_hash;
+        groups_by_hash.reserve(static_cast<size_t>(n) * 2);
+        std::vector<std::vector<i32>> group_members;
+        std::vector<std::vector<i32>> group_patterns;
+        std::vector<i32>              vertex_group(static_cast<size_t>(n), -1);
+        std::vector<i32>              pattern;
+        for (i32 v = 0; v < n; ++v) {
+            pattern.assign(adj[static_cast<size_t>(v)].begin(), adj[static_cast<size_t>(v)].end());
+            std::sort(pattern.begin(), pattern.end());
+
+            const uint64_t h      = hash_pattern_(pattern);
+            i32            g      = -1;
+            auto          &bucket = groups_by_hash[h];
+            for (i32 candidate : bucket) {
+                if (group_patterns[static_cast<size_t>(candidate)] == pattern) {
+                    g = candidate;
+                    break;
+                }
+            }
+            if (g < 0) {
+                g = static_cast<i32>(group_members.size());
+                bucket.push_back(g);
+                group_members.push_back({});
+                group_patterns.push_back(pattern);
+            }
+            vertex_group[static_cast<size_t>(v)] = g;
+            group_members[static_cast<size_t>(g)].push_back(v);
+        }
+
+        const i32        ng = static_cast<i32>(group_members.size());
+        std::vector<i32> weight(static_cast<size_t>(ng), 0);
+        for (i32 g = 0; g < ng; ++g) {
+            auto &members = group_members[static_cast<size_t>(g)];
+            std::sort(members.begin(), members.end());
+            weight[static_cast<size_t>(g)] = static_cast<i32>(members.size());
+        }
+        if (coalesced_out) *coalesced_out = n - ng;
+
+        std::vector<std::unordered_set<i32>> gadj(static_cast<size_t>(ng));
+        for (i32 g = 0; g < ng; ++g) {
+            gadj[static_cast<size_t>(g)].reserve(group_patterns[static_cast<size_t>(g)].size());
+        }
+        for (i32 v = 0; v < n; ++v) {
+            const i32 gv = vertex_group[static_cast<size_t>(v)];
+            for (i32 u : adj[static_cast<size_t>(v)]) {
+                const i32 gu = vertex_group[static_cast<size_t>(u)];
+                if (gv != gu) gadj[static_cast<size_t>(gv)].insert(gu);
+            }
+        }
+
+        std::vector<i32> initial_degree(static_cast<size_t>(ng), 0);
+        std::vector<i32> degree(static_cast<size_t>(ng), 0);
+        i64              degree_sum = 0;
+        for (i32 g = 0; g < ng; ++g) {
+            i32 d = 0;
+            for (i32 h : gadj[static_cast<size_t>(g)]) d += weight[static_cast<size_t>(h)];
+            initial_degree[static_cast<size_t>(g)] = d;
+            degree[static_cast<size_t>(g)]         = d;
+            degree_sum += d;
+        }
+
+        struct HeapNode {
+            i32 degree;
+            i32 initial_degree;
+            i32 vertex;
+        };
+        struct HeapGreater {
+            bool operator()(const HeapNode &a, const HeapNode &b) const {
+                if (a.degree != b.degree) return a.degree > b.degree;
+                if (a.initial_degree != b.initial_degree) return a.initial_degree > b.initial_degree;
+                return a.vertex > b.vertex;
+            }
+        };
+
+        const double avg_degree = (ng > 0) ? double(degree_sum) / double(ng) : 0.0;
+        const i32    dense_threshold =
+            (dense_cutoff == 0)
+                ? std::numeric_limits<i32>::max()
+                : ((dense_cutoff > 0)
+                       ? dense_cutoff
+                       : std::max<i32>(16, std::min<i32>(n - 1, static_cast<i32>(std::floor(
+                                                                    0.35 * avg_degree +
+                                                                    12.0 * std::sqrt(std::max(1.0, avg_degree)))))));
+
+        std::vector<char>                                                 active(static_cast<size_t>(ng), 1);
+        std::vector<char>                                                 dense(static_cast<size_t>(ng), 0);
+        std::priority_queue<HeapNode, std::vector<HeapNode>, HeapGreater> heap;
+        i32                                                               dense_count   = 0;
+        i32                                                               active_groups = ng;
+        for (i32 g = 0; g < ng; ++g) {
+            if (degree[static_cast<size_t>(g)] >= dense_threshold) {
+                dense[static_cast<size_t>(g)] = 1;
+                ++dense_count;
+                continue;
+            }
+            heap.push({degree[static_cast<size_t>(g)], initial_degree[static_cast<size_t>(g)], g});
+        }
+        if (dense_out) *dense_out = dense_count;
+
+        std::vector<i32> perm;
+        perm.reserve(static_cast<size_t>(n));
+        std::vector<i32> nbrs;
+
+        while (active_groups > 0) {
+            i32 best = -1;
+            while (!heap.empty()) {
+                const HeapNode top = heap.top();
+                heap.pop();
+                const size_t g = static_cast<size_t>(top.vertex);
+                if (!active[g] || dense[g]) continue;
+                if (top.degree != degree[g]) continue;
+                if (top.initial_degree != initial_degree[g]) continue;
+                best = top.vertex;
+                break;
+            }
+
+            if (best < 0) {
+                i32 best_degree = std::numeric_limits<i32>::max();
+                for (i32 g = 0; g < ng; ++g) {
+                    if (!active[static_cast<size_t>(g)]) continue;
+                    const i32 d = degree[static_cast<size_t>(g)];
+                    if (d < best_degree ||
+                        (d == best_degree &&
+                         (best < 0 ||
+                          initial_degree[static_cast<size_t>(g)] < initial_degree[static_cast<size_t>(best)] ||
+                          (initial_degree[static_cast<size_t>(g)] == initial_degree[static_cast<size_t>(best)] &&
+                           group_members[static_cast<size_t>(g)].front() <
+                               group_members[static_cast<size_t>(best)].front())))) {
+                        best        = g;
+                        best_degree = d;
+                    }
+                }
+            }
+
+            if (best < 0) throw std::logic_error("internal AMD error: no active pivot found");
+
+            nbrs.clear();
+            for (i32 u : gadj[static_cast<size_t>(best)])
+                if (active[static_cast<size_t>(u)]) nbrs.push_back(u);
+            std::sort(nbrs.begin(), nbrs.end());
+
+            for (i32 member : group_members[static_cast<size_t>(best)]) perm.push_back(member);
+            active[static_cast<size_t>(best)] = 0;
+            --active_groups;
+
+            for (i32 u : nbrs) {
+                auto &au = gadj[static_cast<size_t>(u)];
+                if (au.erase(best) != 0) { degree[static_cast<size_t>(u)] -= weight[static_cast<size_t>(best)]; }
+            }
+            for (size_t a = 0; a < nbrs.size(); ++a) {
+                const i32 u = nbrs[a];
+                for (size_t b = a + 1; b < nbrs.size(); ++b) {
+                    const i32 v           = nbrs[b];
+                    auto      inserted_uv = gadj[static_cast<size_t>(u)].insert(v);
+                    auto      inserted_vu = gadj[static_cast<size_t>(v)].insert(u);
+                    if (inserted_uv.second) degree[static_cast<size_t>(u)] += weight[static_cast<size_t>(v)];
+                    if (inserted_vu.second) degree[static_cast<size_t>(v)] += weight[static_cast<size_t>(u)];
+                }
+            }
+            for (i32 u : nbrs) {
+                if (!dense[static_cast<size_t>(u)])
+                    heap.push({degree[static_cast<size_t>(u)], initial_degree[static_cast<size_t>(u)], u});
+            }
+            gadj[static_cast<size_t>(best)].clear();
+        }
+        return perm;
+    }
+
     // Problem size / storage
-    i32 n_{0}, nsym_{0}, nzmax_{0};
-    std::vector<i32> pe_, len_, elen_, iw_, nv_, degree_, w_, last_;
-    std::vector<i32> head_, next_, prev_, where_;
+    i32               n_{0}, nsym_{0}, nzmax_{0};
+    std::vector<i32>  pe_, len_, elen_, iw_, nv_, degree_, w_, last_;
+    std::vector<i32>  head_, next_, prev_, where_;
     std::vector<char> var_active_, elem_active_;
-    i32 mindeg_{0};
-    i32 nelem_top_{0};
+    i32               mindeg_{0};
+    i32               nelem_top_{0};
     // outputs/work
-    std::vector<i32> order_, perm_, dense_queue_;
+    std::vector<i32>              order_, perm_, dense_queue_;
     std::vector<std::vector<i32>> sv_members_;
-    std::vector<char> in_order_;
-    i32 tail_used_{0};
-    i32 wflg_{1};
+    std::vector<char>             in_order_;
+    i32                           tail_used_{0};
+    i32                           wflg_{1};
     // options
     bool aggressive_absorption_{true};
-    int dense_cutoff_{-1};
+    int  dense_cutoff_{-1};
     // stats
     i32 stats_absorbed_{0};
     i32 stats_coalesced_{0};
     i32 stats_iw_peak_{0};
 
     // Initialization from upper pattern
-    void initialize_from_upper_(const CSR& U) {
-        const i32 n = U.n;
-        const auto& indptr = U.indptr;
-        const auto& indices = U.indices;
-        const i32 m = U.nnz();
+    void initialize_from_upper_(const CSR &U) {
+        const i32   n       = U.n;
+        const auto &indptr  = U.indptr;
+        const auto &indices = U.indices;
+        const i32   m       = U.nnz();
 
         // generous first guess to reduce realloc
         const i32 est_undir = 2 * m;
-        nzmax_ = std::max({est_undir + n, (i32)(1.5 * est_undir) + 4 * n, 1});
-        nsym_ = n + std::max(8, n);
+        nzmax_              = std::max({est_undir + n, (i32)(1.5 * est_undir) + 4 * n, 1});
+        nsym_               = n + std::max(8, n);
 
         pe_.assign(nsym_, 0);
         len_.assign(nsym_, 0);
-        elen_.assign(nsym_, -2);  // -2 dead, -1 variable, >=0 element
+        elen_.assign(nsym_, -2); // -2 dead, -1 variable, >=0 element
         iw_.assign(nzmax_, 0);
         nv_.assign(nsym_, 1);
         degree_.assign(nsym_, 0);
@@ -235,7 +435,7 @@ class AMDReorderingArray {
         std::vector<i32> deg(n, 0);
         for (i32 i = 0; i < n; ++i) {
             for (i32 p = indptr[i]; p < indptr[i + 1]; ++p) {
-                const i32 j = indices[p];  // j > i
+                const i32 j = indices[p]; // j > i
                 ++deg[i];
                 ++deg[j];
             }
@@ -243,10 +443,10 @@ class AMDReorderingArray {
 
         i32 pos = 0;
         for (i32 i = 0; i < n; ++i) {
-            pe_[i] = pos;
-            len_[i] = deg[i];
-            degree_[i] = deg[i];
-            elen_[i] = -1;
+            pe_[i]         = pos;
+            len_[i]        = deg[i];
+            degree_[i]     = deg[i];
+            elen_[i]       = -1;
             var_active_[i] = 1;
             pos += deg[i];
         }
@@ -255,7 +455,7 @@ class AMDReorderingArray {
         std::vector<i32> wr(pe_.begin(), pe_.begin() + n);
         for (i32 i = 0; i < n; ++i) {
             for (i32 p = indptr[i]; p < indptr[i + 1]; ++p) {
-                const i32 j = indices[p];  // i<j
+                const i32 j  = indices[p]; // i<j
                 iw_[wr[i]++] = j;
                 iw_[wr[j]++] = i;
             }
@@ -263,12 +463,12 @@ class AMDReorderingArray {
         tail_used_ = pos;
 
         for (i32 e = n; e < nsym_; ++e) {
-            pe_[e] = -1;
-            len_[e] = 0;
-            elen_[e] = -2;
-            nv_[e] = 0;
+            pe_[e]          = -1;
+            len_[e]         = 0;
+            elen_[e]        = -2;
+            nv_[e]          = 0;
             elem_active_[e] = 0;
-            var_active_[e] = 0;
+            var_active_[e]  = 0;
         }
         nelem_top_ = n;
         perm_.assign(n, -1);
@@ -280,9 +480,9 @@ class AMDReorderingArray {
         for (i32 i = 0; i < n; ++i) sv_members_[i] = {i};
         in_order_.assign(n, 0);
 
-        stats_absorbed_ = 0;
+        stats_absorbed_  = 0;
         stats_coalesced_ = 0;
-        stats_iw_peak_ = nzmax_;
+        stats_iw_peak_   = nzmax_;
     }
 
     void initialize_buckets_() {
@@ -314,17 +514,13 @@ class AMDReorderingArray {
         const i32 dense_cut =
             (dense_cutoff_ > 0)
                 ? dense_cutoff_
-                : std::max<i32>(
-                      16, std::min(n - 1,
-                                   (i32)std::floor(
-                                       0.35 * avg +
-                                       12.0 * std::sqrt(std::max(1.0, avg)))));
+                : std::max<i32>(16,
+                                std::min(n - 1, (i32)std::floor(0.35 * avg + 12.0 * std::sqrt(std::max(1.0, avg)))));
 
         std::vector<i32> dense_nodes;
         dense_nodes.reserve(n / 8 + 1);
         for (i32 i = 0; i < n; ++i)
-            if (var_active_[i] && degree_[i] >= dense_cut)
-                dense_nodes.push_back(i);
+            if (var_active_[i] && degree_[i] >= dense_cut) dense_nodes.push_back(i);
 
         if (dense_nodes.empty()) return;
         for (i32 v : dense_nodes) {
@@ -336,11 +532,11 @@ class AMDReorderingArray {
 
     // Buckets
     void bucket_insert_front_(i32 v, i32 d) {
-        i32 h = head_[d];
+        i32 h    = head_[d];
         prev_[v] = -1;
         next_[v] = h;
         if (h != -1) prev_[h] = v;
-        head_[d] = v;
+        head_[d]  = v;
         where_[v] = d;
     }
     void bucket_remove_(i32 v) {
@@ -353,34 +549,28 @@ class AMDReorderingArray {
             head_[d] = nx;
         if (nx != -1) prev_[nx] = pv;
         prev_[v] = next_[v] = -1;
-        where_[v] = -1;
+        where_[v]           = -1;
     }
     void bucket_move_(i32 v, i32 newd) {
         if (!var_active_[v]) return;
-        const i32 od = where_[v];
+        const i32 od      = where_[v];
         const i32 clamped = std::max(0, std::min(n_, newd));
-        if (od == clamped) return;  // no useless churn
+        if (od == clamped) return; // no useless churn
         bucket_remove_(v);
         bucket_insert_front_(v, clamped);
     }
 
     // Growth
     void grow_iw_(i32 need) {
-        i32 new_cap = std::max(
-            need,
-            (i32)(std::max(2 * (i64)nzmax_, (i64)nzmax_ + nzmax_ / 2) + 1024));
+        i32 new_cap = std::max(need, (i32)(std::max(2 * (i64)nzmax_, (i64)nzmax_ + nzmax_ / 2) + 1024));
         iw_.resize(new_cap);
-        nzmax_ = new_cap;
+        nzmax_         = new_cap;
         stats_iw_peak_ = std::max(stats_iw_peak_, nzmax_);
     }
     void grow_nodes_() {
-        i32 new_nsym = (i32)(nsym_ + std::max(n_, nsym_ / 2) + 32);
-        auto grow = [&](std::vector<i32>& a, i32 fill) {
-            a.resize(new_nsym, fill);
-        };
-        auto growc = [&](std::vector<char>& a, char fill) {
-            a.resize(new_nsym, fill);
-        };
+        i32  new_nsym = (i32)(nsym_ + std::max(n_, nsym_ / 2) + 32);
+        auto grow     = [&](std::vector<i32> &a, i32 fill) { a.resize(new_nsym, fill); };
+        auto growc    = [&](std::vector<char> &a, char fill) { a.resize(new_nsym, fill); };
         grow(pe_, -1);
         grow(len_, 0);
         grow(elen_, -2);
@@ -437,7 +627,7 @@ class AMDReorderingArray {
             if (piv == -1) break;
 
             // Emit reps in supervariable group (sorted for determinism)
-            auto& grp = sv_members_[piv];
+            auto &grp = sv_members_[piv];
             if (!grp.empty()) {
                 std::sort(grp.begin(), grp.end());
                 for (i32 g : grp)
@@ -455,7 +645,7 @@ class AMDReorderingArray {
             for (i32 i = 0; i < n_; ++i)
                 if (!in_order_[i]) order_.push_back(i);
         }
-        perm_.assign(order_.rbegin(), order_.rend());  // reverse elim order
+        perm_.assign(order_.rbegin(), order_.rend()); // reverse elim order
     }
 
     // Element helpers
@@ -471,13 +661,11 @@ class AMDReorderingArray {
             }
         }
         elen_[e] = wr - pe;
-        if (elen_[e] > 1)
-            std::sort(iw_.begin() + pe, iw_.begin() + pe + elen_[e]);
+        if (elen_[e] > 1) std::sort(iw_.begin() + pe, iw_.begin() + pe + elen_[e]);
         return elen_[e];
     }
 
-    static inline bool is_subset_sorted_(const i32* a, i32 na, const i32* b,
-                                         i32 nb) {
+    static inline bool is_subset_sorted_(const i32 *a, i32 na, const i32 *b, i32 nb) {
         if (na > nb) return false;
         i32 i = 0, j = 0;
         while (i < na && j < nb) {
@@ -493,14 +681,12 @@ class AMDReorderingArray {
     }
 
     // Hash for a sorted span
-    inline uint64_t hash_sorted_ids_(const i32* data, i32 len) const {
+    inline uint64_t hash_sorted_ids_(const i32 *data, i32 len) const {
         uint64_t h = 0x9e3779b97f4a7c15ULL ^ (uint64_t)len;
-        for (i32 k = 0; k < len; ++k)
-            h = mix64_(h ^ (uint64_t)(uint32_t)data[k] * 0x9ddfea08eb382d69ULL);
+        for (i32 k = 0; k < len; ++k) h = mix64_(h ^ (uint64_t)(uint32_t)data[k] * 0x9ddfea08eb382d69ULL);
         return h;
     }
-    inline bool equal_sorted_spans_(const i32* a, i32 na, const i32* b,
-                                    i32 nb) const {
+    inline bool equal_sorted_spans_(const i32 *a, i32 na, const i32 *b, i32 nb) const {
         if (na != nb) return false;
         for (i32 i = 0; i < na; ++i)
             if (a[i] != b[i]) return false;
@@ -508,7 +694,7 @@ class AMDReorderingArray {
     }
 
     // Robin-Hood hashed absorption (equality + small-radius subset checks)
-    void absorb_elements_hashed_(const std::vector<i32>& elems) {
+    void absorb_elements_hashed_(const std::vector<i32> &elems) {
         if (elems.empty()) return;
 
         i32 live = 0;
@@ -520,25 +706,24 @@ class AMDReorderingArray {
         while (cap < (live << 1)) cap <<= 1;
 
         struct Slot {
-            uint64_t h = 0;
-            i32 e = -1;
-            i32 dist = 0;
+            uint64_t h    = 0;
+            i32      e    = -1;
+            i32      dist = 0;
         };
         std::vector<Slot> table(cap);
 
         auto insert_or_absorb = [&](i32 e) {
-            const i32 le = elen_[e];
-            const i32 pe = pe_[e];
-            uint64_t key =
-                hash_sorted_ids_(&iw_[pe], le);  // was: const uint64_t h
+            const i32 le   = elen_[e];
+            const i32 pe   = pe_[e];
+            uint64_t  key  = hash_sorted_ids_(&iw_[pe], le); // was: const uint64_t h
             const i32 mask = cap - 1;
-            i32 pos = (i32)(key & (uint64_t)mask), dist = 0;
+            i32       pos = (i32)(key & (uint64_t)mask), dist = 0;
 
             for (;;) {
-                Slot& s = table[pos];
+                Slot &s = table[pos];
                 if (s.e == -1) {
-                    s.h = key;
-                    s.e = e;
+                    s.h    = key;
+                    s.e    = e;
                     s.dist = dist;
                     return;
                 }
@@ -546,7 +731,7 @@ class AMDReorderingArray {
                     const i32 lj = elen_[s.e], pj = pe_[s.e];
                     if (equal_sorted_spans_(&iw_[pe], le, &iw_[pj], lj)) {
                         elem_active_[e] = 0;
-                        elen_[e] = 0;
+                        elen_[e]        = 0;
                         ++stats_absorbed_;
                         return;
                     }
@@ -564,9 +749,7 @@ class AMDReorderingArray {
 
         // ensure sorted once
         for (i32 e : elems)
-            if (elem_active_[e] && elen_[e] > 0)
-                std::sort(iw_.begin() + pe_[e],
-                          iw_.begin() + pe_[e] + elen_[e]);
+            if (elem_active_[e] && elen_[e] > 0) std::sort(iw_.begin() + pe_[e], iw_.begin() + pe_[e] + elen_[e]);
 
         for (i32 e : elems)
             if (elem_active_[e] && elen_[e] > 0) insert_or_absorb(e);
@@ -585,14 +768,14 @@ class AMDReorderingArray {
                 if (le < lj) {
                     if (is_subset_sorted_(&iw_[pe], le, &iw_[pj], lj)) {
                         elem_active_[e] = 0;
-                        elen_[e] = 0;
+                        elen_[e]        = 0;
                         ++stats_absorbed_;
                         break;
                     }
                 } else if (lj < le) {
                     if (is_subset_sorted_(&iw_[pj], lj, &iw_[pe], le)) {
                         elem_active_[j] = 0;
-                        elen_[j] = 0;
+                        elen_[j]        = 0;
                         ++stats_absorbed_;
                     }
                 }
@@ -601,11 +784,10 @@ class AMDReorderingArray {
     }
 
     // Coalescence using signature over element-neighbor list (sorted small vec)
-    void coalesce_variables_by_element_signature_(
-        const std::vector<i32>& vlist) {
+    void coalesce_variables_by_element_signature_(const std::vector<i32> &vlist) {
         struct Sig {
             uint64_t h;
-            i32 deg;
+            i32      deg;
         };
         auto make_sig = [&](i32 v) -> Sig {
             // collect element neighbors of v into tmp (sorted)
@@ -613,8 +795,7 @@ class AMDReorderingArray {
             tmp.reserve(8);
             for (i32 p = pe_[v], E = pe_[v] + len_[v]; p < E; ++p) {
                 const i32 a = iw_[p];
-                if (a >= 0 && a < nsym_ && elen_[a] >= 0 && elem_active_[a])
-                    tmp.push_back(a);
+                if (a >= 0 && a < nsym_ && elen_[a] >= 0 && elem_active_[a]) tmp.push_back(a);
             }
             std::sort(tmp.begin(), tmp.end());
             dedup_sorted_inplace(tmp);
@@ -633,8 +814,8 @@ class AMDReorderingArray {
             sig_buckets_[s.h].push_back(v);
         }
 
-        for (auto& kv : sig_buckets_) {
-            auto& cands = kv.second;
+        for (auto &kv : sig_buckets_) {
+            auto &cands = kv.second;
             if (cands.size() < 2) continue;
 
             // pick rep as first live
@@ -646,14 +827,13 @@ class AMDReorderingArray {
                 }
             if (rep < 0) continue;
 
-            const auto& rep_set = elem_sig_cache_[rep];
-            bool merged_any = false;
+            const auto &rep_set    = elem_sig_cache_[rep];
+            bool        merged_any = false;
             for (i32 u : cands) {
                 if (u == rep) continue;
                 if (!var_active_[u] || nv_[u] == 0) continue;
-                const auto& uset = elem_sig_cache_[u];
-                if (uset.size() == rep_set.size() &&
-                    std::equal(uset.begin(), uset.end(), rep_set.begin())) {
+                const auto &uset = elem_sig_cache_[u];
+                if (uset.size() == rep_set.size() && std::equal(uset.begin(), uset.end(), rep_set.begin())) {
                     merge_variable_into_rep_(rep, u, rep_set);
                     ++stats_coalesced_;
                     merged_any = true;
@@ -661,8 +841,7 @@ class AMDReorderingArray {
             }
             if (merged_any && var_active_[rep] && nv_[rep] > 0) {
                 bump_wflg_();
-                const i32 d = std::max(
-                    0, std::min(n_, approx_external_degree_(rep, wflg_)));
+                const i32 d  = std::max(0, std::min(n_, approx_external_degree_(rep, wflg_)));
                 degree_[rep] = d;
                 bucket_move_(rep, d);
                 if (d < mindeg_) mindeg_ = d;
@@ -673,11 +852,10 @@ class AMDReorderingArray {
         for (i32 v : vlist) elem_sig_cache_[v].clear();
     }
 
-    void merge_variable_into_rep_(i32 rep, i32 u,
-                                  const std::vector<i32>& rep_elem_list) {
+    void merge_variable_into_rep_(i32 rep, i32 u, const std::vector<i32> &rep_elem_list) {
         if (rep == u || !var_active_[u] || nv_[u] == 0) return;
         nv_[rep] += nv_[u];
-        nv_[u] = 0;
+        nv_[u]         = 0;
         var_active_[u] = 0;
         bucket_remove_(u);
 
@@ -691,19 +869,17 @@ class AMDReorderingArray {
         }
 
         if (!sv_members_[u].empty()) {
-            sv_members_[rep].insert(sv_members_[rep].end(),
-                                    sv_members_[u].begin(),
-                                    sv_members_[u].end());
+            sv_members_[rep].insert(sv_members_[rep].end(), sv_members_[u].begin(), sv_members_[u].end());
             sv_members_[u].clear();
         }
 
         // replace u by rep in each element (rep_elem_list is sorted unique)
         for (i32 e : rep_elem_list) {
             if (!elem_active_[e] || elen_[e] <= 0) continue;
-            const i32 s = pe_[e];
-            const i32 l = elen_[e];
-            i32 wr = s;
-            bool seen_rep = false;
+            const i32 s        = pe_[e];
+            const i32 l        = elen_[e];
+            i32       wr       = s;
+            bool      seen_rep = false;
             for (i32 p = s; p < s + l; ++p) {
                 i32 v = iw_[p];
                 if (v == u) v = rep;
@@ -714,8 +890,7 @@ class AMDReorderingArray {
                 iw_[wr++] = v;
             }
             elen_[e] = wr - s;
-            if (elen_[e] > 1)
-                std::sort(iw_.begin() + s, iw_.begin() + s + elen_[e]);
+            if (elen_[e] > 1) std::sort(iw_.begin() + s, iw_.begin() + s + elen_[e]);
         }
         len_[u] = 0;
     }
@@ -774,8 +949,7 @@ class AMDReorderingArray {
                 const i32 s = pe_[i], l = elen_[i];
                 if (l > 0) {
                     if (write + l > nzmax_) grow_iw_(write + l);
-                    std::copy(iw_.begin() + s, iw_.begin() + s + l,
-                              iw_.begin() + write);
+                    std::copy(iw_.begin() + s, iw_.begin() + s + l, iw_.begin() + write);
                     pe_[i] = write;
                     write += l;
                 }
@@ -783,14 +957,13 @@ class AMDReorderingArray {
                 const i32 s = pe_[i], l = len_[i];
                 if (l > 0) {
                     if (write + l > nzmax_) grow_iw_(write + l);
-                    std::copy(iw_.begin() + s, iw_.begin() + s + l,
-                              iw_.begin() + write);
+                    std::copy(iw_.begin() + s, iw_.begin() + s + l, iw_.begin() + write);
                     pe_[i] = write;
                     write += l;
                 }
             }
         }
-        tail_used_ = write;
+        tail_used_     = write;
         stats_iw_peak_ = std::max(stats_iw_peak_, tail_used_);
     }
 
@@ -798,13 +971,12 @@ class AMDReorderingArray {
     void eliminate_pivot_build_element_(i32 piv) {
         if (!var_active_[piv]) return;
         var_active_[piv] = 0;
-        nv_[piv] = 0;
+        nv_[piv]         = 0;
 
         // Snapshot neighbors
         std::vector<i32> neigh;
         neigh.reserve(len_[piv]);
-        for (i32 p = pe_[piv], e = pe_[piv] + len_[piv]; p < e; ++p)
-            neigh.push_back(iw_[p]);
+        for (i32 p = pe_[piv], e = pe_[piv] + len_[piv]; p < e; ++p) neigh.push_back(iw_[p]);
 
         std::vector<i32> varN, elemN;
         varN.reserve(neigh.size());
@@ -825,21 +997,19 @@ class AMDReorderingArray {
                 cleaned.push_back(e);
             else {
                 elem_active_[e] = 0;
-                elen_[e] = 0;
+                elen_[e]        = 0;
             }
         }
 
-        if (aggressive_absorption_ && !cleaned.empty())
-            absorb_elements_hashed_(cleaned);
+        if (aggressive_absorption_ && !cleaned.empty()) absorb_elements_hashed_(cleaned);
 
         // Frontier: mark and collect new vars from varN + cleaned elements
         bump_wflg_();
-        const i32 tag = wflg_;
+        const i32        tag = wflg_;
         std::vector<i32> new_vars;
         new_vars.reserve((i32)varN.size() + 8);
         auto try_push = [&](i32 v) {
-            if (0 <= v && v < n_ && elen_[v] == -1 && var_active_[v] &&
-                nv_[v] > 0 && w_[v] != tag) {
+            if (0 <= v && v < n_ && elen_[v] == -1 && var_active_[v] && nv_[v] > 0 && w_[v] != tag) {
                 w_[v] = tag;
                 new_vars.push_back(v);
             }
@@ -847,8 +1017,7 @@ class AMDReorderingArray {
         for (i32 v : varN) try_push(v);
         for (i32 e : cleaned)
             if (elem_active_[e]) {
-                for (i32 p = pe_[e], E = pe_[e] + elen_[e]; p < E; ++p)
-                    try_push(iw_[p]);
+                for (i32 p = pe_[e], E = pe_[e] + elen_[e]; p < E; ++p) try_push(iw_[p]);
             }
 
         if (!new_vars.empty()) {
@@ -867,8 +1036,7 @@ class AMDReorderingArray {
             const i32 tag2 = wflg_;
             for (i32 v : new_vars)
                 if (var_active_[v] && nv_[v] > 0) {
-                    const i32 d = std::max(
-                        0, std::min(n_, approx_external_degree_(v, tag2)));
+                    const i32 d = std::max(0, std::min(n_, approx_external_degree_(v, tag2)));
                     if (d != degree_[v]) {
                         degree_[v] = d;
                         bucket_move_(v, d);
@@ -883,35 +1051,35 @@ class AMDReorderingArray {
     // storage helpers
     i32 alloc_new_element_() {
         if (nelem_top_ >= nsym_) grow_nodes_();
-        const i32 e = nelem_top_++;
-        elen_[e] = 0;
-        nv_[e] = 0;
+        const i32 e     = nelem_top_++;
+        elen_[e]        = 0;
+        nv_[e]          = 0;
         elem_active_[e] = 1;
-        var_active_[e] = 0;
-        pe_[e] = -1;
+        var_active_[e]  = 0;
+        pe_[e]          = -1;
         return e;
     }
     void store_element_varlist_(i32 e, std::vector<i32> vlist) {
         std::sort(vlist.begin(), vlist.end());
         dedup_sorted_inplace(vlist);
         const i32 need = (i32)vlist.size();
-        const i32 pos = reserve_space_(need);
-        pe_[e] = pos;
-        elen_[e] = need;
-        len_[e] = 0;
+        const i32 pos  = reserve_space_(need);
+        pe_[e]         = pos;
+        elen_[e]       = need;
+        len_[e]        = 0;
         for (i32 i = 0; i < need; ++i) iw_[pos + i] = vlist[i];
     }
     i32 reserve_space_(i32 need) {
         const i32 start = tail_used_;
-        const i32 end = start + need;
+        const i32 end   = start + need;
         if (end > nzmax_) grow_iw_(end);
-        tail_used_ = end;
+        tail_used_     = end;
         stats_iw_peak_ = std::max(stats_iw_peak_, tail_used_);
         return start;
     }
 
     void rebuild_var_list_after_fill_(i32 v, i32 piv, i32 new_elem) {
-        i32 start = pe_[v], L = len_[v], wr = start;
+        i32  start = pe_[v], L = len_[v], wr = start;
         bool seen_elem = false;
         for (i32 p = start, E = start + L; p < E; ++p) {
             const i32 a = iw_[p];
@@ -937,11 +1105,11 @@ class AMDReorderingArray {
                 iw_[wr++] = new_elem;
             } else {
                 std::vector<i32> seg(iw_.begin() + start, iw_.begin() + wr);
-                const i32 ns = reserve_space_((i32)seg.size() + 1);
-                pe_[v] = ns;
+                const i32        ns = reserve_space_((i32)seg.size() + 1);
+                pe_[v]              = ns;
                 std::copy(seg.begin(), seg.end(), iw_.begin() + ns);
                 iw_[ns + (i32)seg.size()] = new_elem;
-                len_[v] = (i32)seg.size() + 1;
+                len_[v]                   = (i32)seg.size() + 1;
                 return;
             }
         }
@@ -949,36 +1117,35 @@ class AMDReorderingArray {
     }
 
     // Lightweight cache for coalescence (element neighbor lists)
-    std::unordered_map<i32, std::vector<i32>> elem_sig_cache_;
+    std::unordered_map<i32, std::vector<i32>>      elem_sig_cache_;
     std::unordered_map<uint64_t, std::vector<i32>> sig_buckets_;
 
-   public:
+public:
     // A is n×n CSR (pattern-only). Return B = A[p, :][:, p].
     // EXPECTS: p[new] = old
-    static CSR permute_(const CSR& A, const std::vector<i32>& p,
-                        bool sort_cols = true, bool dedup = false) {
+    static CSR permute_(const CSR &A, const std::vector<i32> &p, bool sort_cols = true, bool dedup = false) {
         const i32 n = A.n;
         if (n == 0) return CSR(0);
 
-        const auto& AI = A.indptr;
-        const auto& AJ = A.indices;
+        const auto      &AI = A.indptr;
+        const auto      &AJ = A.indices;
         std::vector<i32> ip = inverse_permutation(p);
 
         CSR B(n);
         B.indptr.assign(n + 1, 0);
 
         for (i32 i = 0; i < n; ++i) {
-            const i32 oi = p[i];
+            const i32 oi    = p[i];
             B.indptr[i + 1] = B.indptr[i] + (AI[oi + 1] - AI[oi]);
         }
         B.indices.resize(B.indptr.back());
 
         for (i32 i = 0; i < n; ++i) {
-            const i32 oi = p[i];
+            const i32 oi   = p[i];
             const i32 begA = AI[oi], endA = AI[oi + 1];
-            i32 out = B.indptr[i];
+            i32       out = B.indptr[i];
             for (i32 k = begA; k < endA; ++k) {
-                const i32 j_old = AJ[k];
+                const i32 j_old  = AJ[k];
                 B.indices[out++] = ip[j_old];
             }
             if (sort_cols) {
@@ -987,7 +1154,7 @@ class AMDReorderingArray {
                 std::sort(beg, end);
                 if (dedup) {
                     auto new_end = std::unique(beg, end);
-                    (void)new_end;  // second pass compacts
+                    (void)new_end; // second pass compacts
                 }
             }
         }
@@ -1008,12 +1175,11 @@ class AMDReorderingArray {
             std::vector<i32> nidx(nip.back());
             for (i32 i = 0; i < n; ++i) {
                 const i32 rb = B.indptr[i], re = B.indptr[i + 1];
-                i32 out = nip[i];
+                i32       out = nip[i];
                 if (re > rb) {
                     nidx[out++] = B.indices[rb];
                     for (i32 k = rb + 1; k < re; ++k)
-                        if (B.indices[k] != B.indices[k - 1])
-                            nidx[out++] = B.indices[k];
+                        if (B.indices[k] != B.indices[k - 1]) nidx[out++] = B.indices[k];
                 }
             }
             B.indptr.swap(nip);
@@ -1023,75 +1189,15 @@ class AMDReorderingArray {
         return B;
     }
 
-    static i32 bandwidth_(const CSR& A) {
+    static i32 bandwidth_(const CSR &A) {
         if (A.nnz() == 0) return 0;
         i32 bw = 0;
         for (i32 i = 0; i < A.n; ++i) {
             for (i32 p = A.indptr[i]; p < A.indptr[i + 1]; ++p) {
                 const i32 j = A.indices[p];
-                bw = std::max(bw, std::abs(j - i));
+                bw          = std::max(bw, std::abs(j - i));
             }
         }
         return bw;
     }
 };
-
-//------------------------------------------------------------------------------
-// Demo / quick test
-//------------------------------------------------------------------------------
-static CSR random_erdos_renyi(i32 n, double p, std::mt19937_64& rng) {
-    // build upper, then mirror (keep pattern, include diagonal)
-    std::bernoulli_distribution coin(p);
-    std::vector<std::vector<i32>> rows(n);
-    for (i32 i = 0; i < n; ++i) rows[i].push_back(i);
-    for (i32 i = 0; i < n; ++i) {
-        for (i32 j = i + 1; j < n; ++j) {
-            if (coin(rng)) {
-                rows[i].push_back(j);
-                rows[j].push_back(i);
-            }
-        }
-    }
-    CSR A(n);
-    A.indptr[0] = 0;
-    for (i32 i = 0; i < n; ++i) {
-        std::sort(rows[i].begin(), rows[i].end());
-        dedup_sorted_inplace(rows[i]);
-        A.indptr[i + 1] = A.indptr[i] + (i32)rows[i].size();
-    }
-    A.indices.resize(A.indptr.back());
-    for (i32 i = 0, w = 0; i < n; ++i)
-        for (i32 v : rows[i]) A.indices[w++] = v;
-    return A;
-}
-
-int main() {
-    std::mt19937_64 rng(42);
-    const i32 n = 4000;
-    const double p = 4.0 / n;  // sparse
-    CSR A = random_erdos_renyi(n, p, rng);
-
-    AMDReorderingArray amd(/*aggressive_absorption=*/true, /*dense_cutoff=*/-1);
-    auto [perm, st] =
-        amd.compute_fill_reducing_permutation(A, /*symmetrize=*/true);
-
-    std::cout << "n=" << st.matrix_size << " nnz=" << st.original_nnz
-              << " bw0=" << st.original_bandwidth
-              << " bw1=" << st.reordered_bandwidth
-              << " red=" << (100.0 * st.bandwidth_reduction) << "%\n";
-    std::cout << "absorbed=" << st.absorbed_elements
-              << " coalesced=" << st.coalesced_variables
-              << " iw_peak=" << st.iw_capacity_peak << "\n";
-
-    // sanity: permutation size and is a bijection
-    std::vector<char> seen(n, 0);
-    for (i32 i = 0; i < (i32)perm.size(); ++i) {
-        if (perm[i] < 0 || perm[i] >= n || seen[perm[i]]) {
-            std::cerr << "Permutation invalid at " << i << "\n";
-            return 1;
-        }
-        seen[perm[i]] = 1;
-    }
-    std::cout << "Permutation OK.\n";
-    return 0;
-}

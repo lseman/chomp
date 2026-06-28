@@ -31,8 +31,9 @@
 #include <utility>
 #include <vector>
 
-#include "../ip/aux.h"  // RichardsonExtrapolator
-#include "../model.h"
+#include <blocks/config.h>
+#include <ip/aux.h>  // RichardsonExtrapolator
+#include <model.h>
 #include "filter.h"  // Filter class
 #include "funnel.h"  // FunnelConfig, Funnel
 
@@ -95,21 +96,15 @@ struct LSConfig {
 // ----------------- Helpers (no allocations on hot path) -----------------
 static inline double getattr_or_double(const nb::object& obj, const char* name,
                                        double fallback) {
-    if (!obj || obj.is_none()) return fallback;
-    if (nb::hasattr(obj, name)) return nb::cast<double>(obj.attr(name));
-    return fallback;
+    return blocks::attr_or_double(obj, name, fallback);
 }
 static inline int getattr_or_int(const nb::object& obj, const char* name,
                                  int fallback) {
-    if (!obj || obj.is_none()) return fallback;
-    if (nb::hasattr(obj, name)) return nb::cast<int>(obj.attr(name));
-    return fallback;
+    return blocks::attr_or_int(obj, name, fallback);
 }
 static inline bool getattr_or_bool(const nb::object& obj, const char* name,
                                    bool fallback) {
-    if (!obj || obj.is_none()) return fallback;
-    if (nb::hasattr(obj, name)) return nb::cast<bool>(obj.attr(name));
-    return fallback;
+    return blocks::attr_or_bool(obj, name, fallback);
 }
 
 static inline double safe_log_barrier(double val, double eps) {

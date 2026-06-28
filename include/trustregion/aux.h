@@ -23,9 +23,9 @@
 #include <vector>
 
 // ====== Project ======
-#include "../blocks/filter.h"
-#include "../definitions.h"
-#include "../model.h"
+#include <blocks/filter.h>
+#include <definitions.h>
+#include <model.h>
 #include "definitions.h"
 
 enum class TRBackend { PCG, DOGLEG, GLTR };

@@ -31,12 +31,12 @@
 #include <utility>
 #include <vector>
 
-#include "../blocks/funnel.h"
-#include "../blocks/linesearch.h"
-#include "../definitions.h"
-#include "../kkt/core.h"
-#include "../model.h" // Model
-#include "../regularizer.h"
+#include <blocks/funnel.h>
+#include <blocks/linesearch.h>
+#include <definitions.h>
+#include <kkt/core.h>
+#include <model.h> // Model
+#include <regularizer.h>
 #include "aux.h"
 #include "helpers.h"
 

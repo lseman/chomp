@@ -1,11 +1,11 @@
 // ADGraph.cpp — ULTRA-FAST C++23 VERSION (lanes, fused kernels, minimal allocs)
-#include "../../include/ad/ad_graph.h"
-#include "../../include/ad/definitions.h"
-#include "../../include/ad/variable.h"
+#include <ad/ad_graph.h>
+#include <ad/definitions.h>
+#include <ad/variable.h>
 
-#include "../../include/ad/op_dispatch.h"
-#include "../../include/ad/op_traits.h"
-#include "../../include/ad/egraph.h"
+#include <ad/egraph.h>
+#include <ad/op_dispatch.h>
+#include <ad/op_traits.h>
 
 #include <algorithm>
 #include <cassert>
@@ -1909,8 +1909,7 @@ ECostModel::best_of(int eclass, const EGraph &G,
 }
 
 // In ADGraph.cpp
-#include "../../include/ad/egraph.h"
-#include "../../include/ad/egraph_aux.h"
+#include <ad/egraph_aux.h>
 
 bool ADGraph::egraphSimplify_(std::vector<ADNodePtr> &roots) {
     if (!enable_egraph_ || roots.empty())

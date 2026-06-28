@@ -10,16 +10,23 @@
 #include <nanobind/stl/vector.h>
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <cstddef>
+#include <limits>
+#include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
-#include "../definitions.h"
+#include <blocks/box.h>
+#include <definitions.h>
+#include <model.h>
+#include <trustregion/manager.h>  // TrustRegionManager, TRConfig, TRResult, TRInfo
+
 #include "dopt.h"
-#include "../model.h"
-#include "../trustregion/manager.h"  // TrustRegionManager, TRConfig, TRResult, TRInfo
 
 namespace nb = nanobind;
 using dvec = Eigen::VectorXd;
@@ -31,22 +38,7 @@ using TrustRegionManager = ::TrustRegionManager;
 using TRResult = ::TRResult;
 using TRInfo = ::TRInfo;
 
-// Vectorized box clipping: y = min(max(x, lb), ub) where lb/ub may be absent
-static inline dvec clip_box(const dvec& x, const std::optional<dvec>& lb,
-                            const std::optional<dvec>& ub) {
-    dvec y = x;
-    if (lb) {
-        if (NB_UNLIKELY(lb->size() != x.size()))
-            throw std::invalid_argument("clip_box: lb size mismatch");
-        y = y.cwiseMax(*lb);
-    }
-    if (ub) {
-        if (NB_UNLIKELY(ub->size() != x.size()))
-            throw std::invalid_argument("clip_box: ub size mismatch");
-        y = y.cwiseMin(*ub);
-    }
-    return y;
-}
+using blocks::clip_box;
 
 // ------------------------ SQP Stepper (C++) ------------------------ //
 class SQPStepper {
@@ -57,18 +49,13 @@ class SQPStepper {
         : cfg_(std::move(cfg)),
           qp_(std::move(qp_solver)),
           tr_(build_tr_config_from_cfg_(cfg_)),
+          dopt_(std::make_unique<dopt::DOptStabilizer>(
+              build_dopt_config_from_cfg_(cfg_))),
           model_(model) {
         if (!model_)
             throw std::invalid_argument(
                 "SQPStepper: ModelC* model must not be null");
         init_misc_();
-        auto dopt_cfg = dopt::DOptConfig();
-        dopt = new dopt::DOptStabilizer(dopt_cfg);
-    }
-
-    ~SQPStepper() {
-        delete dopt;
-        dopt = nullptr;
     }
 
     // --- termination bookkeeping ---
@@ -80,7 +67,6 @@ class SQPStepper {
     std::shared_ptr<regx::Regularizer> regularizer_ =
         std::make_shared<regx::Regularizer>();
 
-    dopt::DOptStabilizer* dopt = nullptr;
     ModelC* model_ = nullptr;  // optional ModelC pointer for AD/LBFGS Hessians
 
     std::tuple<dvec, dvec, dvec, SolverInfo> step(const dvec& x_in,
@@ -113,7 +99,8 @@ class SQPStepper {
         const double theta0 = model_->constraint_violation(x);
 
         auto [rE_opt, rI_opt, dopt_meta] =
-            dopt->compute_shifts(JE_dense, JI_dense, cE, cI, lam_in, nu_in);
+            dopt_->compute_shifts(JE_dense, JI_dense, cE, cI, lam_in, nu_in);
+        (void)dopt_meta;
 
         // ---- 2b) Adaptive damping & relative caps (gentle stabilization) ----
         // Config knobs (with safe defaults)
@@ -180,6 +167,7 @@ class SQPStepper {
         }
 
         auto [H, reg_info] = regularizer_->regularize(H0, it);
+        (void)reg_info;
         H.makeCompressed();
 
         // Optional: set TR metric from H
@@ -236,10 +224,6 @@ class SQPStepper {
         dvec cE1 = (mE > 0) ? model_->get_cE().value() : dvec::Zero(mE);
 
         const double theta1 = model_->constraint_violation(x_trial);
-
-        // Bound multipliers (not returned by TR): zeros for KKT
-        const dvec& zL = out.zL;
-        const dvec& zU = out.zU;
 
         auto [nu_hat, lam_hat, zL_hat, zU_hat] = recover_multipliers_at_trial_(
             g1, (mE > 0 ? std::optional<dmat>(JE1_dense) : std::nullopt),
@@ -398,6 +382,7 @@ class SQPStepper {
     // config and collaborators
     nb::object cfg_, hess_, ls_, qp_, soc_, reg_, rest_;
     TrustRegionManager tr_;
+    std::unique_ptr<dopt::DOptStabilizer> dopt_;
     bool requires_dense_{};
 
     static TRConfig build_tr_config_from_cfg_(const nb::object& cfg) {
@@ -449,8 +434,49 @@ class SQPStepper {
 
         // Filter knob
         tc.use_filter = get_attr_or<bool>(cfg, "use_filter", tc.use_filter);
+        tc.filter_cfg.filter_gamma_theta = get_attr_or<double>(
+            cfg, "filter_gamma_theta", tc.filter_cfg.filter_gamma_theta);
+        tc.filter_cfg.filter_gamma_f =
+            get_attr_or<double>(cfg, "filter_gamma_f",
+                                tc.filter_cfg.filter_gamma_f);
+        tc.filter_cfg.filter_theta_min = get_attr_or<double>(
+            cfg, "filter_theta_min", tc.filter_cfg.filter_theta_min);
+        tc.filter_cfg.filter_margin_min = get_attr_or<double>(
+            cfg, "filter_margin_min", tc.filter_cfg.filter_margin_min);
+        tc.filter_cfg.filter_max_size = get_attr_or<int>(
+            cfg, "filter_max_size", tc.filter_cfg.filter_max_size);
+
+        tc.use_soc = get_attr_or<bool>(cfg, "use_soc", tc.use_soc);
+        tc.soc_theta_reduction =
+            get_attr_or<double>(cfg, "soc_kappa", tc.soc_theta_reduction);
+        tc.soc_use_funnel =
+            get_attr_or<bool>(cfg, "use_funnel", tc.soc_use_funnel);
+        tc.funnel_gamma =
+            get_attr_or<double>(cfg, "funnel_kappa", tc.funnel_gamma);
+        tc.constraint_tol =
+            get_attr_or<double>(cfg, "constraint_tol", tc.constraint_tol);
 
         return tc;
+    }
+
+    static dopt::DOptConfig build_dopt_config_from_cfg_(const nb::object& cfg) {
+        dopt::DOptConfig dc;
+        const auto scaling =
+            get_attr_or<std::string>(cfg, "dopt_scaling", std::string("ruiz"));
+        dc.dopt_scaling = (scaling == "none" || scaling == "None")
+                              ? dopt::ScaleMode::None
+                              : dopt::ScaleMode::Ruiz;
+        dc.dopt_sigma_E =
+            get_attr_or<double>(cfg, "dopt_sigma_E", dc.dopt_sigma_E);
+        dc.dopt_sigma_I =
+            get_attr_or<double>(cfg, "dopt_sigma_I", dc.dopt_sigma_I);
+        dc.dopt_max_shift =
+            get_attr_or<double>(cfg, "dopt_max_shift", dc.dopt_max_shift);
+        dc.dopt_active_tol =
+            get_attr_or<double>(cfg, "dopt_active_tol", dc.dopt_active_tol);
+        dc.dopt_mu_target =
+            get_attr_or<double>(cfg, "dopt_mu_target", dc.dopt_mu_target);
+        return dc;
     }
 
     void init_misc_() {
@@ -466,7 +492,7 @@ class SQPStepper {
         ensure_default("tr_norm_type", get_attr_or<std::string>(cfg_, "norm_type", std::string("2")));
         ensure_default("filter_theta_min", 1e-8);
         ensure_default("hessian_mode",
-                       std::string("lbfgs"));  // "exact" or "lbfgs"
+                       std::string("exact"));  // "exact" or "lbfgs"
         ensure_default("lbfgs_sparse_threshold", 1e-12);
         ensure_default("soc_violation_ratio", 0.9);
         ensure_default("tol_obj_change",
@@ -531,22 +557,29 @@ class SQPStepper {
 
         double comp = 0.0;
         if (cI && lam_user.size() > 0) {
-            dvec t = *cI;
-            for (int i = 0; i < t.size(); ++i)
-                t[i] = std::max(0.0, t[i]) * lam_user[i];
-            comp = std::max(comp, t.lpNorm<Eigen::Infinity>());
+            const int m = std::min<int>((int)cI->size(), (int)lam_user.size());
+            double cmax = 0.0;
+            for (int i = 0; i < m; ++i) {
+                cmax = std::max(cmax, std::abs((*cI)[i] * lam_user[i]));
+                cmax = std::max(cmax, std::max(0.0, -lam_user[i]));
+            }
+            comp = std::max(comp, cmax);
         }
         if (lb && zL.size() == xval.size()) {
             dvec t = xval - (*lb);
             for (int i = 0; i < t.size(); ++i)
-                t[i] = std::max(0.0, t[i]) * zL[i];
+                t[i] = std::abs(std::max(0.0, t[i]) * zL[i]);
             comp = std::max(comp, t.lpNorm<Eigen::Infinity>());
+            if (zL.size() > 0)
+                comp = std::max(comp, (-zL.array()).max(0.0).maxCoeff());
         }
         if (ub && zU.size() == xval.size()) {
             dvec t = (*ub) - xval;
             for (int i = 0; i < t.size(); ++i)
-                t[i] = std::max(0.0, t[i]) * zU[i];
+                t[i] = std::abs(std::max(0.0, t[i]) * zU[i]);
             comp = std::max(comp, t.lpNorm<Eigen::Infinity>());
+            if (zU.size() > 0)
+                comp = std::max(comp, (-zU.array()).max(0.0).maxCoeff());
         }
         return {stat, feas_eq, ineq, comp};
     }

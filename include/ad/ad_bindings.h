@@ -39,8 +39,8 @@
 #include "variable.h"
 
 // If you use tsl::robin_map, include it here:
-#include "../../third_party/robin_map.h"
-#include "../../third_party/robin_set.h"
+#include <robin_map.h>
+#include <robin_set.h>
 
 namespace nb = nanobind;
 using namespace nb::literals;

@@ -10,8 +10,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "../../third_party/robin_map.h"
-#include "../../third_party/robin_set.h"
+#include <robin_map.h>
+#include <robin_set.h>
 #include "definitions.h"
 #include "egraph.h"
 

@@ -20,7 +20,9 @@
 #include "ad_graph.h"
 #include "definitions.h"
 
+#ifndef NDEBUG
 #define NDEBUG
+#endif
 
 /* ============================================================================
    SUSPECT-style Convexity/Monotonicity Analyzer (enhanced)
@@ -453,11 +455,12 @@ struct LogSumExpDetector final : ISuspectDetector<GraphT, NodeT> {
         // Must be log(sum_of_exps)
         if (op != T::Op::Log || ins.size() != 1) return false;
         const NodeT& inner = ins[0];
-        if (T::op(inner) != T::Op::Add || inner.inputs.size() < 2) return false;
+        auto inner_inputs = T::inputs(inner);
+        if (T::op(inner) != T::Op::Add || inner_inputs.size() < 2) return false;
 
         // Check all addends are exp(affine)
         bool all_exps = true;
-        for (const auto& term : inner.inputs) {
+        for (const auto& term : inner_inputs) {
             if (T::op(term) != T::Op::Exp) { all_exps = false; break; }
         }
         if (!all_exps) return false;
@@ -485,11 +488,13 @@ struct EntropyDetector final : ISuspectDetector<GraphT, NodeT> {
             for (size_t i = 0; i < 2; ++i) {
                 if (T::is_const(ins[i]) && std::abs(T::const_value(ins[i]) + 1.0) < 1e-12) {
                     const NodeT& prod = ins[1 - i];
-                    if (T::op(prod) == T::Op::Multiply && prod.inputs.size() == 2) {
-                        const auto& a = prod.inputs[0];
-                        const auto& b = prod.inputs[1];
-                        if (T::op(b) == T::Op::Log && b.inputs.size() == 1 &&
-                            a.get() == b.inputs[0].get()) {
+                    auto prod_inputs = T::inputs(prod);
+                    if (T::op(prod) == T::Op::Multiply && prod_inputs.size() == 2) {
+                        const auto& a = prod_inputs[0];
+                        const auto& b = prod_inputs[1];
+                        auto b_inputs = T::inputs(b);
+                        if (T::op(b) == T::Op::Log && b_inputs.size() == 1 &&
+                            T::id(a) == T::id(b_inputs[0])) {
                             info.cvx = CvxTag::Concave;
                             info.hint = "Negative x*log(x) = entropy term is concave.";
                             return true;
@@ -503,19 +508,22 @@ struct EntropyDetector final : ISuspectDetector<GraphT, NodeT> {
         if (op == T::Op::Add && ins.size() >= 2) {
             bool all_entropy = true;
             for (const auto& term : ins) {
-                if (T::op(term) != T::Op::Multiply || term.inputs.size() < 2) {
+                auto term_inputs = T::inputs(term);
+                if (T::op(term) != T::Op::Multiply || term_inputs.size() < 2) {
                     all_entropy = false; break;
                 }
                 bool is_neg_xlogx = false;
                 for (size_t i = 0; i < 2; ++i) {
-                    if (T::is_const(term.inputs[i]) &&
-                        std::abs(T::const_value(term.inputs[i]) + 1.0) < 1e-12) {
-                        const NodeT& xlogx = term.inputs[1 - i];
-                        if (T::op(xlogx) == T::Op::Multiply && xlogx.inputs.size() == 2) {
-                            const auto& a = xlogx.inputs[0];
-                            const auto& b = xlogx.inputs[1];
-                            if (T::op(b) == T::Op::Log && b.inputs.size() == 1 &&
-                                a.get() == b.inputs[0].get()) {
+                    if (T::is_const(term_inputs[i]) &&
+                        std::abs(T::const_value(term_inputs[i]) + 1.0) < 1e-12) {
+                        const NodeT& xlogx = term_inputs[1 - i];
+                        auto xlogx_inputs = T::inputs(xlogx);
+                        if (T::op(xlogx) == T::Op::Multiply && xlogx_inputs.size() == 2) {
+                            const auto& a = xlogx_inputs[0];
+                            const auto& b = xlogx_inputs[1];
+                            auto b_inputs = T::inputs(b);
+                            if (T::op(b) == T::Op::Log && b_inputs.size() == 1 &&
+                                T::id(a) == T::id(b_inputs[0])) {
                                 is_neg_xlogx = true;
                                 break;
                             }
@@ -554,18 +562,23 @@ struct KLDetector final : ISuspectDetector<GraphT, NodeT> {
 
         // KL: a*log(a/b) - a + b is convex when a,b > 0
         // Detect a*log(a/b) term: a * log(a / b)
-        auto is_kl_term = [&](const NodeT* t) -> bool {
-            if (!t || T::op(t) != T::Op::Multiply || t->inputs.size() < 2)
+        auto is_kl_term = [&](const NodeT& t) -> bool {
+            if (!t || T::op(t) != T::Op::Multiply)
                 return false;
-            for (size_t i = 0; i < t->inputs.size(); ++i) {
-                auto a = t->inputs[i];
-                auto rest = t->inputs[1 - i];
-                if (T::op(rest) != T::Op::Log || rest->inputs.size() != 1)
+            auto t_inputs = T::inputs(t);
+            if (t_inputs.size() < 2) return false;
+            for (size_t i = 0; i < t_inputs.size(); ++i) {
+                const auto& a = t_inputs[i];
+                const auto& rest = t_inputs[1 - i];
+                auto rest_inputs = T::inputs(rest);
+                if (T::op(rest) != T::Op::Log || rest_inputs.size() != 1)
                     continue;
-                if (T::op(rest->inputs[0]) != T::Op::Divide ||
-                    rest->inputs[0].inputs.size() != 2) continue;
+                const auto& div = rest_inputs[0];
+                auto div_inputs = T::inputs(div);
+                if (T::op(div) != T::Op::Divide || div_inputs.size() != 2)
+                    continue;
                 // rest = log(a/b)
-                if (rest->inputs[0].inputs[0].get() == a.get())
+                if (T::id(div_inputs[0]) == T::id(a))
                     return true;
             }
             return false;
@@ -573,7 +586,7 @@ struct KLDetector final : ISuspectDetector<GraphT, NodeT> {
 
         int n_kl_terms = 0;
         for (const auto& term : ins) {
-            if (is_kl_term(term.get()))
+            if (is_kl_term(term))
                 ++n_kl_terms;
         }
         if (n_kl_terms >= 1) {
@@ -584,17 +597,17 @@ struct KLDetector final : ISuspectDetector<GraphT, NodeT> {
 
         // Also detect relative_entropy(a||b) = a*log(a/b) - a + b
         // as a sum with a*log(a/b) + (-a) + b
-        auto is_neg_linear = [](const NodeT* t) -> bool {
+        auto is_neg_linear = [](const NodeT& t) -> bool {
             if (!t || T::op(t) != T::Op::Multiply) return false;
-            for (auto& inp : t->inputs) {
+            for (const auto& inp : T::inputs(t)) {
                 if (T::is_const(inp) && std::abs(T::const_value(inp) + 1.0) < 1e-12)
                     return true;
             }
             return false;
         };
-        auto is_pos_linear = [](const NodeT* t) -> bool {
+        auto is_pos_linear = [](const NodeT& t) -> bool {
             if (!t || T::op(t) != T::Op::Multiply) return false;
-            for (auto& inp : t->inputs) {
+            for (const auto& inp : T::inputs(t)) {
                 if (T::is_const(inp) && std::abs(T::const_value(inp) - 1.0) < 1e-12)
                     return true;
             }
@@ -603,9 +616,9 @@ struct KLDetector final : ISuspectDetector<GraphT, NodeT> {
 
         bool has_neg = false, has_pos = false;
         for (const auto& term : ins) {
-            if (is_kl_term(term.get())) { n_kl_terms++; }
-            else if (is_neg_linear(term.get())) { has_neg = true; }
-            else if (is_pos_linear(term.get())) { has_pos = true; }
+            if (is_kl_term(term)) { n_kl_terms++; }
+            else if (is_neg_linear(term)) { has_neg = true; }
+            else if (is_pos_linear(term)) { has_pos = true; }
         }
         if (n_kl_terms >= 1 && has_neg && has_pos) {
             info.cvx = CvxTag::Convex;

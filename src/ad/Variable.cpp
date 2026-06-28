@@ -1,5 +1,5 @@
-#include "../../include/ad/variable.h"
-#include "../../include/ad/expression.h"
+#include <ad/expression.h>
+#include <ad/variable.h>
 
 // static
 std::atomic<int> Variable::nextOrder_{0};

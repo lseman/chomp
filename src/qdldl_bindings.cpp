@@ -10,7 +10,8 @@
 #include <utility>
 #include <vector>
 
-#include "../include/linear_system/qdldl.h"
+#include <linear_system/qdldl.h>
+#include <linear_system/supernodes.h>
 
 namespace py = pybind11;
 using namespace qdldl23;
@@ -51,6 +52,35 @@ struct SymbolicHandle {
     // Etree orders (optional but handy)
     std::vector<std::int64_t> preorder, postorder, first_child, next_sib;
 };
+
+static inline py::array_t<std::int64_t> to_numpy_i64(
+    const std::vector<std::int64_t>& v) {
+    auto out = py::array_t<std::int64_t>(v.size());
+    std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(std::int64_t));
+    return out;
+}
+
+static inline py::array_t<std::int64_t> ranges_to_numpy_2col_i64(
+    const std::vector<std::pair<std::int64_t, std::int64_t>>& ranges) {
+    const size_t m = ranges.size();
+    py::array_t<std::int64_t> arr({(py::ssize_t)m, (py::ssize_t)2});
+    auto buf = arr.mutable_unchecked<2>();
+    for (size_t i = 0; i < m; ++i) {
+        buf(i, 0) = ranges[i].first;
+        buf(i, 1) = ranges[i].second;
+    }
+    return arr;
+}
+
+static inline py::dict supernodes_to_pydict(
+    const snode::SupernodeInfo<std::int64_t>& sn) {
+    py::dict d;
+    d["ranges"] = ranges_to_numpy_2col_i64(sn.ranges);
+    d["col2sn"] = to_numpy_i64(sn.col2sn);
+    d["etree"] = to_numpy_i64(sn.etree);
+    d["post"] = to_numpy_i64(sn.post);
+    return d;
+}
 
 // Build Sparse from raw CSC (upper+diag expected; validated by ctor)
 static inline SparseD64 make_sparse_from_csc(
@@ -187,6 +217,10 @@ static inline void build_permuted_structure_and_map(
     std::vector<std::int64_t>& Bp, std::vector<std::int64_t>& Bi,
     std::vector<std::int64_t>& A2B) {
     const auto n = A.n;
+    struct Entry {
+        std::int64_t row;
+        std::int64_t src;
+    };
 
     // count per permuted column
     std::vector<std::int64_t> cnt((size_t)n, 0);
@@ -201,16 +235,14 @@ static inline void build_permuted_structure_and_map(
             }
         }
     }
-    Bp.assign((size_t)n + 1, 0);
+    std::vector<std::int64_t> rawBp((size_t)n + 1, 0);
     for (std::int64_t j = 0; j < n; ++j)
-        Bp[(size_t)j + 1] = Bp[(size_t)j] + cnt[(size_t)j];
-    Bi.resize((size_t)Bp[(size_t)n]);
+        rawBp[(size_t)j + 1] = rawBp[(size_t)j] + cnt[(size_t)j];
+
+    std::vector<Entry> entries((size_t)rawBp[(size_t)n]);
+    std::vector<std::int64_t> wr = rawBp;
     A2B.resize((size_t)A.nnz());
 
-    // bucket per target column (row, src_idx) and then sort rows
-    std::vector<std::vector<std::pair<std::int64_t, std::size_t>>> buckets(
-        (size_t)n);
-    buckets.shrink_to_fit();
     std::size_t src_idx = 0;
     for (std::int64_t j = 0; j < n; ++j) {
         const auto pj = ord ? ord->perm[(size_t)j] : j;
@@ -220,24 +252,39 @@ static inline void build_permuted_structure_and_map(
             auto pi = ord ? ord->perm[(size_t)i] : i;
             auto col = pj, row = pi;
             if (row > col) std::swap(row, col);
-            buckets[(size_t)col].emplace_back(row, src_idx);
+            entries[(size_t)wr[(size_t)col]++] = {
+                row, static_cast<std::int64_t>(src_idx)};
         }
     }
-    // write sorted
+
+    Bp.assign((size_t)n + 1, 0);
+    Bi.clear();
+    Bi.reserve(entries.size());
+
     for (std::int64_t j = 0; j < n; ++j) {
-        auto& b = buckets[(size_t)j];
-        std::sort(b.begin(), b.end(),
-                  [](auto& a, auto& b) { return a.first < b.first; });
-        auto w = Bp[(size_t)j];
-        for (auto& [row, src] : b) {
-            Bi[(size_t)w] = row;
-            A2B[(size_t)src] = w;
-            ++w;
+        const auto begin = entries.begin() + rawBp[(size_t)j];
+        const auto end = entries.begin() + rawBp[(size_t)j + 1];
+        std::sort(begin, end, [](const Entry& a, const Entry& b) {
+            if (a.row != b.row) return a.row < b.row;
+            return a.src < b.src;
+        });
+
+        bool has_diag = false;
+        auto it = begin;
+        while (it != end) {
+            const auto row = it->row;
+            const auto dst = static_cast<std::int64_t>(Bi.size());
+            Bi.push_back(row);
+            if (row == j) has_diag = true;
+
+            do {
+                A2B[(size_t)it->src] = dst;
+                ++it;
+            } while (it != end && it->row == row);
         }
-        // enforce diagonal existence check: Bi is sorted, must see j somewhere
-        if (!std::binary_search(
-                b.begin(), b.end(), std::pair<std::int64_t, std::size_t>{j, 0},
-                [](auto& a, auto& b) { return a.first < b.first; })) {
+
+        Bp[(size_t)j + 1] = static_cast<std::int64_t>(Bi.size());
+        if (!has_diag) {
             throw InvalidMatrixError(
                 "Missing diagonal after permutation at column " +
                 std::to_string(j));
@@ -246,16 +293,18 @@ static inline void build_permuted_structure_and_map(
 }
 
 // ---- Fill Bx using A2B map (O(nnz)) ----
-static inline void fill_Bx_from_map(const py::array_t<double>& dataA,
+static inline void fill_Bx_from_map(const std::vector<double>& Ax,
                                     const std::vector<std::int64_t>& A2B,
                                     std::vector<double>& Bx) {
     const std::size_t nnzA = (std::size_t)A2B.size();
+    if (Ax.size() != nnzA)
+        throw std::invalid_argument(
+            "numeric values do not match cached symbolic structure");
     Bx.assign(Bx.size(), 0.0);
-    const double* Ax = dataA.data();
     for (std::size_t s = 0; s < nnzA; ++s) {
         const auto dst = (std::size_t)A2B[s];
         Bx[dst] +=
-            Ax[s];  // coalesce duplicates if any (should be none if upper-only)
+            Ax[s];  // coalesce symmetric duplicates after permutation
     }
 }
 
@@ -460,7 +509,7 @@ PYBIND11_MODULE(qdldl_cpp, m) {
 
             // Build B values quickly using cached map/structure
             std::vector<double> Bx(S.Bi.size(), 0.0);
-            fill_Bx_from_map(data, S.A2B, Bx);
+            fill_Bx_from_map(A.Ax, S.A2B, Bx);
 
             SparseD64 B;
             B.n = n;
@@ -489,6 +538,24 @@ PYBIND11_MODULE(qdldl_cpp, m) {
         py::arg("symbolic"), py::arg("indptr"), py::arg("indices"),
         py::arg("data"), py::arg("n"),
         R"doc(Numeric refactorization using cached permuted structure (Bp/Bi) and A→B map. O(nnz) scatter; no re-permutation.)doc");
+
+    m.def(
+        "identify_supernodes",
+        [](const SymbolicHandle& S, int relax_abs, double relax_rel, double tau,
+           std::int64_t max_size) {
+            if (max_size <= 0)
+                throw std::invalid_argument("max_size must be positive");
+            std::vector<double> zeros(S.Bi.size(), 0.0);
+            SparseD64 B(S.n, S.Bp, S.Bi, zeros);
+            auto sn = snode::identify_supernodes_qdldl<double, std::int64_t>(
+                B, S.S, static_cast<std::int64_t>(relax_abs), relax_rel, tau,
+                max_size);
+            return supernodes_to_pydict(sn);
+        },
+        py::arg("symbolic"), py::arg("relax_abs") = 0,
+        py::arg("relax_rel") = 0.0, py::arg("tau") = 1.0,
+        py::arg("max_size") = std::numeric_limits<std::int64_t>::max(),
+        R"doc(Identify fundamental/relaxed supernodes from a cached Symbolic's permuted symbolic L pattern.)doc");
 
     // ---------------------------
     // solve — applies stored external permutation if present

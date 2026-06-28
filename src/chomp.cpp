@@ -6,8 +6,8 @@
 //   - nanobind (with Eigen support)
 //   - Eigen
 //   - fmt
-//   - Your C++ IP/SQP headers: ../include/ip/stepper.h,
-//     ../include/sqp/stepper.h
+//   - Your C++ IP/SQP headers: include/ip/stepper.h,
+//     include/sqp/stepper.h
 //
 // Notes:
 //   * We accept/return Eigen vectors (nanobind auto-converts to/from NumPy).
@@ -32,9 +32,9 @@
 #include <string>
 #include <vector>
 
-#include "../include/ip/stepper.h"
-#include "../include/model.h"
-#include "../include/sqp/stepper.h"
+#include <ip/stepper.h>
+#include <model.h>
+#include <sqp/stepper.h>
 
 namespace nb = nanobind;
 using nb::arg;

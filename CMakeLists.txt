@@ -122,9 +122,6 @@ find_package(Python 3.13 EXACT
   REQUIRED
 )
 
-# define include dir python globally
-include_directories(${Python3_INCLUDE_DIRS})
-
 # nanobind (always via CPM is fine; it uses Python3 variables)
 set(NANOBIND_TAG v2.9.2 CACHE STRING "nanobind version/tag to fetch via CPM")
 CPMAddPackage(
@@ -265,6 +262,8 @@ function(ad__common_target_setup tgt)
   target_compile_features(${tgt} PRIVATE cxx_std_23)
   target_include_directories(${tgt}
     PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/third_party"
     "${PROJECT_SOURCE_DIR}/src"
   )
   target_link_libraries(${tgt}
@@ -353,6 +352,14 @@ function(ad_add_nanobind_module name)
   target_link_libraries(${name} PRIVATE Python3::Module)
 endfunction()
 
+function(ad_link_unix_system_libs tgt)
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(${tgt} PRIVATE m dl)
+  elseif(UNIX)
+    target_link_libraries(${tgt} PRIVATE m)
+  endif()
+endfunction()
+
 # ------------------------------------------------------------------
 # Targets
 # ------------------------------------------------------------------
@@ -365,7 +372,7 @@ set(AD_SOURCES
   src/ad/ADGraph.cpp
 )
 ad_add_nanobind_module(ad ${AD_SOURCES})
-target_link_libraries(ad PRIVATE m dl) # system libs where available
+ad_link_unix_system_libs(ad)
 # _ad_link_gurobi(ad)                      # optional GUROBI
 
 if(NOT CHOMP_BUILD_AD_ONLY)
@@ -377,9 +384,6 @@ if(NOT CHOMP_BUILD_AD_ONLY)
     src/ad/Variable.cpp
   )
   ad_use_cholmod(chomp)
-  # add python dir to ad module search path
-  target_include_directories(chomp PRIVATE ${Python3_INCLUDE_DIRS})
-  target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
 
   # _ad_link_gurobi(chomp)
   # # link openmp to chomp if available
@@ -388,10 +392,9 @@ if(NOT CHOMP_BUILD_AD_ONLY)
   endif()
 else()
   message(STATUS "CHOMP build option enabled: only building the AD module")
-  target_include_directories(ad PRIVATE ${Python3_INCLUDE_DIRS})
 endif()
 
-find_package(TBB COMPONENTS tbb)
+find_package(TBB COMPONENTS tbb QUIET)
 if(TARGET TBB::tbb)
   if(NOT CHOMP_BUILD_AD_ONLY)
     target_link_libraries(chomp PRIVATE TBB::tbb)
@@ -407,42 +410,28 @@ else()
 endif()
 
 if(BUILD_TESTING)
-  add_test(
-    NAME chomp_ip_smoke
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_ip_smoke.py
+  set(CHOMP_PYTHON_TESTS
+    chomp_ip_smoke tests/test_chomp_ip_smoke.py
+    chomp_binding_lifetimes tests/test_chomp_binding_lifetimes.py
+    chomp_convexity_suspect tests/test_chomp_convexity_suspect.py
+    chomp_sqp_smoke tests/test_chomp_sqp_smoke.py
   )
-  add_test(
-    NAME chomp_binding_lifetimes
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_binding_lifetimes.py
-  )
-  add_test(
-    NAME chomp_convexity_suspect
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_convexity_suspect.py
-  )
-  add_test(
-    NAME chomp_sqp_smoke
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_chomp_sqp_smoke.py
-  )
-  set_tests_properties(
-    chomp_ip_smoke
-    PROPERTIES ENVIRONMENT
-    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
-  )
-  set_tests_properties(
-    chomp_binding_lifetimes
-    PROPERTIES ENVIRONMENT
-    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
-  )
-  set_tests_properties(
-    chomp_convexity_suspect
-    PROPERTIES ENVIRONMENT
-    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
-  )
-  set_tests_properties(
-    chomp_sqp_smoke
-    PROPERTIES ENVIRONMENT
-    "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
-  )
+  list(LENGTH CHOMP_PYTHON_TESTS _chomp_test_items)
+  math(EXPR _chomp_test_last "${_chomp_test_items} - 1")
+  foreach(_test_index RANGE 0 ${_chomp_test_last} 2)
+    math(EXPR _path_index "${_test_index} + 1")
+    list(GET CHOMP_PYTHON_TESTS ${_test_index} _test_name)
+    list(GET CHOMP_PYTHON_TESTS ${_path_index} _test_path)
+    add_test(
+      NAME ${_test_name}
+      COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/${_test_path}
+    )
+    set_tests_properties(
+      ${_test_name}
+      PROPERTIES ENVIRONMENT
+      "PYTHONPATH=${PROJECT_BINARY_DIR}:${PROJECT_SOURCE_DIR}"
+    )
+  endforeach()
 endif()
 
 

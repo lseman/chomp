@@ -313,10 +313,16 @@ class SparseUpperCSC {
 
         std::vector<std::pair<IntT, FloatT>> col_workspace;
         col_workspace.reserve(std::max(static_cast<size_t>(64), nnz() / n));
+        const std::vector<IntT> oldAp = Ap;
+        std::vector<IntT> newAp(static_cast<size_t>(n) + 1, IntT{0});
+        std::vector<IntT> newAi;
+        std::vector<FloatT> newAx;
+        newAi.reserve(Ai.size());
+        newAx.reserve(Ax.size());
 
         for (IntT j = 0; j < n; ++j) {
-            const IntT p0 = Ap[static_cast<size_t>(j)];
-            const IntT p1 = Ap[static_cast<size_t>(j) + 1];
+            const IntT p0 = oldAp[static_cast<size_t>(j)];
+            const IntT p1 = oldAp[static_cast<size_t>(j) + 1];
 
             if (p0 > p1) QDLDL23_UNLIKELY
             throw InvalidMatrixError("Ap must be nondecreasing");
@@ -332,7 +338,7 @@ class SparseUpperCSC {
 
             // Prefetch next column's data
             if (j + 1 < n) QDLDL23_LIKELY {
-                    const IntT next_p0 = Ap[static_cast<size_t>(j + 1)];
+                    const IntT next_p0 = oldAp[static_cast<size_t>(j + 1)];
                     if (next_p0 < static_cast<IntT>(Ai.size())) {
                         detail::prefetch_read(
                             &Ai[static_cast<size_t>(next_p0)]);
@@ -355,7 +361,6 @@ class SparseUpperCSC {
                                    col_workspace.data() + col_workspace.size());
 
             // Coalesce duplicates
-            IntT w = p0;
             bool has_diag = false;
             for (size_t k = 0; k < col_workspace.size();) QDLDL23_LIKELY {
                     const IntT r = col_workspace[k].first;
@@ -369,27 +374,24 @@ class SparseUpperCSC {
                             ++k2;
                         }
 
-                    Ai[static_cast<size_t>(w)] = r;
-                    Ax[static_cast<size_t>(w)] = sum;
+                    newAi.push_back(r);
+                    newAx.push_back(sum);
                     if (r == j) QDLDL23_LIKELY
                     has_diag = true;
-                    ++w;
                     k = k2;
                 }
 
-            const IntT new_p1 = w;
-            const IntT drop = p1 - new_p1;
-            if (drop > 0) QDLDL23_UNLIKELY {
-                    for (IntT jj = j + 1; jj <= n; ++jj) {
-                        Ap[static_cast<size_t>(jj)] -= drop;
-                    }
-                }
+            newAp[static_cast<size_t>(j) + 1] =
+                static_cast<IntT>(newAi.size());
 
             if (require_diag && !has_diag) QDLDL23_UNLIKELY
             throw InvalidMatrixError("Missing explicit diagonal at column " +
                                      std::to_string(j));
         }
 
+        Ap.swap(newAp);
+        Ai.swap(newAi);
+        Ax.swap(newAx);
         Ai.shrink_to_fit();
         Ax.shrink_to_fit();
     }

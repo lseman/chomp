@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -91,35 +92,62 @@ static std::vector<IntT> postorder_etree_safe(const std::vector<IntT>& parent) {
     return post;
 }
 
-// ----- relaxed structural match on strictly-upper sets (two-pointer) -----
-// Compare S(j) = { i | i < j and B(i,j)!=0 } versus S(k) = { i | i < k and
-// B(i,k)!=0 }. Cuts drop (<= j) and (<= k), respectively. Accept if:
+// ----- build symbolic lower-factor row patterns from B and etree -----
+// L-pattern column j is the sorted set of descendants touched by the symbolic
+// reach of B(:,j), with rows > j. This is the structural object used for
+// supernode detection; comparing raw B columns misses fill and is too weak for
+// modern sparse factorization.
+template <typename FloatT = double, typename IntT = int32_t>
+static std::vector<std::vector<IntT>> symbolic_l_patterns(
+    const qdldl23::SparseUpperCSC<FloatT, IntT>& B,
+    const qdldl23::Symbolic<IntT>& S) {
+    const IntT n = B.n;
+    std::vector<std::vector<IntT>> patterns((size_t)n);
+    std::vector<IntT> mark((size_t)n, IntT{-1});
+    std::vector<IntT> stack;
+    stack.reserve((size_t)n);
+
+    for (IntT j = 0; j < n; ++j) {
+        stack.clear();
+        for (IntT p = B.Ap[(size_t)j]; p < B.Ap[(size_t)j + 1]; ++p) {
+            IntT i = B.Ai[(size_t)p];
+            if (i < 0 || i >= j) continue;
+            while (i != -1 && i < j && mark[(size_t)i] != j) {
+                mark[(size_t)i] = j;
+                stack.push_back(i);
+                i = S.etree[(size_t)i];
+            }
+        }
+        for (IntT c : stack) patterns[(size_t)c].push_back(j);
+    }
+
+    for (auto& out : patterns) {
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+    }
+    return patterns;
+}
+
+// ----- relaxed structural match on sorted row sets (two-pointer) -----
+// Compare factor-row sets S(j) and S(k). Accept if:
 //   - symmetric difference <= relax_abs
 //   - and symdiff / |S(j)| <= relax_rel      (if |S(j)| > 0)
 //   - and Jaccard >= tau
 template <typename IntT = i32>
-static inline bool relaxed_match_twoptr(const IntT* Aj, IntT lenj, IntT cutj,
-                                        const IntT* Ak, IntT lenk, IntT cutk,
+static inline bool relaxed_match_twoptr(const IntT* Aj, IntT lenj,
+                                        const IntT* Ak, IntT lenk,
                                         IntT relax_abs, double relax_rel,
                                         double tau) {
-    // advance to strictly-above cuts
-    IntT ij = 0;
-    while (ij < lenj && Aj[(size_t)ij] <= cutj) ++ij;
-    IntT ik = 0;
-    while (ik < lenk && Ak[(size_t)ik] <= cutk) ++ik;
-    const IntT nA = lenj - ij;
-    const IntT nB = lenk - ik;
-
     // exact fast-path
     if (relax_abs <= 0 && relax_rel <= 0.0) {
-        if (nA != nB) return false;
-        for (IntT t = 0; t < nA; ++t)
-            if (Aj[(size_t)(ij + t)] != Ak[(size_t)(ik + t)]) return false;
+        if (lenj != lenk) return false;
+        for (IntT t = 0; t < lenj; ++t)
+            if (Aj[(size_t)t] != Ak[(size_t)t]) return false;
         return true;
     }
 
     // two-pointer intersection/union
-    IntT inter = 0, a = ij, b = ik;
+    IntT inter = 0, a = 0, b = 0;
     while (a < lenj && b < lenk) {
         const IntT va = Aj[(size_t)a], vb = Ak[(size_t)b];
         if (va == vb) {
@@ -132,12 +160,12 @@ static inline bool relaxed_match_twoptr(const IntT* Aj, IntT lenj, IntT cutj,
             ++b;
         }
     }
-    const IntT uni = nA + nB - inter;
-    const IntT symd = nA + nB - 2 * inter;
+    const IntT uni = lenj + lenk - inter;
+    const IntT symd = lenj + lenk - 2 * inter;
 
     if (symd > relax_abs) return false;
-    if (nA > 0) {
-        const double rel = double(symd) / double(nA);
+    if (lenj > 0) {
+        const double rel = double(symd) / double(lenj);
         if (rel > relax_rel) return false;
     }
     const double jac = (uni == 0) ? 1.0 : double(inter) / double(uni);
@@ -157,30 +185,23 @@ static SupernodeInfo<IntT> identify_supernodes_qdldl(
     out.col2sn.assign((size_t)n, IntT{-1});
     out.etree = S.etree;  // copy for convenience/visibility
     out.post = postorder_etree_safe<IntT>(out.etree);
-
-    auto col_ptr = [&](IntT j) -> const IntT* {
-        return &B.Ai[(size_t)B.Ap[(size_t)j]];
-    };
-    auto col_len = [&](IntT j) -> IntT {
-        return B.Ap[(size_t)j + 1] - B.Ap[(size_t)j];
-    };
+    const auto lpat = symbolic_l_patterns<FloatT, IntT>(B, S);
 
     IntT j = 0, sid = 0;
     while (j < n) {
         IntT t = j;
-        // grow chain j..t while etree[t] == t+1 and strictly-upper sets match
-        // (relaxed)
+        // Grow chain j..t while etree[t] == t+1 and symbolic L row sets match
+        // (relaxed). This is a fundamental-supernode criterion with optional
+        // relaxed amalgamation.
         while (t + 1 < n) {
             if (out.etree[(size_t)t] != t + 1) break;  // must be a chain
 
-            const IntT* Sj = col_ptr(t);
-            const IntT Lj = col_len(t);
-            const IntT* Sk = col_ptr(t + 1);
-            const IntT Lk = col_len(t + 1);
+            const auto& Sj = lpat[(size_t)t];
+            const auto& Sk = lpat[(size_t)t + 1];
 
             const bool ok =
-                relaxed_match_twoptr<IntT>(Sj, Lj, t,      // drop rows <= t
-                                           Sk, Lk, t + 1,  // drop rows <= t+1
+                relaxed_match_twoptr<IntT>(Sj.data(), (IntT)Sj.size(),
+                                           Sk.data(), (IntT)Sk.size(),
                                            relax_abs, relax_rel, tau);
             if (!ok) break;
 

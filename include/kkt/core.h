@@ -23,14 +23,14 @@
 #include <utility>
 #include <vector>
 
-#include "../model.h"
+#include <model.h>
 
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
 
-#include "../linear_system/amd.h"
-#include "../linear_system/qdldl.h"
+#include <linear_system/amd.h>
+#include <linear_system/qdldl.h>
 #include "helper.h"
 
 #include <pybind11/pybind11.h>
@@ -621,6 +621,7 @@ public:
         if (!enable) return std::nullopt;
         // Example placeholder: identity
         // return qdldl23::Ordering<int32_t>::identity((int32_t)/*U.n*/ U.n);
+        return std::nullopt;
     }
 
     std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>>

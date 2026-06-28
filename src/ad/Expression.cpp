@@ -1,8 +1,8 @@
 // Expression.cpp — faster drop-in (API compatible, no Operator::Neg required)
-#include "../../include/ad/expression.h"
-#include "../../include/ad/ad_graph.h"
-#include "../../include/ad/operators.h"   // enum Operator
-#include "../../include/ad/variable.h"
+#include <ad/ad_graph.h>
+#include <ad/expression.h>
+#include <ad/operators.h>   // enum Operator
+#include <ad/variable.h>
 
 #include <bit>
 #include <cmath>

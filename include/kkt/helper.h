@@ -9,7 +9,7 @@
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
 
-#include "../linear_system/qdldl.h"
+#include <linear_system/qdldl.h>
 
 #include <algorithm>
 #include <cmath>
@@ -228,7 +228,7 @@ namespace kkt {
     return s;
 }
 
-[[nodiscard]] inline void simd_axpy(double alpha, const double *x, double *y, size_t n) noexcept {
+inline void simd_axpy(double alpha, const double *x, double *y, size_t n) noexcept {
     __m256d va = _mm256_set1_pd(alpha);
     size_t  i  = 0;
     for (; i + 4 <= n; i += 4) {
