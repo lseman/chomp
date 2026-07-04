@@ -34,7 +34,9 @@ struct PIQPSettings {
     // Safety
     double min_slack = 1e-16;
 
-    // (knobs kept for compatibility; unused here)
+    // Note: PIQP does not implement scaling internally (unlike OSQP).
+    // Scaling must be applied to P,q,A,b,G,h before calling setup().
+    // These fields are kept for API compatibility only.
     bool scale = false;
     int ruiz_iters = 4;
     double scale_eps = 1e-3;
@@ -303,10 +305,6 @@ class PIQPSolver {
         R.y = y_;
         R.z = z_;
         R.obj_val = obj_val;
-        if (m_ > 0) R.s = s_;
-        if (p_ > 0) R.y = y_;
-        if (m_ > 0) R.z = z_;
-        R.obj_val = obj_val;
         R.residuals.eq_inf =
             (p_ > 0) ? r_eq_final.lpNorm<Eigen::Infinity>() : 0.0;
         R.residuals.ineq_inf =
@@ -337,19 +335,19 @@ class PIQPSolver {
                            const std::optional<Vector>& s = std::nullopt,
                            bool copy_to_prox_centers = true) {
         if (x) {
-            assert(int(x->size()) == n_);
+            if (int(x->size()) != n_) return *this;
             x_ = *x;
         }
         if (p_ > 0 && y) {
-            assert(int(y->size()) == p_);
+            if (int(y->size()) != p_) return *this;
             y_ = *y;
         }
         if (m_ > 0 && z) {
-            assert(int(z->size()) == m_);
+            if (int(z->size()) != m_) return *this;
             z_ = z->array().max(settings_.min_slack);
         }
         if (m_ > 0 && s) {
-            assert(int(s->size()) == m_);
+            if (int(s->size()) != m_) return *this;
             s_ = s->array().max(settings_.min_slack);
         }
         if (copy_to_prox_centers) {
@@ -569,16 +567,12 @@ class PIQPSolver {
 
         // + Gᵀ W G (W diagonal from lambda_weights)
         if (m_ > 0 && lambda_weights.size() == m_) {
-            // build B = sqrt(W) * G and add BᵀB
+            // Compute sqrt once per row; apply to G and form Gᵀ W G = (sqrt(W)*G)ᵀ*(sqrt(W)*G)
+            Vector sqrt_w = lambda_weights.cwiseSqrt();
             SparseMatrix B = G_;
-            // Row scaling by sqrt(w_i)
             for (int k = 0; k < B.outerSize(); ++k) {
-                for (SparseMatrix::InnerIterator it(B, k); it; ++it) {
-                    const int r = it.row();
-                    const double s =
-                        std::sqrt(std::max(0.0, lambda_weights(r)));
-                    it.valueRef() *= s;
-                }
+                for (SparseMatrix::InnerIterator it(B, k); it; ++it)
+                    it.valueRef() *= sqrt_w(it.row());
             }
             Psi += B.transpose() * B;
         }

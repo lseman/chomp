@@ -60,31 +60,20 @@ struct LDLtDivFree {
         invD = D.cwiseInverse();
     }
 
-    // x = M^{-1} b
+    // x = M^{-1} b (reuses Eigen's solve when not needed for corner cases)
     inline Vec solve(const Vec& b) const {
-        Vec pb = P * b;
-        Vec y = pb;
-        L.template triangularView<Eigen::Lower>().solveInPlace(y);
-        Vec z = invD.cwiseProduct(y);  // division-free middle step
-        Vec w = z;
-        L.transpose().template triangularView<Eigen::Upper>().solveInPlace(w);
-        return P.transpose() * w;
+        if (!factorized) return Vec();
+        return ldlt.solve(b);  // direct solve via Eigen; simpler & faster
     }
 
     // X = M^{-1} B  (apply to multiple RHS columns)
     template <typename DenseMat>
     inline DenseMat solveMat(const DenseMat& B) const {
-        DenseMat PB = P * B;
-        DenseMat Y = PB;
-        // forward
-        L.template triangularView<Eigen::Lower>().solveInPlace(Y);
-        // middle: D^{-1} * Y
-        for (int j = 0; j < Y.cols(); ++j)
-            Y.col(j) = invD.cwiseProduct(Y.col(j));
-        // backward
-        DenseMat W = Y;
-        L.transpose().template triangularView<Eigen::Upper>().solveInPlace(W);
-        return P.transpose() * W;
+        if (!factorized) return DenseMat();
+        DenseMat out(B.rows(), B.cols());
+        for (int j = 0; j < B.cols(); ++j)
+            out.col(j) = ldlt.solve(B.col(j));
+        return out;
     }
 };
 
@@ -123,9 +112,10 @@ class KKTQuasiDef {
         return update_schur_complement(rho);
     }
 
-    // Fast update when only rho changes (no refactorization of H needed)
+    // Fast update when only rho changes (H stays constant; rebuild Schur only)
     bool update_rho(const Vec& new_rho) {
         if (new_rho.size() != m_) return false;
+        rho_base_ = new_rho;
         return update_schur_complement(new_rho);
     }
 
@@ -687,13 +677,24 @@ class SparseOSQPSolver {
         Settings cfg = cfg_;
         cfg.rho0 = cfg_.rho;
 
-        // ---- Optional modified Ruiz scaling
+        // ---- Optional modified Ruiz scaling (skip if problem looks balanced)
         Scaling S;
         S.reset(n, m);
         if (cfg.enable_ruiz) {
-            ruiz_equilibrate_modified(P, q, A, l, u, cfg.ruiz_max_iter,
-                                      cfg.ruiz_tol, P_use, q_use, A_use, l_use,
-                                      u_use, S);
+            // Quick heuristic: check P and A magnitudes to avoid redundant scaling
+            Scalar P_scale = 0.0, A_scale = 0.0;
+            for (int j = 0; j < std::min(5, n); ++j)
+                P_scale = std::max(P_scale, col_inf_norm(P, j));
+            for (int i = 0; i < std::min(5, m); ++i)
+                A_scale = std::max(A_scale, row_inf_norm(A, i));
+            bool needs_scaling = (P_scale > 0) && (A_scale > 0) &&
+                                 (std::max(P_scale, A_scale) /
+                                  std::min(P_scale, A_scale) > 10.0);
+            if (needs_scaling) {
+                ruiz_equilibrate_modified(P, q, A, l, u, cfg.ruiz_max_iter,
+                                          cfg.ruiz_tol, P_use, q_use, A_use,
+                                          l_use, u_use, S);
+            }
         }
 
         // ---- Initialize scaled iterates (bar-variables)
@@ -750,11 +751,10 @@ class SparseOSQPSolver {
             }
         }
 
-        // ---- Choose linear system path
-        // If KKT was slower for your workloads, feel free to set use_kkt =
-        // false;
-        const bool use_kkt = false;  // (m > 0) && (n > 80 || m > 80); //
-                                     // heuristic; tune or force false
+
+        // ---- Choose linear system path (heuristic: KKT better for dense constraints)
+        const bool use_kkt = (m > 0) && (n > 100 || m > 100) &&
+                             (Scalar(A_use.nonZeros()) / (n * m) > 0.1);
 
         // Builders / factorizations
         int refactor_count = 0;
@@ -826,12 +826,12 @@ class SparseOSQPSolver {
                 if (m > 0)
                     rhs += A_use.transpose() * (rho.cwiseProduct(zbar) - ybar);
                 x_new = NEF.solve(rhs);
-#if 1
+                // Iterative refinement (1 step) if residual is large
                 Vec r_lin = rhs - NEF.M * x_new;
-                if (r_lin.lpNorm<Eigen::Infinity>() > 0) {
-                    x_new += NEF.solve(r_lin);  // 1 correction step
+                if (r_lin.lpNorm<Eigen::Infinity>() > 1e-10 * rhs.lpNorm<Eigen::Infinity>()) {
+                    Vec dx_corr = NEF.solve(r_lin);
+                    x_new += dx_corr;
                 }
-#endif
             }
 
             // ===== Over-relaxation and (z,y) updates (scaled)
@@ -910,9 +910,8 @@ class SparseOSQPSolver {
             const bool bad_numeric =
                 (!std::isfinite(r.pri_inf) || !std::isfinite(r.dua_inf));
             if (bad_numeric || stall_cnt >= 3) {
-                // Soft restart: boost rho, reset dual, recenter z, cheap
-                // refactor
-                const Scalar rho_boost = 2.0;  // tune 1.5–5.0
+                // Soft restart: adaptive rho boost (stronger if dual stagnation)
+                Scalar rho_boost = (r.dua_inf > 10.0 * r.pri_inf) ? 5.0 : 2.0;
                 if (m > 0) {
                     rho *= rho_boost;
                     rho = rho.cwiseMax(cfg.rho_min).cwiseMin(cfg.rho_max);
