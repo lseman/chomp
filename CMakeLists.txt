@@ -16,10 +16,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Build options
 option(AD_ENABLE_OPENMP "Enable OpenMP" OFF)
-option(AD_ENABLE_PIQP "Build piqp_cpp Python bindings" OFF)
-option(AD_ENABLE_OSQP "Build osqp_cpp Python bindings" OFF)
-option(AD_ENABLE_QDLDL "Build qdldl_cpp Python bindings" OFF)
-option(AD_ENABLE_AMDQG "Build amdqg Python bindings" OFF)
 # option(AD_ENABLE_L1CORE   "Build l1core Python bindings"      OFF)
 option(AD_ENABLE_CHOLMOD "Enable HYKKT via SuiteSparse" OFF)
 option(AD_ENABLE_SPECTRA "Fetch and enable Spectra via CPM" OFF)
@@ -31,7 +27,10 @@ option(CHOMP_BUILD_AD_ONLY "Build only the AD module and skip the CHOMP module" 
 # Build optimisation options
 # ------------------------------------------------------------------
 option(AD_ENABLE_OPTIMISATIONS "Enable aggressive compiler optimisations (-O3, -march=native, -flto)" ON)
-option(AD_ENABLE_FAST_MATH "Enable -ffast-math (aggressive FP reassociation; may affect reproducibility)" ON)
+# OFF by default: -ffast-math implies -ffinite-math-only, which compiles the
+# solver's isfinite()/allFinite() NaN guards to no-ops (IP line search then
+# accepts NaN steps and reports false convergence).
+option(AD_ENABLE_FAST_MATH "Enable -ffast-math (aggressive FP reassociation; breaks NaN/Inf guards)" OFF)
 option(AD_ENABLE_MARCH_NATIVE "Enable -march=native (CPU-specific codegen; reduces portability)" ON)
 
 # ------------------------------------------------------------------
@@ -263,6 +262,7 @@ function(ad__common_target_setup tgt)
   target_include_directories(${tgt}
     PRIVATE
     "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/solvers"
     "${PROJECT_SOURCE_DIR}/third_party"
     "${PROJECT_SOURCE_DIR}/src"
   )
@@ -452,23 +452,6 @@ endif()
 
 # ad_add_pybind_module(simplex_core src/simplex_bindings.cpp)
 
-
-if(AD_ENABLE_PIQP)
-  ad_add_pybind_module(piqp_cpp src/piqp_bindings.cpp)
-endif()
-
-if(AD_ENABLE_AMDQG)
-  ad_add_pybind_module(amdqg src/amdqg_bindings.cpp)
-endif()
-
-if(AD_ENABLE_OSQP)
-  ad_add_pybind_module(osqp_cpp src/osqp_bindings.cpp)
-endif()
-
-if(AD_ENABLE_QDLDL)
-  ad_add_pybind_module(qdldl_cpp src/qdldl_bindings.cpp)
-endif()
-
 # target_include_directories(ad PRIVATE ${stdexec_SOURCE_DIR}/include)
 # target_include_directories(chomp PRIVATE ${stdexec_SOURCE_DIR}/include)
 
@@ -486,9 +469,6 @@ if(DEFINED Eigen3_VERSION)
 endif()
 message(STATUS "OpenMP enabled        : ${AD_ENABLE_OPENMP} (found: ${OpenMP_CXX_FOUND})")
 message(STATUS "Enable Spectra        : ${AD_ENABLE_SPECTRA}")
-message(STATUS "Build piqp_cpp        : ${AD_ENABLE_PIQP}")
-message(STATUS "Build osqp_cpp        : ${AD_ENABLE_OSQP}")
-message(STATUS "Build qdldl_cpp       : ${AD_ENABLE_QDLDL}")
 message(STATUS "Link GUROBI           : ${AD_ENABLE_GUROBI} (root: ${GUROBI_ROOT})")
 message(STATUS "CHOLMOD enabled       : ${AD_ENABLE_CHOLMOD} (use: ${AD_USE_CHOLMOD})")
 message(STATUS "Build only AD module  : ${CHOMP_BUILD_AD_ONLY}")

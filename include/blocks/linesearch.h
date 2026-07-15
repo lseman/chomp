@@ -480,8 +480,16 @@ class LineSearcher {
                 }
             }
 
-            // Evaluate f, cE, cI at x + α dx
+            // Evaluate f, cE, cI at x + α dx. A non-finite trial must be
+            // rejected here: the model returns no values at NaN inputs and
+            // value_or(0.0) downstream would make it look acceptable.
             dvec x_t = x + alpha * dx;
+            if (!x_t.allFinite() || (s_t.size() > 0 && !s_t.allFinite())) {
+                alpha *= cfg_.ls_backtrack;
+                ++it;
+                ++watchdog;
+                continue;
+            }
             double bound_log_sum_t = 0.0;
             if (!compute_bound_barrier_log_sum(x_t, bounds, barrier_eps,
                                                cfg_.ls_theta_eps,

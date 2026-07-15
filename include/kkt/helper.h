@@ -9,7 +9,7 @@
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
 
-#include <linear_system/qdldl.h>
+#include <linear_system/qdldl/qdldl.h>
 
 #include <algorithm>
 #include <cmath>

@@ -29,8 +29,9 @@
 #include <immintrin.h>
 #endif
 
-#include <linear_system/amd.h>
-#include <linear_system/qdldl.h>
+#include <linear_system/common/amd.h>
+#include <linear_system/qdldl/qdldl.h>
+#include <linear_system/supernodes.h>
 #include "helper.h"
 
 #include <pybind11/pybind11.h>
@@ -80,7 +81,10 @@ public:
         }();
 
         const bool use_smw = should_use_smw_direct(G, gamma, delta);
-        if (use_smw) { return solve_with_smw(W, G, Gt, r1, r2, delta, gamma, cfg); }
+        if (use_smw) {
+            return solve_with_smw(W, G, Gt, r1, r2, delta, gamma, cfg,
+                                  assemble_schur_if_m_small, use_prec);
+        }
 
         // ---------- δ₁ loop: make Hδ SPD or at least factorizable ----------
         double delta1 = delta;
@@ -96,16 +100,25 @@ public:
         for (int tries = 0; tries < 10; ++tries) {
             // Create K by adding delta1 to diagonal
             spmat K = K_base;
-            for (int i = 0; i < n; ++i) {
-                K.coeffRef(i, i) += delta1;
+            // Add delta1 to diagonal efficiently via inner iterators
+            for (int j = 0; j < n; ++j) {
+                bool found = false;
+                for (spmat::InnerIterator it(K, j); it; ++it) {
+                    if (it.row() == it.col()) {
+                        it.valueRef() += delta1;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    K.coeffRef(j, j) += delta1;
+                }
             }
             auto [solver_fn, is_spd] = create_or_refactor_solver_qdldl(K, cfg);
             if (solver_fn) {
                 Ks = std::move(solver_fn);
-                used_llt = is_spd;
-                if (!cfg.use_hvp || !model) {
-                    K_final = std::move(K); // Move instead of rebuilding
-                }
+                used_llt = (is_spd || true); // QDLDL handles SPD/indefinite
+                K_final = std::move(K);
                 break;
             }
             delta1 = std::min(cfg.delta_max, std::max(2.0 * delta1, 1e-9));
@@ -146,7 +159,9 @@ public:
 private:
     std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>> solve_with_smw(const spmat &W, const spmat &G, const spmat &Gt,
                                                                          const dvec &r1, const dvec &r2, double delta,
-                                                                         double gamma, const KKTConfig &cfg) const {
+                                                                         double gamma, const KKTConfig &cfg,
+                                                                         bool assemble_schur_if_m_small,
+                                                                         bool use_prec) const {
         const int n = W.rows(), m = G.rows();
 
         // Build base system H = W + δI (well-conditioned)
@@ -163,8 +178,8 @@ private:
         dmat Z(n, m);
         for (int j = 0; j < m; ++j) {
             dvec ej = dvec::Zero(n);
-            // Extract column j of G^T (row j of G)
-            for (spmat::InnerIterator it(G, j); it; ++it) { ej[it.col()] = it.value(); }
+            // Extract column j of G^T
+            for (spmat::InnerIterator it(Gt, j); it; ++it) { ej[it.row()] = it.value(); }
             Z.col(j) = H_solver(ej);
         }
 
@@ -176,23 +191,32 @@ private:
         if (S_ldlt.info() != Eigen::Success) { throw std::runtime_error("SMW: Failed to factor small system"); }
 
         // Step 4: SMW solver function
-        auto smw_solve = [H_solver, &G, &Z, &S_ldlt, gamma](const dvec &b) -> dvec {
+        auto smw_solve = [H_solver, G, Z, S_ldlt](const dvec &b) -> dvec {
             dvec Hb = H_solver(b); // H^{-1} * b
             dvec GHb = G * Hb; // G * H^{-1} * b
             dvec y = S_ldlt.solve(GHb); // S^{-1} * G * H^{-1} * b
             return Hb - Z * y; // H^{-1}*b - H^{-1}*G^T*S^{-1}*G*H^{-1}*b
         };
 
-        // Step 5: Solve main system
+        // Use SMW only to apply K^{-1}.  The equality-constrained KKT
+        // system still requires the same Schur solve as the regular HYKKT
+        // path; K^{-1}s by itself is only a quadratic-penalty solution.
         dvec s = r1;
         multiply_Gt_v_inplace(Gt, r2, s, gamma); // s = r1 + γ*G^T*r2
-        dvec dx = smw_solve(s);
+        const dvec rhs_s = G * smw_solve(s) - r2;
 
-        // Step 6: Solve for multipliers
-        dvec dy = (G * dx - r2) / gamma;
+        dvec dy;
+        const bool small_m = assemble_schur_if_m_small &&
+                             (m <= std::max(1, int(cfg.schur_dense_cutoff * n)));
+        if (small_m) {
+            dy = solve_schur_dense_with_delta2(G, Gt, smw_solve, rhs_s, cfg);
+        } else {
+            const spmat K = build_augmented_system_inplace(W, G, Gt, delta, gamma);
+            dy = solve_schur_iterative_with_delta2(G, Gt, smw_solve, rhs_s, K, cfg, use_prec);
+        }
+        const dvec dx = smw_solve(s - Gt * dy);
 
-        // Step 7: Create reusable solver
-        auto reusable = std::make_shared<SMWReusable>(G, Gt, H_solver, Z, S_ldlt, gamma);
+        auto reusable = create_reusable_solver(G, Gt, smw_solve, gamma, cfg);
         return std::make_tuple(dx, dy, reusable);
     }
 
@@ -209,43 +233,10 @@ private:
                (G.nonZeros() < 2 * n); // Sparse constraints
     }
 
-    struct SMWReusable final : KKTReusable {
-        spmat G, Gt;
-        std::function<dvec(const dvec &)> H_solver;
-        dmat Z;
-        Eigen::LDLT<dmat> S_ldlt;
-        double gamma;
-
-        SMWReusable(spmat G_in, spmat Gt_in, std::function<dvec(const dvec &)> H_in, dmat Z_in, Eigen::LDLT<dmat> S_in,
-                    double gamma_in)
-            : G(std::move(G_in)), Gt(std::move(Gt_in)), H_solver(std::move(H_in)), Z(std::move(Z_in)), S_ldlt(std::move(S_in)),
-              gamma(gamma_in) {}
-
-        std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double /*tol*/,
-                                    int /*maxit*/) override {
-            if (!r2n) throw std::invalid_argument("SMW reuse needs r2");
-            // Build RHS
-            dvec s = r1n;
-            multiply_Gt_v_inplace_static(Gt, *r2n, s, gamma);
-            // SMW solve
-            dvec Hs = H_solver(s);
-            dvec GHs = G * Hs;
-            dvec y = S_ldlt.solve(GHs);
-            dvec dx = Hs - Z * y;
-            dvec dy = (G * dx - *r2n) / gamma;
-            return {dx, dy};
-        }
-
-    private:
-        static void multiply_Gt_v_inplace_static(const spmat &Gt, const dvec &v, dvec &result, double alpha) {
-            result.noalias() += alpha * (Gt * v);
-        }
-    };
-
     // ======================= symbolic cache ==========================
     struct QDLDLCache {
         int n{-1};
-        bool use_amd{false};
+        std::string sym_ordering;
         // ordering
         qdldl23::Ordering<int32_t> ord; // identity or AMD
         bool have_ord{false};
@@ -255,6 +246,8 @@ private:
         // numeric factors for permuted matrix
         qdldl23::LDL32 F;
         bool have_F{false};
+        std::vector<int> pattern_Ap;
+        std::vector<int> pattern_Ai;
     };
     mutable std::optional<QDLDLCache> qcache_;
 
@@ -322,10 +315,10 @@ private:
         const bool use_my_amd = (cfg.sym_ordering == "amd_custom");
 
         // (Re)alloc cache on size/order change
-        if (!qcache_ || qcache_->n != n || qcache_->use_amd != (use_eigen_amd || use_my_amd)) {
+        if (!qcache_ || qcache_->n != n || qcache_->sym_ordering != cfg.sym_ordering) {
             qcache_.emplace();
             qcache_->n = n;
-            qcache_->use_amd = (use_eigen_amd || use_my_amd);
+            qcache_->sym_ordering = cfg.sym_ordering;
             qcache_->have_ord = false;
             qcache_->have_S = false;
             qcache_->have_F = false;
@@ -333,6 +326,16 @@ private:
 
         // Convert to upper CSC for qdldl
         SparseD32 A = eigen_to_upper_csc(K);
+
+        // Size alone is not a valid symbolic-cache key.  A same-sized KKT
+        // matrix may have a different Hessian/Jacobian sparsity pattern.
+        if (qcache_->pattern_Ap != A.Ap || qcache_->pattern_Ai != A.Ai) {
+            qcache_->pattern_Ap = A.Ap;
+            qcache_->pattern_Ai = A.Ai;
+            qcache_->have_ord = false;
+            qcache_->have_S = false;
+            qcache_->have_F = false;
+        }
 
         // ---------- Ordering: your AMD (preferred), Eigen AMD, or identity ----------
         if (!qcache_->have_ord) {
@@ -389,11 +392,12 @@ private:
             for (spmat::InnerIterator it(Gt, j); it; ++it) rhs[it.row()] = it.value();
             Z.col(j) = Ks(rhs);
         }
-        dmat S = (G * Z).selfadjointView<Eigen::Lower>();
+        const dmat S_base = (G * Z).selfadjointView<Eigen::Lower>();
 
         // Try LLT; add δ₂ I if needed
         double delta2 = 0.0;
         for (int tries = 0; tries < 5; ++tries) {
+            dmat S = S_base;
             if (delta2 > 0.0) S.diagonal().array() += delta2;
             Eigen::LLT<dmat> llt(S.selfadjointView<Eigen::Lower>());
             if (llt.info() == Eigen::Success) { return llt.solve(rhs_s); }

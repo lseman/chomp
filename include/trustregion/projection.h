@@ -7,7 +7,8 @@
 #include <cmath>
 
 #include <definitions.h>
-#include <linear_system/qdldl.h>
+#include <linear_system/qdldl/qdldl.h>
+#include <linear_system/common/sparse_csc.h>
 
 // -----------------------------------------------------------------------------
 // AAT cached solve for projection — QDLDL version (robust; int32 guaranteed)
@@ -40,7 +41,7 @@ inline dvec solve_sym_spd_qdldl(const dmat& N_in, const dvec& b_in) {
             S.Ax[(size_t)p] = N_in(i, j);
         }
     }
-    S.finalize_upper_inplace(/*require_diag=*/true);
+    linsys::finalize_upper_inplace(S, /*require_diag=*/true);
 
     try {
         const Symb32 sym = analyze_fast(S);
@@ -119,7 +120,7 @@ inline dvec solve_sym_spd_qdldl(const dmat& N_in, const dvec& b_in) {
             IntT p = P.Ap[(size_t)j];
             for (IntT i = 0; i <= j; ++i) P.Ai[(size_t)p++] = i;
         }
-        P.finalize_upper_inplace(/*require_diag=*/true);
+        linsys::finalize_upper_inplace(P, /*require_diag=*/true);
 
         C.S = analyze_fast(P);
         C.pattern = std::move(P);

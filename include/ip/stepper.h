@@ -418,7 +418,12 @@ public:
                 st = *ip_state_opt;
             } else {
                 st = state_from_model_(x);
-                if (lam.size() == st.lam.size()) st.lam = lam.cwiseMax(0.0);
+                // Only adopt caller multipliers if they carry information; an
+                // all-zero lam would zero Sigma_s and complementarity, driving
+                // mu_target to mu_min and producing NaN steps in the MG solve.
+                // IP multipliers must stay strictly positive.
+                if (lam.size() == st.lam.size() && lam.size() > 0 && lam.maxCoeff() > 0.0)
+                    st.lam = lam.cwiseMax(1e-8);
                 if (nu.size() == st.nu.size()) st.nu = nu;
             }
         }
@@ -846,13 +851,22 @@ public:
             for (int i = 0; i < s.size(); ++i) { d_phi -= mu * ds[i] / std::max(s[i] + sh, consts::EPS_POS); }
         }
 
-        // Line search must use the same shifted barrier (tau_shift) as the rest
-        // of the IP step; otherwise its FTB pins s at 0 and stalls.
-        auto ls_res = ls_->search(m_, x, dx, (mI ? ds : dvec()), (mI ? s : dvec()), mu, d_phi, E.theta, alpha_max,
-                                  tau_shift, use_shifted);
-        alpha       = std::get<0>(ls_res);
-        ls_iters    = std::get<1>(ls_res);
-        needs_restoration = std::get<2>(ls_res);
+        const bool step_finite = dx.allFinite() && dzL.allFinite() && dzU.allFinite() &&
+                                 (mI == 0 || (ds.allFinite() && dlam.allFinite())) && (mE == 0 || dnu.allFinite());
+        if (!step_finite) {
+            // A NaN/Inf step from the KKT solve must never reach the line
+            // search or the accept path; route it to restoration.
+            alpha             = 0.0;
+            needs_restoration = true;
+        } else {
+            // Line search must use the same shifted barrier (tau_shift) as the rest
+            // of the IP step; otherwise its FTB pins s at 0 and stalls.
+            auto ls_res = ls_->search(m_, x, dx, (mI ? ds : dvec()), (mI ? s : dvec()), mu, d_phi, E.theta, alpha_max,
+                                      tau_shift, use_shifted);
+            alpha       = std::get<0>(ls_res);
+            ls_iters    = std::get<1>(ls_res);
+            needs_restoration = std::get<2>(ls_res);
+        }
         IP_LAP("funnel line search");
 
         // -------------------- Restoration path --------------------
@@ -876,17 +890,22 @@ public:
             if (nuv.size() == st.nu.size()) st.nu = nuv;
             reset_kkt_cache_();
 
+            // Report true KKT measures at the restoration point; zeroed
+            // metrics would make the outer solve loop declare convergence.
+            EvalPack Er   = eval_all_at(x_new, n, mI, mE);
+            dvec     r_dr = build_r_d(Er, st.lam, st.nu, st.zL, st.zU);
+
             SolverInfo info;
             info.mode          = "ip_restoration";
             info.step_norm     = (x_new - x).norm();
             info.accepted      = true;
             info.converged     = false;
-            info.f             = 0.0;
-            info.theta         = m_->constraint_violation(x_new);
-            info.stat          = 0.0;
-            info.ineq          = 0.0;
-            info.eq            = 0.0;
-            info.comp          = 0.0;
+            info.f             = Er.f;
+            info.theta         = Er.theta;
+            info.stat          = safe_inf_norm(r_dr);
+            info.ineq          = (mI > 0) ? safe_inf_norm((Er.cI.array().max(0.0)).matrix()) : 0.0;
+            info.eq            = (mE > 0) ? safe_inf_norm(Er.cE) : 0.0;
+            info.comp          = detail::complementarity(st.s, st.lam, st.mu, tau_shift, use_shifted);
             info.ls_iters      = ls_iters;
             info.alpha         = 0.0;
             info.rho           = 0.0;

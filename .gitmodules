@@ -1,0 +1,3 @@
+[submodule "solvers"]
+	path = solvers
+	url = https://github.com/lseman/solvers

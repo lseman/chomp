@@ -1,7 +1,7 @@
 /*
  * Standalone C++ test suite for linear_system tools (qdldl, supernodes, amd).
  * Header-only, no external bindings needed.
- * Build from /data/dev/chomp: g++ -O3 -std=c++23 -I./include tests/test_linear_system_standalone.cpp -o test_ls
+ * Build from /data/dev/chomp: g++ -O3 -std=c++23 -I./include -I./include/solvers tests/test_linear_system_standalone.cpp -o test_ls
  */
 
 #include <cassert>
