@@ -29,18 +29,17 @@
 #include <immintrin.h>
 #endif
 
+#include "helper.h"
 #include <linear_system/common/amd.h>
 #include <linear_system/qdldl/qdldl.h>
 #include <linear_system/supernodes.h>
-#include "helper.h"
 
-#include <pybind11/pybind11.h>
 #include <pybind11/eigen.h>
-#include <pybind11/stl.h>
 #include <pybind11/functional.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
-
 
 namespace kkt {
 
@@ -60,11 +59,11 @@ public:
                      std::unordered_map<std::string, dvec> &cache, double delta, std::optional<double> gamma_user,
                      bool assemble_schur_if_m_small, bool use_prec) override {
         if (!Gopt || !r2opt) throw std::invalid_argument("HYKKT requires equality constraints");
-        model = model_in; // store model pointer
-        const auto &G = *Gopt;
+        model          = model_in; // store model pointer
+        const auto &G  = *Gopt;
         const spmat Gt = G.transpose(); // Compute transpose once
         const auto &r2 = *r2opt;
-        const int n = W.rows(), m = G.rows();
+        const int   n = W.rows(), m = G.rows();
 
         // Preallocate work buffers
         wk_.ensure(n, m);
@@ -75,15 +74,14 @@ public:
             if (!cfg.adaptive_gamma) return compute_gamma_heuristic(W, G, delta);
             const std::string key = "gamma_" + std::to_string(n) + "_" + std::to_string(m);
             if (auto it = cache.find(key); it != cache.end()) return it->second[0];
-            double g = compute_adaptive_gamma(W, G, delta);
+            double g   = compute_adaptive_gamma(W, G, delta);
             cache[key] = dvec::Constant(1, g);
             return g;
         }();
 
         const bool use_smw = should_use_smw_direct(G, gamma, delta);
         if (use_smw) {
-            return solve_with_smw(W, G, Gt, r1, r2, delta, gamma, cfg,
-                                  assemble_schur_if_m_small, use_prec);
+            return solve_with_smw(W, G, Gt, r1, r2, delta, gamma, cfg, assemble_schur_if_m_small, use_prec);
         }
 
         // ---------- δ₁ loop: make Hδ SPD or at least factorizable ----------
@@ -91,8 +89,8 @@ public:
         if (delta1 == 0.0) delta1 = std::max(1e-12, cfg.delta_min); // gentle start
 
         std::function<dvec(const dvec &)> Ks; // K^{-1}(.)
-        bool used_llt = false;
-        spmat K_final;
+        bool                              used_llt = false;
+        spmat                             K_final;
 
         // Build base K without delta1
         spmat K_base = build_augmented_system_inplace(W, G, Gt, 0.0, gamma);
@@ -110,15 +108,13 @@ public:
                         break;
                     }
                 }
-                if (!found) {
-                    K.coeffRef(j, j) += delta1;
-                }
+                if (!found) { K.coeffRef(j, j) += delta1; }
             }
             auto [solver_fn, is_spd] = create_or_refactor_solver_qdldl(K, cfg);
             if (solver_fn) {
-                Ks = std::move(solver_fn);
+                Ks       = std::move(solver_fn);
                 used_llt = (is_spd || true); // QDLDL handles SPD/indefinite
-                K_final = std::move(K);
+                K_final  = std::move(K);
                 break;
             }
             delta1 = std::min(cfg.delta_max, std::max(2.0 * delta1, 1e-9));
@@ -134,7 +130,7 @@ public:
         const dvec rhs_s = G * Ks(s) - r2;
 
         // ---------- Solve Schur (dense for small m, else iterative) ----------
-        dvec dy;
+        dvec       dy;
         const bool small_m = assemble_schur_if_m_small && (m <= std::max(1, int(cfg.schur_dense_cutoff * n)));
         if (small_m) {
             dy = solve_schur_dense_with_delta2(G, Gt, Ks, rhs_s, cfg);
@@ -157,11 +153,9 @@ public:
     }
 
 private:
-    std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>> solve_with_smw(const spmat &W, const spmat &G, const spmat &Gt,
-                                                                         const dvec &r1, const dvec &r2, double delta,
-                                                                         double gamma, const KKTConfig &cfg,
-                                                                         bool assemble_schur_if_m_small,
-                                                                         bool use_prec) const {
+    std::tuple<dvec, dvec, std::shared_ptr<KKTReusable>>
+    solve_with_smw(const spmat &W, const spmat &G, const spmat &Gt, const dvec &r1, const dvec &r2, double delta,
+                   double gamma, const KKTConfig &cfg, bool assemble_schur_if_m_small, bool use_prec) const {
         const int n = W.rows(), m = G.rows();
 
         // Build base system H = W + δI (well-conditioned)
@@ -192,10 +186,10 @@ private:
 
         // Step 4: SMW solver function
         auto smw_solve = [H_solver, G, Z, S_ldlt](const dvec &b) -> dvec {
-            dvec Hb = H_solver(b); // H^{-1} * b
-            dvec GHb = G * Hb; // G * H^{-1} * b
-            dvec y = S_ldlt.solve(GHb); // S^{-1} * G * H^{-1} * b
-            return Hb - Z * y; // H^{-1}*b - H^{-1}*G^T*S^{-1}*G*H^{-1}*b
+            dvec Hb  = H_solver(b);       // H^{-1} * b
+            dvec GHb = G * Hb;            // G * H^{-1} * b
+            dvec y   = S_ldlt.solve(GHb); // S^{-1} * G * H^{-1} * b
+            return Hb - Z * y;            // H^{-1}*b - H^{-1}*G^T*S^{-1}*G*H^{-1}*b
         };
 
         // Use SMW only to apply K^{-1}.  The equality-constrained KKT
@@ -205,14 +199,13 @@ private:
         multiply_Gt_v_inplace(Gt, r2, s, gamma); // s = r1 + γ*G^T*r2
         const dvec rhs_s = G * smw_solve(s) - r2;
 
-        dvec dy;
-        const bool small_m = assemble_schur_if_m_small &&
-                             (m <= std::max(1, int(cfg.schur_dense_cutoff * n)));
+        dvec       dy;
+        const bool small_m = assemble_schur_if_m_small && (m <= std::max(1, int(cfg.schur_dense_cutoff * n)));
         if (small_m) {
             dy = solve_schur_dense_with_delta2(G, Gt, smw_solve, rhs_s, cfg);
         } else {
             const spmat K = build_augmented_system_inplace(W, G, Gt, delta, gamma);
-            dy = solve_schur_iterative_with_delta2(G, Gt, smw_solve, rhs_s, K, cfg, use_prec);
+            dy            = solve_schur_iterative_with_delta2(G, Gt, smw_solve, rhs_s, K, cfg, use_prec);
         }
         const dvec dx = smw_solve(s - Gt * dy);
 
@@ -227,25 +220,25 @@ private:
         // 2. Good base conditioning (delta provides stability)
         // 3. Reasonable gamma (not too large)
         // 4. Sparse constraint matrix
-        return (m < n / 6) && // At least 6:1 variable to constraint ratio
-               (delta > 1e-10) && // Base system is well-regularized
-               (gamma < 1000.0) && // Gamma not too large
+        return (m < n / 6) &&          // At least 6:1 variable to constraint ratio
+               (delta > 1e-10) &&      // Base system is well-regularized
+               (gamma < 1000.0) &&     // Gamma not too large
                (G.nonZeros() < 2 * n); // Sparse constraints
     }
 
     // ======================= symbolic cache ==========================
     struct QDLDLCache {
-        int n{-1};
+        int         n{-1};
         std::string sym_ordering;
         // ordering
         qdldl23::Ordering<int32_t> ord; // identity or AMD
-        bool have_ord{false};
+        bool                       have_ord{false};
         // symbolic (for permuted matrix)
         qdldl23::Symb32 Sperm;
-        bool have_S{false};
+        bool            have_S{false};
         // numeric factors for permuted matrix
-        qdldl23::LDL32 F;
-        bool have_F{false};
+        qdldl23::LDL32   F;
+        bool             have_F{false};
         std::vector<int> pattern_Ap;
         std::vector<int> pattern_Ai;
     };
@@ -261,10 +254,10 @@ private:
 
     double compute_adaptive_gamma(const spmat &W, const spmat &G, double delta) const {
         // Cache norms if possible, but for now assume single call
-        const double Wn = rowsum_inf_norm(W) + delta;
-        const double Gn = rowsum_inf_norm(G);
+        const double Wn       = rowsum_inf_norm(W) + delta;
+        const double Gn       = rowsum_inf_norm(G);
         const double cond_est = estimate_condition_number(W, delta);
-        double g = std::max(1.0, Wn / std::max(1.0, Gn * Gn));
+        double       g        = std::max(1.0, Wn / std::max(1.0, Gn * Gn));
         if (cond_est > 1e12)
             g *= 10.0;
         else if (cond_est < 1e6)
@@ -307,21 +300,21 @@ private:
     };
     mutable Work wk_;
 
-    std::pair<std::function<dvec(const dvec &)>, bool> create_or_refactor_solver_qdldl(const spmat &K,
-                                                                                      const KKTConfig &cfg) const {
+    std::pair<std::function<dvec(const dvec &)>, bool> create_or_refactor_solver_qdldl(const spmat     &K,
+                                                                                       const KKTConfig &cfg) const {
         using namespace qdldl23;
-        const int n = K.rows();
+        const int  n             = K.rows();
         const bool use_eigen_amd = (cfg.sym_ordering == "amd");
-        const bool use_my_amd = (cfg.sym_ordering == "amd_custom");
+        const bool use_my_amd    = (cfg.sym_ordering == "amd_custom");
 
         // (Re)alloc cache on size/order change
         if (!qcache_ || qcache_->n != n || qcache_->sym_ordering != cfg.sym_ordering) {
             qcache_.emplace();
-            qcache_->n = n;
+            qcache_->n            = n;
             qcache_->sym_ordering = cfg.sym_ordering;
-            qcache_->have_ord = false;
-            qcache_->have_S = false;
-            qcache_->have_F = false;
+            qcache_->have_ord     = false;
+            qcache_->have_S       = false;
+            qcache_->have_F       = false;
         }
 
         // Convert to upper CSC for qdldl
@@ -332,9 +325,9 @@ private:
         if (qcache_->pattern_Ap != A.Ap || qcache_->pattern_Ai != A.Ai) {
             qcache_->pattern_Ap = A.Ap;
             qcache_->pattern_Ai = A.Ai;
-            qcache_->have_ord = false;
-            qcache_->have_S = false;
-            qcache_->have_F = false;
+            qcache_->have_ord   = false;
+            qcache_->have_S     = false;
+            qcache_->have_F     = false;
         }
 
         // ---------- Ordering: your AMD (preferred), Eigen AMD, or identity ----------
@@ -345,7 +338,7 @@ private:
                                                        /*dense_cutoff=*/
                                                        (cfg.amd_dense_cutoff_has_value ? cfg.amd_dense_cutoff : -1));
             } else if (use_eigen_amd) {
-                Eigen::AMDOrdering<int> amd;
+                Eigen::AMDOrdering<int>                                       amd;
                 Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> P(n);
                 P.setIdentity(n);
                 amd(K, P);
@@ -360,13 +353,13 @@ private:
 
         // Analyze once on permuted structure
         if (!qcache_->have_S) {
-            const auto B = permute_symmetric_upper(A, qcache_->ord);
-            qcache_->Sperm = analyze_fast(B);
+            const auto B    = permute_symmetric_upper(A, qcache_->ord);
+            qcache_->Sperm  = analyze_fast(B);
             qcache_->have_S = true;
         }
 
         // Numeric refactorization with current values
-        qcache_->F = refactorize_with_ordering(A, qcache_->Sperm, qcache_->ord);
+        qcache_->F      = refactorize_with_ordering(A, qcache_->Sperm, qcache_->ord);
         qcache_->have_F = true;
 
         // Solve closure using the cached factors + ordering
@@ -382,7 +375,7 @@ private:
     dvec solve_schur_dense_with_delta2(const spmat &G, const spmat &Gt, const std::function<dvec(const dvec &)> &Ks,
                                        const dvec &rhs_s, const KKTConfig &cfg) const {
         const int n = G.cols(), m = G.rows();
-        dmat Z(n, m);
+        dmat      Z(n, m);
         Z.setZero();
         dvec rhs(n);
 
@@ -416,7 +409,7 @@ private:
         // Base operator: S y = G K^{-1} Gᵀ y
         LinOp S_op{m, [&](const dvec &y, dvec &out) { out = G * Ks(Gt * y); }};
 
-        std::optional<dvec> JacobiMinv;
+        std::optional<dvec>        JacobiMinv;
         std::optional<SSORPrecond> ssor;
         if (use_prec) {
             // Build preconditioner for Ŝ = G * diag(K^{-1}) * Gᵀ
@@ -444,9 +437,9 @@ private:
         double delta2 = std::max(1e-12, cfg.schur_delta2_min);
         for (int tries = 0; tries < 5; ++tries) {
             LinOp Sshift{m, [&](const dvec &v, dvec &out) {
-                out = G * Ks(Gt * v);
-                out.noalias() += delta2 * v;
-            }};
+                             out = G * Ks(Gt * v);
+                             out.noalias() += delta2 * v;
+                         }};
             std::tie(y, info) =
                 cg(Sshift, rhs_s, JacobiMinv, cfg.cg_tol, cfg.cg_maxit2, std::nullopt, ssor, cfg.use_simd);
             if (info.converged) return y;
@@ -456,29 +449,30 @@ private:
     }
 
     // ==================== reusable wrapper ================
-    std::shared_ptr<KKTReusable> create_reusable_solver(const spmat &G, const spmat &Gt, const std::function<dvec(const dvec &)> &Ks,
-                                                        double gamma, const KKTConfig &cfg) const {
+    std::shared_ptr<KKTReusable> create_reusable_solver(const spmat &G, const spmat &Gt,
+                                                        const std::function<dvec(const dvec &)> &Ks, double gamma,
+                                                        const KKTConfig &cfg) const {
         struct Reuse final : KKTReusable {
-            spmat G, Gt;
+            spmat                             G, Gt;
             std::function<dvec(const dvec &)> Ks;
-            double gamma;
-            KKTConfig cfg;
-            ModelC *model_ptr;
+            double                            gamma;
+            KKTConfig                         cfg;
+            ModelC                           *model_ptr;
 
             Reuse(spmat Gin, spmat Gtin, std::function<dvec(const dvec &)> Ksin, double g, KKTConfig c, ModelC *m)
-                : G(std::move(Gin)), Gt(std::move(Gtin)), Ks(std::move(Ksin)), gamma(g), cfg(std::move(c)), model_ptr(m) {}
+                : G(std::move(Gin)), Gt(std::move(Gtin)), Ks(std::move(Ksin)), gamma(g), cfg(std::move(c)),
+                  model_ptr(m) {}
 
             std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double tol,
                                         int maxit) override {
                 if (!r2n) throw std::invalid_argument("HYKKT::Reuse needs r2");
-                const dvec s = r1n + gamma * (Gt * (*r2n));
+                const dvec s     = r1n + gamma * (Gt * (*r2n));
                 const dvec rhs_s = G * Ks(s) - (*r2n);
 
                 // Use more relaxed tolerances for the reusable path
-                double reuse_tol = std::max(tol, 1e-8);
-                int reuse_maxit = std::max(maxit, 100);
-                LinOp S_op{static_cast<int>(G.rows()),
-                           [&](const dvec &y, dvec &out) { out = G * Ks(Gt * y); }};
+                double reuse_tol   = std::max(tol, 1e-8);
+                int    reuse_maxit = std::max(maxit, 100);
+                LinOp  S_op{static_cast<int>(G.rows()), [&](const dvec &y, dvec &out) { out = G * Ks(Gt * y); }};
                 auto [dy, info] =
                     cg(S_op, rhs_s, std::nullopt, reuse_tol, reuse_maxit, std::nullopt, std::nullopt, cfg.use_simd);
                 if (info.converged) {
@@ -499,16 +493,16 @@ private:
                 double d2 = std::max(1e-10, cfg.schur_delta2_min);
                 for (int shift_tries = 0; shift_tries < 3; ++shift_tries) {
                     LinOp Sshift{static_cast<int>(G.rows()), [&](const dvec &v, dvec &out) {
-                        out = G * Ks(Gt * v);
-                        out.noalias() += d2 * v;
-                    }};
+                                     out = G * Ks(Gt * v);
+                                     out.noalias() += d2 * v;
+                                 }};
                     std::tie(dy, info) = cg(Sshift, rhs_s, std::nullopt, reuse_tol, reuse_maxit, std::nullopt,
                                             std::nullopt, cfg.use_simd);
                     if (info.converged) {
                         const dvec dx = Ks(s - Gt * dy);
                         return {dx, dy};
                     }
-                    d2 *= 100.0; // Increase regularization more aggressively
+                    d2 *= 100.0;       // Increase regularization more aggressively
                     reuse_tol *= 10.0; // Further relax tolerance
                 }
 
@@ -528,7 +522,7 @@ private:
                         S.diagonal().array() += std::max(d2, 1e-8); // Add regularization
                         Eigen::LDLT<dmat> ldlt(S);
                         if (ldlt.info() == Eigen::Success) {
-                            dy = ldlt.solve(rhs_s);
+                            dy            = ldlt.solve(rhs_s);
                             const dvec dx = Ks(s - Gt * dy);
                             return {dx, dy};
                         }
@@ -543,7 +537,7 @@ private:
         return std::make_shared<Reuse>(G, Gt, Ks, gamma, cfg, model);
     }
 };
-// ------------------------------ LDL (QDLDL) ---------------------------
+
 // ------------------------------ LDL (QDLDL) ---------------------------
 class LDLStrategy final : public KKTStrategy {
 public:

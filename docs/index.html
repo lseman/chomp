@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CHOMP — Modern NLP Solver (SQP • Interior-Point • DFO-L1 • Auto)</title>
+  <title>CHOMP — Modern NLP Solver (SQP • Interior-Point • Auto)</title>
   <meta name="description"
     content="CHOMP is an open-source nonlinear optimization library with SQP, interior-point, derivative-free trust-region methods, and automatic differentiation." />
   <meta property="og:title" content="CHOMP — Nonlinear Optimization Library" />
@@ -509,7 +509,6 @@
         <a class="nav-link" href="#get">Get</a>
         <a class="nav-link" href="#algorithms">Algorithms</a>
         <a class="nav-link" href="#ad">AutoDiff</a>
-        <a class="nav-link" href="#l1">DFO-L1</a>
         <a class="nav-link" href="#usage">Usage</a>
         <a class="nav-link" href="#api">API</a>
         <a class="nav-link" href="#examples">Examples</a>
@@ -550,7 +549,7 @@
 
           <p class="mt-8 text-lg md:text-xl text-slate-700 max-w-3xl leading-8">
             A research-focused solver library for constrained problems, combining <b>SQP</b>, <b>interior-point</b>,
-            and <b>DFO-L1 trust-region</b> methods with sparse linear algebra, robust regularization, and a native
+            and <b>trust-region</b> methods with sparse linear algebra, robust regularization, and a native
             automatic differentiation engine.
           </p>
 
@@ -568,8 +567,8 @@
 
           <div class="hero-metrics">
             <div class="metric">
-              <div class="metric-value">3 solver modes</div>
-              <div class="metric-label">SQP, IP, DFO-L1</div>
+              <div class="metric-value">2 solver modes</div>
+              <div class="metric-label">SQP, IP</div>
             </div>
             <div class="metric">
               <div class="metric-value">Sparse + native</div>
@@ -679,7 +678,7 @@ cd chomp
 mkdir build &amp;&amp; cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release \
   -DAD_ENABLE_OPENMP=ON \
-  -DAD_ENABLE_QDLDL=ON -DAD_ENABLE_OSQP=ON -DAD_ENABLE_PIQP=ON -DAD_ENABLE_AMDQG=ON -DAD_ENABLE_L1CORE=ON
+  -DAD_ENABLE_QDLDL=ON -DAD_ENABLE_OSQP=ON -DAD_ENABLE_PIQP=ON -DAD_ENABLE_AMDQG=ON
 cmake --build . -j</code></pre>
           </div>
 
@@ -689,7 +688,7 @@ cmake --build . -j</code></pre>
               <ul class="list-disc ml-5 mt-1 space-y-1">
                 <li><code>AD_ENABLE_OPENMP</code> (default OFF)</li>
                 <li><code>AD_ENABLE_QDLDL</code>, <code>AD_ENABLE_OSQP</code>, <code>AD_ENABLE_PIQP</code>,
-                  <code>AD_ENABLE_AMDQG</code>, <code>AD_ENABLE_L1CORE</code> (default ON)
+                  <code>AD_ENABLE_AMDQG</code> (default ON)
                 </li>
               </ul>
             </div>
@@ -954,71 +953,7 @@ print("vᵀHv =", float(v @ Hv))</code></pre>
     </div>
   </section>
 
-  <!-- ======= DFO-L1 ======= -->
-  <section id="l1" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <div class="section-head">
-        <div class="section-kicker">Derivative-Free</div>
-        <h2 class="text-3xl sm:text-4xl font-bold text-white mt-5">Derivative-Free L1 Exact Penalty (Trust-Region)</h2>
-        <p>When derivatives are unavailable or unreliable, CHOMP falls back to a trust-region exact-penalty strategy.</p>
-      </div>
 
-      <div class="grid lg:grid-cols-3 gap-6">
-        <article class="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 shadow card">
-          <h3 class="text-xl font-semibold mb-3">Problem &amp; Idea</h3>
-          <p class="text-slate-700">We solve constrained problems without derivatives:</p>
-          <div class="math-nowrap my-3">$$
-            \min_{x\in\mathbb{R}^n} f(x) \quad \text{s.t.}\quad c_i(x)\le 0,\; i=1,\dots,m.
-            $$</div>
-          <p class="text-slate-700">Use an <b>exact penalty</b> with parameter $\mu\!>\!0$:</p>
-          <div class="math-nowrap my-3">$$
-            p(x) \;=\; f(x) \;+\; \mu \sum_{i=1}^m \max\{0,\,c_i(x)\}.
-            $$</div>
-          <p class="text-slate-700">
-            Under suitable conditions and sufficiently large $\mu$, minimizing $p(x)$ yields the constrained optimum
-            directly.
-            CHOMP builds local polynomial models of $f$ and $c_i$ in a trust-region, handles non-smoothness near active
-            constraints,
-            and accepts infeasible iterates when beneficial.
-          </p>
-
-          <div class="def text-sm mt-4">
-            <b>Nearly-active vs. clearly violated constraints.</b> Constraints with $|c_i(x)|\le \varepsilon$ are
-            treated specially to avoid zig-zagging near the boundary; others contribute smoothly via model $p_1$.
-          </div>
-
-          <h3 class="text-lg font-semibold mt-6">Step Strategy (Sketch)</h3>
-          <ol class="list-decimal ml-6 text-slate-700 space-y-1">
-            <li><b>Direction:</b> Solve a small LP to get a “steepest” descent direction for the model of $p$ that respects nearly-active gradients.</li>
-            <li><b>1-D Search with Breakpoints:</b> Line search along the direction across piecewise-quadratic segments.</li>
-            <li><b>Project Nearly-Active to Zero:</b> Small LS correction that drives nearly-active constraints closer to $0$.</li>
-            <li><b>Trust-Region &amp; Acceptance:</b> Compare predicted vs. actual reduction; adjust radius and refine models.</li>
-          </ol>
-
-          <div class="insight text-sm mt-4">
-            <b>When to use:</b> Black-box objectives/constraints, limited $n$ (e.g., $n\le 50$), noisy derivatives, or expensive simulations.
-          </div>
-        </article>
-
-        <aside class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
-          <h3 class="text-lg font-semibold mb-2">Highlights</h3>
-          <ul class="list-disc ml-5 text-sm text-slate-700 space-y-1">
-            <li>Exact penalty avoids sequences of subproblems.</li>
-            <li>Trust-region globalization with adaptive radius.</li>
-            <li>Descent directions that avoid boundary zig-zag.</li>
-            <li>Criticality measure &amp; model accuracy checks.</li>
-          </ul>
-          <div class="theorem text-sm mt-4">
-            <b>Convergence (outline):</b> With fully-linear models, bounded Hessians, and standard TR acceptance rules,
-            the method converges to first-order points of $p$; increasing $\mu$ as needed recovers feasibility.
-          </div>
-          <p class="text-xs text-slate-500 mt-3">
-            See the paper in the References section for theory and computational studies.
-          </p>
-        </aside>
-      </div>
-    </div>
-  </section>
 
   <!-- ======= Usage ======= -->
   <section id="usage" class="alt-section py-14">
@@ -1198,7 +1133,7 @@ print(x, info.status)</code></pre>
           <p class="text-sm font-semibold">© <span id="year"></span> CHOMP — Nonlinear Optimization Library</p>
           <p class="text-xs text-slate-400 mt-1">Research-oriented tooling for constrained nonlinear programming.</p>
         </div>
-        <div class="text-xs text-slate-400 uppercase tracking-[0.22em]">SQP • Interior-Point • DFO-L1 • Auto • Sparse KKT • AD</div>
+        <div class="text-xs text-slate-400 uppercase tracking-[0.22em]">SQP • Interior-Point • Auto • Sparse KKT • AD</div>
       </div>
     </div>
     <div class="mt-4 pt-4 border-t border-slate-700 text-center text-xs text-slate-400">

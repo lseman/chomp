@@ -31,14 +31,14 @@
 #include <utility>
 #include <vector>
 
+#include "aux.h"
+#include "helpers.h"
 #include <blocks/funnel.h>
 #include <blocks/linesearch.h>
 #include <definitions.h>
 #include <kkt/core.h>
 #include <model.h> // Model
 #include <regularizer.h>
-#include "aux.h"
-#include "helpers.h"
 
 // nanobind alias
 namespace nb = nanobind;
@@ -422,8 +422,7 @@ public:
                 // all-zero lam would zero Sigma_s and complementarity, driving
                 // mu_target to mu_min and producing NaN steps in the MG solve.
                 // IP multipliers must stay strictly positive.
-                if (lam.size() == st.lam.size() && lam.size() > 0 && lam.maxCoeff() > 0.0)
-                    st.lam = lam.cwiseMax(1e-8);
+                if (lam.size() == st.lam.size() && lam.size() > 0 && lam.maxCoeff() > 0.0) st.lam = lam.cwiseMax(1e-8);
                 if (nu.size() == st.nu.size()) st.nu = nu;
             }
         }
@@ -835,9 +834,9 @@ public:
         const double tau_pri  = get_attr_or<double>(cfg_, "ip_tau_pri", get_attr_or<double>(cfg_, "ip_tau", 0.995));
         const double tau_dual = get_attr_or<double>(cfg_, "ip_tau_dual", get_attr_or<double>(cfg_, "ip_tau", 0.995));
 
-        const double a_ftb = detail::alpha_ftb_vec(x, dx, (mI ? s : dvec()), (mI ? ds : dvec()), lmb,
-                                                   (mI ? dlam : dvec()), B, tau_pri, tau_dual,
-                                                   use_shifted ? tau_shift : 0.0);
+        const double a_ftb =
+            detail::alpha_ftb_vec(x, dx, (mI ? s : dvec()), (mI ? ds : dvec()), lmb, (mI ? dlam : dvec()), B, tau_pri,
+                                  tau_dual, use_shifted ? tau_shift : 0.0);
 
         const double alpha_max         = std::min(a_ftb, get_attr_or<double>(cfg_, "ip_alpha_max", 1.0));
         double       alpha             = std::min(1.0, alpha_max);
@@ -1209,7 +1208,7 @@ private:
         if (mE > 0) r2 = rpE ? (-(*rpE)).eval() : kkt::dvec::Zero(mE);
 
         std::string method_cpp = std::string(method_in);
-        if (mE == 0 && (method_cpp == "hykkt" || method_cpp == "hykkt_cholmod")) method_cpp = "ldl";
+        if (mE == 0 && (method_cpp == "hykkt")) method_cpp = "ldl";
 
         const bool can_reuse =
             kkt_factorization_valid_ && cached_kkt_solver_ && cached_kkt_method_ == method_cpp &&
