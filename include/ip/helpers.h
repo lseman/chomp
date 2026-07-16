@@ -29,8 +29,8 @@
 #include <utility>
 #include <vector>
 
-#include <definitions.h>
-#include <model.h>
+#include <core/definitions.h>
+#include <model/model.h>
 
 #ifndef IP_PROFILE
 #define IP_PROFILE 0

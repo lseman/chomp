@@ -29,10 +29,6 @@
 #include <variant>
 #include <vector>
 
-#ifdef __AVX2__
-#include <immintrin.h>
-#endif
-
 #if AD_HAVE_SPECTRA
 #include <Spectra/MatOp/DenseSymMatProd.h>
 #include <Spectra/MatOp/DenseSymShiftSolve.h>
@@ -50,141 +46,41 @@ using spmat = Eigen::SparseMatrix<double, Eigen::ColMajor, int>;
 
 // ========================= PERFORMANCE UTILITIES =========================
 
-// SIMD-accelerated vector operations
-class VectorOps {
-   public:
-#ifdef __AVX2__
-    static double dot_product_avx(const double* a, const double* b, size_t n) {
-        __m256d sum = _mm256_setzero_pd();
-        size_t i = 0;
-
-        // Process 4 doubles at a time
-        for (; i + 3 < n; i += 4) {
-            __m256d va = _mm256_loadu_pd(&a[i]);
-            __m256d vb = _mm256_loadu_pd(&b[i]);
-            sum = _mm256_fmadd_pd(va, vb, sum);
-        }
-
-        // Horizontal sum
-        double result[4];
-        _mm256_storeu_pd(result, sum);
-        double total = result[0] + result[1] + result[2] + result[3];
-
-        // Handle remaining elements
-        for (; i < n; ++i) {
-            total += a[i] * b[i];
-        }
-        return total;
-    }
-
-    static void axpy_avx(double alpha, const double* x, double* y, size_t n) {
-        __m256d va = _mm256_set1_pd(alpha);
-        size_t i = 0;
-
-        for (; i + 3 < n; i += 4) {
-            __m256d vx = _mm256_loadu_pd(&x[i]);
-            __m256d vy = _mm256_loadu_pd(&y[i]);
-            __m256d result = _mm256_fmadd_pd(va, vx, vy);
-            _mm256_storeu_pd(&y[i], result);
-        }
-
-        for (; i < n; ++i) {
-            y[i] += alpha * x[i];
-        }
-    }
-#endif
-
-    static double robust_dot(const dvec& a, const dvec& b) {
-#ifdef __AVX2__
-        if (a.size() >= 8) {
-            return dot_product_avx(a.data(), b.data(), a.size());
-        }
-#endif
-        return a.dot(b);
-    }
-};
-
-// Memory pool for frequent allocations
-class MemoryPool {
-   private:
-    mutable std::vector<std::unique_ptr<dvec>> vector_pool_;
-    mutable std::vector<std::unique_ptr<dmat>> matrix_pool_;
-    mutable size_t pool_size_{16};
-
-   public:
-    dvec* get_vector(int size) const {
-        for (auto& ptr : vector_pool_) {
-            if (ptr && ptr->size() == size) {
-                auto* result = ptr.release();
-                return result;
-            }
-        }
-        return new dvec(size);
-    }
-
-    void return_vector(dvec* vec) const {
-        if (vector_pool_.size() < pool_size_) {
-            vector_pool_.emplace_back(vec);
-        } else {
-            delete vec;
-        }
-    }
-
-    dmat* get_matrix(int rows, int cols) const {
-        for (auto& ptr : matrix_pool_) {
-            if (ptr && ptr->rows() == rows && ptr->cols() == cols) {
-                auto* result = ptr.release();
-                return result;
-            }
-        }
-        return new dmat(rows, cols);
-    }
-
-    void return_matrix(dmat* mat) const {
-        if (matrix_pool_.size() < pool_size_) {
-            matrix_pool_.emplace_back(mat);
-        } else {
-            delete mat;
-        }
-    }
-};
+// Eigen's built-in vector operations are already SIMD-optimized (AVX2/AVX-512).
+// We rely on Eigen's a.dot(b) and a.noalias() = b + c * d for performance.
 
 // Randomized eigenvalue estimation using modern techniques
 class SpectralAnalysis {
-   private:
-    static thread_local MemoryPool pool_;
-
    public:
     // Randomized power iteration for extreme eigenvalues
     static std::pair<double, double> randomized_bounds(const spmat& A,
-                                                       int num_samples = 8,
-                                                       int power_iters = 4) {
+                                                       int num_samples = 6,
+                                                       int power_iters = 3) {
         const int n = A.rows();
         if (n == 0) return {0.0, 0.0};
 
         // Use diagonal bounds as initial estimates
-        double min_eig = 1e30, max_eig = -1e30;
-
-        // #pragma omp parallel for reduction(min:min_eig)
-        // reduction(max:max_eig)
+        double min_diag = 1e30, max_diag = -1e30;
         for (int i = 0; i < n; ++i) {
             double d = A.coeff(i, i);
-            min_eig = std::min(min_eig, d);
-            max_eig = std::max(max_eig, d);
+            min_diag = std::min(min_diag, d);
+            max_diag = std::max(max_diag, d);
         }
 
         // For small matrices or when diagonal bounds are good enough
-        if (n < 200 || (max_eig / std::max(min_eig, 1e-16) < 1e6)) {
-            return {min_eig, max_eig};
+        double diag_cond = (std::abs(min_diag) > 1e-16) ? 
+            (max_diag / std::max(std::abs(min_diag), 1e-16)) : 1e6;
+        if (n < 200 || diag_cond < 1e6) {
+            return {min_diag, max_diag};
         }
 
-        // Randomized power iteration
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::normal_distribution<> dist(0.0, 1.0);
+        // Thread-local RNG for reproducibility and speed
+        static thread_local std::mt19937 gen(std::random_device{}());
+        static thread_local std::normal_distribution<> dist(0.0, 1.0);
 
         dvec v(n);
-        double est_max = -1e30, est_min = 1e30;
+        double est_max = -1e30;
+        double est_max_neg = -1e30; // For smallest eigenvalue via -A
 
         for (int trial = 0; trial < num_samples; ++trial) {
             // Random initialization
@@ -196,29 +92,28 @@ class SpectralAnalysis {
             // Power iteration for largest eigenvalue
             for (int iter = 0; iter < power_iters; ++iter) {
                 dvec Av = A * v;
-                double rayleigh = VectorOps::robust_dot(v, Av);
+                double rayleigh = v.dot(Av);
                 est_max = std::max(est_max, rayleigh);
 
                 double norm = Av.norm();
                 if (norm > 1e-16) v = Av / norm;
             }
 
-            // Inverse power iteration for smallest eigenvalue
-            // Use simple Richardson iteration instead of solve
-            dvec u = v;
+            // Power iteration for smallest eigenvalue (largest eigenvalue of -A)
+            dvec v_min = v;
             for (int iter = 0; iter < power_iters; ++iter) {
-                dvec Au = A * u;
-                double rayleigh = VectorOps::robust_dot(u, Au);
-                est_min = std::min(est_min, rayleigh);
+                dvec Av = A * v_min;
+                dvec mAv = -Av; // (-A) * v_min
+                double rayleigh_neg = -v_min.dot(Av); // v^T (-A) v
+                est_max_neg = std::max(est_max_neg, rayleigh_neg);
 
-                // Richardson step: u = u - tau * (A*u - lambda*u)
-                double tau = 0.1 / std::max(est_max, 1.0);
-                u = u - tau * (Au - rayleigh * u);
-                u.normalize();
+                double norm = mAv.norm();
+                if (norm > 1e-16) v_min = mAv / norm;
             }
         }
 
-        return {std::max(est_min, min_eig), std::max(est_max, max_eig)};
+        double est_min = std::min(min_diag, -est_max_neg);
+        return {std::max(est_min, min_diag), std::max(est_max, max_diag)};
     }
 
     // Block Lanczos for better convergence
@@ -285,8 +180,6 @@ class SpectralAnalysis {
     }
 };
 
-thread_local MemoryPool SpectralAnalysis::pool_;
-
 // Configuration with adaptive parameters
 struct RegConfig {
     double sigma{1e-8}, sigma_min{1e-12}, sigma_max{1e6};
@@ -344,7 +237,6 @@ class Regularizer {
     mutable std::unordered_map<uint64_t, std::pair<double, double>>
         bounds_cache_;
     mutable std::unordered_map<uint64_t, bool> symmetry_cache_;
-    mutable MemoryPool pool_;
 
    public:
     explicit Regularizer(RegConfig cfg = {}) : cfg_(std::move(cfg)) {}
@@ -429,7 +321,12 @@ class Regularizer {
         // For very small matrices, just check directly
         if (n < 50) {
             if (is_symmetric_small_(A)) return A;
-            return ((A + spmat(A.transpose())) * 0.5).pruned();
+            spmat Asym = A;
+            const spmat AT = A.transpose();
+            Asym += AT;
+            Asym *= 0.5;
+            Asym.prune(1e-14);
+            return Asym;
         }
 
         // Hash-based caching
@@ -437,8 +334,7 @@ class Regularizer {
             uint64_t hash = compute_hash_(A);
             auto it = symmetry_cache_.find(hash);
             if (it != symmetry_cache_.end()) {
-                return it->second ? A
-                                  : ((A + spmat(A.transpose())) * 0.5).pruned();
+                return it->second ? A : symmetrize_fast_(A);
             }
 
             bool is_sym = is_symmetric_sampled_(A);
@@ -454,7 +350,16 @@ class Regularizer {
             if (is_symmetric_sampled_(A)) return A;
         }
 
-        return ((A + spmat(A.transpose())) * 0.5).pruned();
+        return symmetrize_fast_(A);
+    }
+
+    spmat symmetrize_fast_(const spmat& A) const {
+        spmat Asym = A;
+        const spmat AT = A.transpose();
+        Asym += AT;
+        Asym *= 0.5;
+        Asym.prune(1e-14);
+        return Asym;
     }
 
     bool is_symmetric_small_(const spmat& A) const {

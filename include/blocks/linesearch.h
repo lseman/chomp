@@ -31,9 +31,9 @@
 #include <utility>
 #include <vector>
 
-#include <blocks/config.h>
+#include <blocks/nb_utils.h>
 #include <ip/aux.h>  // RichardsonExtrapolator
-#include <model.h>
+#include <model/model.h>
 #include "filter.h"  // Filter class
 #include "funnel.h"  // FunnelConfig, Funnel
 

@@ -348,8 +348,13 @@ function(ad_add_nanobind_module name)
   nanobind_add_module(${name} ${_srcs})
   message(STATUS "Added nanobind module: ${name} with sources: ${_srcs}")
   ad__common_target_setup(${name})
-  # nanobind modules need Python
+  # nanobind modules need Python and nanobind headers
   target_link_libraries(${name} PRIVATE Python3::Module)
+  if(TARGET nanobind-static)
+    target_include_directories(${name} PRIVATE ${nanobind_SOURCE_DIR}/include)
+  elseif(TARGET nanobind::nanobind)
+    target_link_libraries(${name} PRIVATE nanobind::nanobind)
+  endif()
 endfunction()
 
 function(ad_link_unix_system_libs tgt)

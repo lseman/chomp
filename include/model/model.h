@@ -23,7 +23,8 @@
 
 #include "ad/ad_bindings.h" // GradFn, LagHessFn, compile_*
 #include "ad/suspect.h"
-#include "definitions.h"
+#include "core/definitions.h"
+#include "trustregion/definitions.h"
 
 struct ModelSuspectReport {
     using AnalyzerT = suspect::Analyzer<suspect_adapter::ModelView, ADNodePtr>;
@@ -463,6 +464,17 @@ public:
 
     // Materialize current LBFGS Hessian without updating memory
     spmat lbfgs_matrix(double threshold = 1e-12) const { return lbfgs_.build_sparse_matrix(n_, threshold); }
+
+    // Return a LinOp for LBFGS Hessian-vector product (Hessian-free TR)
+    // Uses the compact BFGS formula to apply B*v without forming the matrix
+    LinOp lbfgs_hess_linop() const {
+        LinOp op;
+        op.n = n_;
+        op.mv = [this](const dvec& v, dvec& out) {
+            out = lbfgs_.apply_B(v);
+        };
+        return op;
+    }
 
     ModelC(const ModelC &)            = default;
     ModelC(ModelC &&)                 = default;

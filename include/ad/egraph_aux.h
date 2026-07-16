@@ -4,7 +4,7 @@
 #include <queue>
 
 #include "ad_graph.h"
-#include "definitions.h"
+#include "ad/definitions.h"
 #include "egraph.h"
 
 // Forward decls from your codebase

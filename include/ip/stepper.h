@@ -35,10 +35,10 @@
 #include "helpers.h"
 #include <blocks/funnel.h>
 #include <blocks/linesearch.h>
-#include <definitions.h>
+#include <core/definitions.h>
 #include <kkt/core.h>
-#include <model.h> // Model
-#include <regularizer.h>
+#include <model/model.h> // Model
+#include <model/regularizer.h>
 
 // nanobind alias
 namespace nb = nanobind;

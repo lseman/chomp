@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "ad_graph.h"
-#include "definitions.h"
+#include "ad/definitions.h"
 #include "variable.h"
 
 class Expression;

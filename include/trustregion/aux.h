@@ -24,9 +24,9 @@
 
 // ====== Project ======
 #include <blocks/filter.h>
-#include <definitions.h>
-#include <model.h>
-#include "definitions.h"
+#include <core/definitions.h>
+#include <model/model.h>
+#include "trustregion/definitions.h"
 
 enum class TRBackend { PCG, DOGLEG, GLTR };
 

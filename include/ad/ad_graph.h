@@ -12,7 +12,7 @@
 
 #include <robin_map.h>
 #include <robin_set.h>
-#include "definitions.h"
+#include "ad/definitions.h"
 #include "egraph.h"
 
 // ============================================================================
@@ -83,6 +83,7 @@ static inline double& set_epoch_value(double& x, unsigned& e, unsigned cur,
 // ADNode (POD-ish node record)
 // ============================================================================
 struct ADNode {
+    ADNode() = default;
     Operator type = Operator::NA;
     std::string name;
 

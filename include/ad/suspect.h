@@ -18,7 +18,7 @@
 
 #include "ad_bindings.h"
 #include "ad_graph.h"
-#include "definitions.h"
+#include "ad/definitions.h"
 
 #ifndef NDEBUG
 #define NDEBUG

@@ -33,7 +33,7 @@
 #include <vector>
 
 #include <ip/stepper.h>
-#include <model.h>
+#include <model/model.h>
 #include <sqp/stepper.h>
 
 namespace nb = nanobind;

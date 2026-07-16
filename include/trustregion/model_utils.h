@@ -8,7 +8,8 @@
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
 
-#include <trustregion/subproblem.h>
+#include <trustregion/aux.h>
+#include <trustregion/definitions.h>
 
 // -----------------------------------------------------------------------------
 // Trust-region model utilities

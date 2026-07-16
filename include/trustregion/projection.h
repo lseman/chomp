@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include <definitions.h>
+#include <core/definitions.h>
 #include <linear_system/qdldl/qdldl.h>
 #include <linear_system/common/sparse_csc.h>
 

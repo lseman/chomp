@@ -16,7 +16,7 @@
 #include <optional>
 #include <vector>
 
-#include <definitions.h>
+#include <core/definitions.h>
 
 class RichardsonExtrapolator {
    private:

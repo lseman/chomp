@@ -24,12 +24,13 @@
 
 // ====== Project ======
 #include <blocks/filter.h>
-#include <definitions.h>
-#include <model.h>
+#include <core/definitions.h>
+#include <model/model.h>
 #include "box.h"
-#include "config.h"
+#include <config/tr.h>
 #include "model_utils.h"
-#include "subproblem.h"
+#include "aux.h"
+#include "definitions.h"
 
 // If you expose nanobind types/errors in ModelC implementations
 namespace nb = nanobind;
@@ -72,7 +73,9 @@ class TrustRegionManager {
         return TRBackend::PCG;
     }
 
-    // ---------- NEW: dense nullspace basis for Aeq (thin, stable) ----------
+    // ---------- Dense nullspace basis for Aeq (thin, stable) ----------
+    // Returns Q2 s.t. Aeq * (Q2 * z) = 0 for any z, and rank(Aeq)
+    // Uses QR of Aeq^T: Aeq^T = Q [R; 0], computing only the nullspace columns.
     std::pair<dmat, int> nullspace_basis_(const dmat& Aeq) const {
         // Build Q2 s.t. Aeq * (Q2 * z) = 0 for any z
         if (Aeq.size() == 0) {
@@ -84,11 +87,9 @@ class TrustRegionManager {
 
         // QR of Aeq^T: Aeq^T = Q [R; 0]
         Eigen::HouseholderQR<dmat> qr(Aeq.transpose());
-        dmat Q = qr.householderQ() * dmat::Identity(n, n);
 
         // rank via R diagonal (robust threshold already in config)
         const int r = std::min(m, n);
-        // take "nullspace" block Q2 = Q.rightCols(n - rank)
         // Use a crude rank estimate from R (explicitly form R to inspect diag)
         dmat R = qr.matrixQR().template triangularView<Eigen::Upper>();
         int rank = 0;
@@ -102,7 +103,25 @@ class TrustRegionManager {
             // fully constrained: nullspace is {0}
             return {dmat(n, 0), 0};
         }
-        dmat Q2 = Q.rightCols(k);
+
+        // Compute nullspace basis Q2 without forming full Q matrix:
+        // The nullspace corresponds to the last k columns of Q in the QR factorization.
+        // We compute Q2 = Q * [0; I_k] by applying Householder reflectors to
+        // the last k standard basis vectors e_{rank}, ..., e_{n-1}.
+        
+        dmat Q2 = dmat::Zero(n, k);
+        
+        // Get the Householder sequence (lazy representation of Q)
+        auto Q_seq = qr.householderQ();
+        
+        // For each nullspace column index j (0 to k-1), compute Q * e_{rank+j}
+        for (int j = 0; j < k; ++j) {
+            dvec e = dvec::Zero(n);
+            e(rank + j) = 1.0;
+            // Apply Householder sequence to e: Q2.col(j) = Q * e
+            Q2.col(j) = Q_seq * e;
+        }
+
         return {Q2, k};
     }
 

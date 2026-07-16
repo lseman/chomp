@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "definitions.h"
+#include "ad/definitions.h"
 
 class Expression;
 class Variable;

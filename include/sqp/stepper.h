@@ -22,8 +22,8 @@
 #include <vector>
 
 #include <blocks/box.h>
-#include <definitions.h>
-#include <model.h>
+#include <core/definitions.h>
+#include <model/model.h>
 #include <trustregion/manager.h>  // TrustRegionManager, TRConfig, TRResult, TRInfo
 
 #include "dopt.h"
@@ -156,25 +156,34 @@ class SQPStepper {
             cfg_, "hessian_mode", std::string("exact"));
 
         spmat H0;
+        LinOp Hop;
+        bool use_linop = false;
+        
         if (hmode == "exact") {
             H0 = model_->hess(x, lam_in, nu_in);
         } else if (hmode == "lbfgs") {
             model_->set_use_lbfgs_hess(true);
-            H0 = model_->lbfgs_matrix(
-                get_attr_or<double>(cfg_, "lbfgs_sparse_threshold", 1e-12));
+            // Use Hessian-free LBFGS TR: LinOp for B*v without forming matrix
+            Hop = model_->lbfgs_hess_linop();
+            use_linop = true;
         } else {
             throw std::runtime_error("Unknown hessian_mode: " + hmode);
         }
 
-        auto [H, reg_info] = regularizer_->regularize(H0, it);
-        (void)reg_info;
-        H.makeCompressed();
+        // Regularize only for exact Hessian path
+        std::optional<spmat> H_reg_opt;
+        if (!use_linop) {
+            auto [H, reg_info] = regularizer_->regularize(H0, it);
+            (void)reg_info;
+            H.makeCompressed();
+            H_reg_opt = H;
 
-        // Optional: set TR metric from H
-        const std::string norm_type =
-            get_attr_or<std::string>(cfg_, "norm_type", std::string("2"));
-        if (norm_type == "ellip") {
-            tr_.set_metric_from_H_dense(H);
+            // Optional: set TR metric from H
+            const std::string norm_type =
+                get_attr_or<std::string>(cfg_, "norm_type", std::string("2"));
+            if (norm_type == "ellip") {
+                tr_.set_metric_from_H_dense(H);
+            }
         }
 
         // ---- 4) Build RHS for TR/QP per convention ----
@@ -185,17 +194,35 @@ class SQPStepper {
                         ? cI_shifted
                         : -cI_shifted;  // JI p + b_in ≤ 0 OR  JI p ≤ b_in
 
-        // ---- 5) Native TR solve (dense path) ----
-        TRResult out = tr_.solve_dense(H, g0,
-                                       /*A_ineq*/ (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt),
-                                       /*b_ineq*/ b_in,
-                                       /*A_eq*/ (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt),
-                                       /*b_eq*/ b_eq,
-                                       /*model*/ model_,
-                                       /*x*/ std::optional<dvec>(x),
-                                       /*lb*/ lb, /*ub*/ ub,
-                                       /*mu*/ 0.0,
-                                       /*f_old*/ std::optional<double>(f0));
+        // ---- 5) Native TR solve (dense or Hessian-free path) ----
+        TRResult out;
+        if (use_linop) {
+            // Hessian-free TR solve using LinOp
+            TrustRegionManager::HContext HC{std::nullopt, std::nullopt};
+            out = tr_.solve(Hop, g0,
+                           /*A_ineq*/ (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt),
+                           /*b_ineq*/ b_in,
+                           /*A_eq*/ (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt),
+                           /*b_eq*/ b_eq,
+                           /*model*/ model_,
+                           /*box*/ BoxCtx{x, lb, ub, BoxMode::Alpha},
+                           /*mu*/ 0.0,
+                           /*f_old*/ std::optional<double>(f0),
+                           HC);
+        } else {
+            // Dense TR solve
+            TRResult out_dense = tr_.solve_dense(*H_reg_opt, g0,
+                                               /*A_ineq*/ (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt),
+                                               /*b_ineq*/ b_in,
+                                               /*A_eq*/ (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt),
+                                               /*b_eq*/ b_eq,
+                                               /*model*/ model_,
+                                               /*x*/ std::optional<dvec>(x),
+                                               /*lb*/ lb, /*ub*/ ub,
+                                               /*mu*/ 0.0,
+                                               /*f_old*/ std::optional<double>(f0));
+            out = out_dense;
+        }
 
         const dvec& p = out.p;
         const dvec& lam_usr = out.lam;

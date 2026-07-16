@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <optional>
 
-#include <definitions.h>
+#include <core/definitions.h>
 
 // -----------------------------------------------------------------------------
 // Box handling for trust-region steps

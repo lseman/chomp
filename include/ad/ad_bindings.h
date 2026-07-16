@@ -33,7 +33,7 @@
 #include <vector>
 
 #include "ad_graph.h"
-#include "definitions.h"
+#include "ad/definitions.h"
 #include "expression.h"
 #include "operators.h" // enum Operator + math free-functions
 #include "variable.h"
