@@ -979,12 +979,11 @@ struct OpTraits<Operator::Multiply> {
 
         // Count zeros and compute product of nonzeros
         size_t zero_cnt = 0;
-        size_t zero_idx = SIZE_MAX;
         double prod_nz = 1.0;
         for (size_t i = 0; i < m; ++i) {
             const double v = n.inputs[i]->value;
             if (v == 0.0) {
-                if (++zero_cnt == 1) zero_idx = i;
+                ++zero_cnt;
             } else {
                 prod_nz *= v;
             }
@@ -1883,7 +1882,6 @@ struct OpTraits<Operator::Pow> {
             }
             // closed forms for common constants
             double* __restrict ga = &g.lanes_.gdot[abase];
-            const double* __restrict ad = &g.lanes_.dot[abase];
             if (b == 1.0) {
                 for (size_t l = 0; l < L; ++l) ga[l] += gu[l];
                 return;

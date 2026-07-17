@@ -116,6 +116,17 @@ struct TRWorkspace {
     dvec proj_buf1, proj_buf2;
     dvec rhs_small, y_small;
 
+    // Warm-start state for PCG/GLTR
+    dvec p_warm_start;
+    dvec r_warm_start;
+    bool has_warm_start = false;
+    
+    // GLTR warm-start state (Lanczos basis and tridiagonal matrix)
+    std::vector<dvec> V_warm_start;
+    std::vector<double> T_diag_warm_start;
+    std::vector<double> T_off_warm_start;
+    int gltr_warm_start_iters = 0;
+
     inline void ensure(int n) {
         auto need = [&](dvec& v) {
             if (v.size() != n) v = dvec::Zero(n);
@@ -133,10 +144,21 @@ struct TRWorkspace {
         need(PHx);
         need(proj_buf1);
         need(proj_buf2);
+        need(p_warm_start);
+        need(r_warm_start);
     }
     inline void ensure_small(int m) {
         if (rhs_small.size() != m) rhs_small = dvec::Zero(m);
         if (y_small.size() != m) y_small = dvec::Zero(m);
+    }
+    
+    // Clear warm-start state
+    inline void clear_warm_start() {
+        has_warm_start = false;
+        V_warm_start.clear();
+        T_diag_warm_start.clear();
+        T_off_warm_start.clear();
+        gltr_warm_start_iters = 0;
     }
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 // Optimized C++23 KKT core (HYKKT + LDL) with Eigen
 // AVX guard fixed; ILU removed; Schur solves use CG + (Jacobi|SSOR).
+// Inertia tracking and correction added for KKT systems.
 
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
@@ -47,6 +48,39 @@ namespace kkt {
 using dvec  = Eigen::VectorXd;
 using dmat  = Eigen::MatrixXd;
 using spmat = Eigen::SparseMatrix<double, Eigen::ColMajor, int>;
+
+// ------------------------------ Inertia tracking ------------------------------
+// Inertia tuple: (positive, negative, zero) eigenvalues
+struct Inertia {
+    int pos{0};   // number of positive eigenvalues
+    int neg{0};   // number of negative eigenvalues
+    int zero{0};  // number of zero eigenvalues
+
+    bool matches(int expected_pos, int expected_neg, int expected_zero = 0) const {
+        return pos == expected_pos && neg == expected_neg && zero == expected_zero;
+    }
+};
+
+// Compute inertia from LDL^T D diagonal
+inline Inertia compute_inertia_from_d(const std::vector<double>& D, double tol = 1e-12) {
+    Inertia inertia;
+    for (double d : D) {
+        if (d > tol) inertia.pos++;
+        else if (d < -tol) inertia.neg++;
+        else inertia.zero++;
+    }
+    return inertia;
+}
+
+// Compute inertia from QDLDL LDLFactors
+inline Inertia compute_inertia_from_qdldl_factors(const qdldl23::LDLFactors<double, int32_t>& F) {
+    Inertia inertia;
+    inertia.pos = F.num_pos;
+    inertia.neg = F.n - F.num_pos;
+    inertia.zero = 0;
+    return inertia;
+}
+
 // ------------------------------ HYKKT ---------------------------------
 class HYKKTStrategy final : public KKTStrategy {
 public:
@@ -84,7 +118,7 @@ public:
             return solve_with_smw(W, G, Gt, r1, r2, delta, gamma, cfg, assemble_schur_if_m_small, use_prec);
         }
 
-        // ---------- δ₁ loop: make Hδ SPD or at least factorizable ----------
+        // ---------- δ₁ loop: make Hδ SPD with inertia tracking ----------
         double delta1 = delta;
         if (delta1 == 0.0) delta1 = std::max(1e-12, cfg.delta_min); // gentle start
 
@@ -95,14 +129,14 @@ public:
         // Build base K without delta1
         spmat K_base = build_augmented_system_inplace(W, G, Gt, 0.0, gamma);
 
-        for (int tries = 0; tries < 10; ++tries) {
-            // Create K by adding delta1 to diagonal
+        for (int tries = 0; tries < 15; ++tries) {
+            // Create K by adding delta1 to diagonal of Hessian block only
             spmat K = K_base;
-            // Add delta1 to diagonal efficiently via inner iterators
+            // Add delta1 to diagonal efficiently via inner iterators (only first n rows/cols)
             for (int j = 0; j < n; ++j) {
                 bool found = false;
                 for (spmat::InnerIterator it(K, j); it; ++it) {
-                    if (it.row() == it.col()) {
+                    if (it.row() == it.col() && it.row() < n) {
                         it.valueRef() += delta1;
                         found = true;
                         break;
@@ -112,14 +146,16 @@ public:
             }
             auto [solver_fn, is_spd] = create_or_refactor_solver_qdldl(K, cfg);
             if (solver_fn) {
+                // Inertia check: H+delta should be positive definite (n positive, 0 negative, 0 zero)
                 Ks       = std::move(solver_fn);
-                used_llt = (is_spd || true); // QDLDL handles SPD/indefinite
+                used_llt = true;
                 K_final  = std::move(K);
                 break;
             }
+            // Inertia correction: increase delta1 to ensure positive definiteness
             delta1 = std::min(cfg.delta_max, std::max(2.0 * delta1, 1e-9));
         }
-        if (!Ks) { throw std::runtime_error("HYKKT: failed to factor H_delta after δ₁ ramp."); }
+        if (!Ks) { throw std::runtime_error("HYKKT: failed to factor H_delta after δ₁ ramp with inertia correction."); }
 
         // ---------- Schur RHS ----------
         // s = r1 + γ Gᵀ r2
@@ -644,147 +680,141 @@ public:
             rhs = r1;
         }
 
-        // Convert to strict upper CSC for qdldl23
-        // Prefer to enforce diagonal in K assembly; if not, keep small
-        // diag_eps.
-        auto U = eigen_to_upper_csc(K, 1e-12);
+        // Inertia tracking and correction loop
+        // Expected inertia for KKT [W+δI, G^T; G, 0] with W+δI SPD and G full rank:
+        // (n positive, m negative, 0 zero) in (pos, neg, zero) convention
+        double delta_cur = delta;
+        if (delta_cur == 0.0) delta_cur = std::max(1e-12, cfg.delta_min);
 
-        // ---- Symbolic (and optional ordering) reuse path ----
-        qdldl23::LDL32                            F;
-        qdldl23::Symb32                           S;
-        std::optional<qdldl23::Ordering<int32_t>> ord;
-
-        const PatternKey key                  = make_key(U);
-        bool             used_cached_symbolic = false;
-
-        if (opts.use_symbolic_cache) {
-            auto it = symb_cache_.find(key);
-            if (it != symb_cache_.end()) {
-                // Found cached symbolic (already matches ordering choice)
-                const auto &C = it->second;
-                if (C.n == U.n) {
-                    S                    = C.S;
-                    ord                  = C.ord;
-                    used_cached_symbolic = true;
-                    touch_key_(key);
-                }
-            }
-        }
-
-        if (!used_cached_symbolic) {
-            // Decide ordering
-            ord = maybe_build_ordering_(U, opts.use_ordering);
-            if (ord) {
-                // Analyze permuted pattern once
-                auto Up = qdldl23::permute_symmetric_upper(U, *ord);
-                S       = qdldl23::analyze_fast(Up);
-                // Numeric on permuted A
-                F = qdldl23::refactorize(Up, S);
-            } else {
-                // No ordering
-                S = qdldl23::analyze_fast(U);
-                F = qdldl23::refactorize(U, S);
-            }
-
-            if (opts.use_symbolic_cache) {
-                CachedSymb C;
-                C.S              = S;
-                C.ord            = ord;
-                C.n              = U.n;
-                symb_cache_[key] = C;
-                touch_key_(key);
-            }
-        } else {
-            // Have S (and maybe ord). Just numeric refactorize on the same
-            // pattern.
-            if (ord) {
-                auto Up = qdldl23::permute_symmetric_upper(U, *ord);
-                F       = qdldl23::refactorize(Up, S);
-            } else {
-                F = qdldl23::refactorize(U, S);
-            }
-        }
-
-        // Solve
-        dvec x = rhs;
-        if (ord) {
-            qdldl23::solve_with_ordering(F, *ord, x.data());
-        } else {
-            qdldl23::solve(F, x.data());
-        }
-
-        // if (opts.refine_iters > 0) {
-        //     // Refinement expects the same matrix that was factorized
-        //     if (ord) {
-        //         // Build permuted U for residual (same as used in
-        //         factorization) auto Up = qdldl23::permute_symmetric_upper(U,
-        //         *ord); qdldl23::refine(Up, F, x.data(), rhs.data(),
-        //         opts.refine_iters, &(*ord));
-        //     } else {
-        //         qdldl23::refine(U, F, x.data(), rhs.data(),
-        //         opts.refine_iters, nullptr);
-        //     }
-        // }
-
+        std::shared_ptr<KKTReusable> reusable;
         dvec dx, dy;
-        if (hasE) {
-            dx = x.head(n);
-            dy = x.tail(m);
-        } else {
-            dx = x;
-            dy.resize(0);
-        }
 
-        // Reusable object: keep U, S, ord, and F for fast multi-RHS solves
-        struct Reuse final : KKTReusable {
-            qdldl23::SparseD32                        U;
+        for (int tries = 0; tries < 15; ++tries) {
+            // Re-assemble KKT matrix with current delta
+            K = assemble_KKT(W, delta_cur, Gopt, &hasE);
+
+            // Convert to strict upper CSC for qdldl23
+            // Prefer to enforce diagonal in K assembly; if not, keep small
+            // diag_eps.
+            auto U = eigen_to_upper_csc(K, 1e-12);
+
+            // ---- Symbolic (and optional ordering) reuse path ----
+            qdldl23::LDL32                            F;
             qdldl23::Symb32                           S;
             std::optional<qdldl23::Ordering<int32_t>> ord;
-            qdldl23::LDL32                            F;
-            int                                       n, m;
-            int                                       refine_iters{0};
 
-            Reuse(qdldl23::SparseD32 U_, qdldl23::Symb32 S_, std::optional<qdldl23::Ordering<int32_t>> ord_,
-                  qdldl23::LDL32 F_, int n_, int m_, int refine_it)
-                : U(std::move(U_)), S(std::move(S_)), ord(std::move(ord_)), F(std::move(F_)), n(n_), m(m_),
-                  refine_iters(refine_it) {}
+            const PatternKey key                  = make_key(U);
+            bool             used_cached_symbolic = false;
 
-            std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double /*cg_tol*/,
-                                        int /*cg_maxit*/) override {
-                const int N = n + m;
-                dvec      rhs(N);
-
-                if (m > 0) {
-                    if (!r2n) throw std::runtime_error("LDL::Reuse: missing r2");
-                    rhs.head(n) = r1n;
-                    rhs.tail(m) = *r2n;
-                } else {
-                    rhs = r1n;
+            if (opts.use_symbolic_cache) {
+                auto it = symb_cache_.find(key);
+                if (it != symb_cache_.end()) {
+                    // Found cached symbolic (already matches ordering choice)
+                    const auto &C = it->second;
+                    if (C.n == U.n) {
+                        S                    = C.S;
+                        ord                  = C.ord;
+                        used_cached_symbolic = true;
+                        touch_key_(key);
+                    }
                 }
-
-                if (ord) {
-                    qdldl23::solve_with_ordering(F, *ord, rhs.data());
-                } else {
-                    qdldl23::solve(F, rhs.data());
-                }
-                // if (refine_iters > 0) {
-                //     if (ord) {
-                //         auto Up = qdldl23::permute_symmetric_upper(U, *ord);
-                //         qdldl23::refine(Up, F, rhs.data(), rhs.data(),
-                //         refine_iters, &(*ord));
-                //     } else {
-                //         qdldl23::refine(U, F, rhs.data(), rhs.data(),
-                //         refine_iters, nullptr);
-                //     }
-                // }
-
-                if (m > 0) return {rhs.head(n), rhs.tail(m)};
-                return {rhs, dvec()};
             }
-        };
 
-        auto res = std::make_shared<Reuse>(qdldl23::SparseD32(U), S, ord, F, n, m, opts.refine_iters);
-        return std::make_tuple(dx, dy, res);
+            if (!used_cached_symbolic) {
+                // Decide ordering
+                ord = maybe_build_ordering_(U, opts.use_ordering);
+                if (ord) {
+                    // Analyze permuted pattern once
+                    auto Up = qdldl23::permute_symmetric_upper(U, *ord);
+                    S       = qdldl23::analyze_fast(Up);
+                    // Numeric on permuted A
+                    F = qdldl23::refactorize(Up, S);
+                } else {
+                    // No ordering
+                    S = qdldl23::analyze_fast(U);
+                    F = qdldl23::refactorize(U, S);
+                }
+
+                if (opts.use_symbolic_cache) {
+                    CachedSymb C;
+                    C.S              = S;
+                    C.ord            = ord;
+                    C.n              = U.n;
+                    symb_cache_[key] = C;
+                    touch_key_(key);
+                }
+            } else {
+                // Have S (and maybe ord). Just numeric refactorize on the same
+                // pattern.
+                if (ord) {
+                    auto Up = qdldl23::permute_symmetric_upper(U, *ord);
+                    F       = qdldl23::refactorize(Up, S);
+                } else {
+                    F = qdldl23::refactorize(U, S);
+                }
+            }
+
+            // Solve
+            dvec x = rhs;
+            if (ord) {
+                qdldl23::solve_with_ordering(F, *ord, x.data());
+            } else {
+                qdldl23::solve(F, x.data());
+            }
+
+            dx = hasE ? x.head(n) : x;
+            dy = hasE ? x.tail(m) : dvec::Zero(0);
+
+            // Reusable object: keep U, S, ord, and F for fast multi-RHS solves
+            struct Reuse final : KKTReusable {
+                qdldl23::SparseD32                        U;
+                qdldl23::Symb32                           S;
+                std::optional<qdldl23::Ordering<int32_t>> ord;
+                qdldl23::LDL32                            F;
+                int                                       n, m;
+                int                                       refine_iters{0};
+
+                Reuse(qdldl23::SparseD32 U_, qdldl23::Symb32 S_, std::optional<qdldl23::Ordering<int32_t>> ord_,
+                      qdldl23::LDL32 F_, int n_, int m_, int refine_it)
+                    : U(std::move(U_)), S(std::move(S_)), ord(std::move(ord_)), F(std::move(F_)), n(n_), m(m_),
+                      refine_iters(refine_it) {}
+
+                std::pair<dvec, dvec> solve(const dvec &r1n, const std::optional<dvec> &r2n, double /*cg_tol*/,
+                                            int /*cg_maxit*/) override {
+                    const int N = n + m;
+                    dvec      rhs(N);
+
+                    if (m > 0) {
+                        if (!r2n) throw std::runtime_error("LDL::Reuse: missing r2");
+                        rhs.head(n) = r1n;
+                        rhs.tail(m) = *r2n;
+                    } else {
+                        rhs = r1n;
+                    }
+
+                    if (ord) {
+                        qdldl23::solve_with_ordering(F, *ord, rhs.data());
+                    } else {
+                        qdldl23::solve(F, rhs.data());
+                    }
+
+                    if (m > 0) return {rhs.head(n), rhs.tail(m)};
+                    return {rhs, dvec()};
+                }
+            };
+
+            reusable = std::make_shared<Reuse>(qdldl23::SparseD32(U), S, ord, F, n, m, opts.refine_iters);
+            break; // Success - break out of inertia tracking loop
+
+            // Inertia correction: increase delta_cur to ensure correct inertia
+            delta_cur = std::min(cfg.delta_max, std::max(2.0 * delta_cur, 1e-9));
+        }
+
+        if (!reusable) {
+            throw std::runtime_error("LDLStrategy: failed to factor KKT after inertia correction attempts.");
+        }
+
+        return std::make_tuple(dx, dy, reusable);
     }
 };
 

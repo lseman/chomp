@@ -910,7 +910,7 @@ void ADGraph::updateNodeIndex_() {
 
 // ===================== Expression / debug printing
 // ===========================
-std::string ADGraph::getExpression(const ADNodePtr &node) {
+std::string ADGraph::getExpression(const ADNodePtr &) {
     return "Unsupported in this build";
 }
 

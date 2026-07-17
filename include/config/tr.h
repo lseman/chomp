@@ -18,6 +18,11 @@ struct TRConfig {
     double cg_tol = 1e-8, cg_tol_rel = 1e-4;
     int cg_maxiter = 200;
     double neg_curv_tol = 1e-14, rcond = 1e-12, metric_shift = 1e-10;
+    // ARC-style adaptive regularization
+    double arc_reg_min = 1e-10;
+    double arc_reg_max = 1e4;
+    double arc_reg_update_factor = 2.0;
+    double arc_curvature_tol = -1e-6;
     double zeta = 0.8, constraint_tol = 1e-8;
     int max_active_set_iter = 8;
     bool use_prec = true;

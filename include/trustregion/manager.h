@@ -135,7 +135,9 @@ class TrustRegionManager {
             metric_.valid = false;
             return;
         }
-        set_metric_from_dense_spd_(to_metric_matrix_(H, cfg_.metric_shift));
+        // Use adaptive regularization for ARC-style
+        current_arc_reg_ = std::max(cfg_.arc_reg_min, cfg_.metric_shift);
+        set_metric_from_dense_spd_(to_metric_matrix_(H, current_arc_reg_));
     }
     template <class Mat>
     void update_metric_from_H(const Mat& H) {
@@ -143,7 +145,9 @@ class TrustRegionManager {
             metric_.valid = false;
             return;
         }
-        update_metric_from_dense_spd_(to_metric_matrix_(H, cfg_.metric_shift));
+        // Use adaptive regularization for ARC-style
+        current_arc_reg_ = std::max(cfg_.arc_reg_min, cfg_.metric_shift);
+        update_metric_from_dense_spd_(to_metric_matrix_(H, current_arc_reg_));
     }
     inline void set_metric_from_H_dense(const dmat& H) { set_metric_from_H(H); }
     inline void set_metric_from_H_sparse(const spmat& H) {
@@ -246,6 +250,8 @@ class TrustRegionManager {
     double delta_;
     mutable double current_kkt_residual_ =
         std::numeric_limits<double>::quiet_NaN();
+    // ARC-style adaptive regularization state
+    mutable double current_arc_reg_ = 1e-10;
 
     struct AcceptanceTrial {
         bool accepted = false;
@@ -272,7 +278,9 @@ class TrustRegionManager {
             return;
         }
         const dmat Msym = 0.5 * (Mspd + Mspd.transpose());
-        metric_.L = psd_cholesky_with_shift(Msym, cfg_.metric_shift);
+        // Use adaptive regularization for ARC-style
+        current_arc_reg_ = std::max(cfg_.arc_reg_min, cfg_.metric_shift);
+        metric_.L = psd_cholesky_with_shift(Msym, current_arc_reg_);
         metric_.M = Msym;
         metric_.valid = true;
     }
@@ -526,6 +534,23 @@ class TrustRegionManager {
         return p.dot(W_.Hp) / denom;
     }
 
+    // ARC-style adaptive regularization update
+    [[nodiscard]] inline double update_arc_regularization_(double curv,
+                                                             double current_reg) {
+        if (!std::isfinite(curv)) return current_reg;
+        // If negative curvature is detected, increase regularization
+        if (curv < cfg_.arc_curvature_tol) {
+            current_reg = std::min(cfg_.arc_reg_max,
+                                   current_reg * cfg_.arc_reg_update_factor);
+        } else {
+            // If curvature is positive and large, we can reduce regularization
+            if (curv > 1e-2 && current_reg > cfg_.arc_reg_min) {
+                current_reg = std::max(cfg_.arc_reg_min, current_reg * 0.5);
+            }
+        }
+        return current_reg;
+    }
+
     void update_tr_radius_(double predicted, double actual, double step_norm,
                            const LinOp& H, const dvec& p, double /*theta_old*/,
                            double /*theta_new*/) {
@@ -534,6 +559,14 @@ class TrustRegionManager {
         recent_rhos_.push_back(rho);
         if (recent_rhos_.size() > 10) recent_rhos_.erase(recent_rhos_.begin());
         auto [eta1, eta2] = compute_adaptive_thresholds_();
+
+        // ARC-style adaptive regularization update based on curvature
+        if (cfg_.curvature_aware) {
+            const double curv = curvature_along_(H, p);
+            if (std::isfinite(curv)) {
+                current_arc_reg_ = update_arc_regularization_(curv, current_arc_reg_);
+            }
+        }
 
         if (rho < eta1) {
             double shrink = cfg_.gamma1;
@@ -723,7 +756,7 @@ class TrustRegionManager {
                 /*tolE*/ cfg_.constraint_tol,
                 /*violI*/ 0.0,
                 /*reg*/ cfg_.jacobian_reg_min,
-                /*sigma0*/ cfg_.metric_shift, lb, ub);
+                /*sigma0*/ current_arc_reg_, lb, ub);
             if (soc.applied) {
                 p += soc.q;
                 info.soc_applied = true;

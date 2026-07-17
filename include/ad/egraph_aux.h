@@ -526,7 +526,7 @@ static bool rule_sqrt_square_(EGraph& G, int ec) {
 }
 
 // sqrt(exp(x)) → exp(x/2)
-static bool rule_sqrt_exp_(EGraph& G, int ec, const EGraphBudget& budget) {
+static bool rule_sqrt_exp_(EGraph& G, int ec, const EGraphBudget&) {
     int rep = G.find(ec);
     for (int idx : G.classes[rep].nodes) {
         const ENode& n = G.arena[idx];
