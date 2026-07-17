@@ -136,7 +136,7 @@ def compare_solve(use_funnel: bool) -> np.ndarray:
 def assert_source_regressions_fixed() -> None:
     stepper_src = (ROOT / "include/ip/stepper.h").read_text()
     ls_src = (ROOT / "include/blocks/linesearch.h").read_text()
-    helpers_src = (ROOT / "include/ip/helpers.h").read_text()
+    mg_solver_src = (ROOT / "include/ip/mg_solver.h").read_text()
 
     assert (
         "ls_->search(m_, x, dx, (mI ? ds : dvec()), (mI ? s : dvec()), mu,"
@@ -149,7 +149,7 @@ def assert_source_regressions_fixed() -> None:
     assert (
         "bound_barrier_directional_derivative(x, dx, bounds, mu, barrier_eps)" in ls_src
     )
-    assert "rhs_x[i] += bound_corr;" in helpers_src
+    assert "rhs_x[i] += bound_corr;" in mg_solver_src
 
 
 def rosenbrock_filter_solve() -> np.ndarray:

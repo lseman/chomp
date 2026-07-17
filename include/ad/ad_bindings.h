@@ -416,7 +416,6 @@ public:
         double fval;
         Eigen::VectorXd grad(var_nodes.size());
         {
-            nb::gil_scoped_release nogil;
             std::lock_guard lock(eval_mtx_);
             for (size_t i = 0; i < var_nodes.size(); ++i) var_nodes[i]->value = x[i];
             g->resetGradients();
@@ -826,7 +825,6 @@ public:
         trips.reserve(std::min<size_t>(n * 16, n * n)); // rough guess; grows if needed
 
         {
-        nb::gil_scoped_release nogil;
         std::lock_guard lock(eval_mtx_);
         set_state_eigen(x_in, lam_in, nu_in);
         build_permutations_once_();
@@ -1039,7 +1037,6 @@ public:
             throw std::invalid_argument("CompiledWOp::perform_op: vector size mismatch.");
 
         {
-            nb::gil_scoped_release nogil;
             std::lock_guard lock(L_->eval_mtx_);
             for (std::size_t i = 0; i < n; ++i) {
                 const std::size_t gi = static_cast<std::size_t>(L_->x2g_[i]);

@@ -71,3 +71,4 @@ Desktop.ini
 build_opt/
 build-chomp/
 ariadne.db
+/build-debug

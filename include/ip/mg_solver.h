@@ -41,8 +41,6 @@ class MehrotraGondzioSolver {
         double centrality_measure = 1.0;
     };
 
-    SOC soc_;
-
     explicit MehrotraGondzioSolver(nb::object cfg, ModelC* model)
         : cfg_(cfg), model_(model),
           soc_(SOC::Config{get_attr_or<double>(cfg_, "soc_threshold", 0.3),
@@ -86,7 +84,7 @@ class MehrotraGondzioSolver {
                    use_shifted, tau_shift, bound_shift, Sg,
                    [this](const auto& W, const auto& rhs, const auto& JE,
                           const auto& r_pE,
-                          auto tag) { return solve_kkt_(W, rhs, JE, r_pE, tag); });
+                          auto) { return solve_kkt_(W, rhs, JE, r_pE, solving_method); });
 
         return {alpha_aff, mu_aff, sigma, final_step};
     }
@@ -104,6 +102,7 @@ class MehrotraGondzioSolver {
    private:
     nb::object cfg_;
     ModelC* model_;
+    SOC soc_;
     GondzioConfig config_;
     std::function<KKTResult(const spmat&, const dvec&,
                             const std::optional<spmat>&,
@@ -116,6 +115,7 @@ class MehrotraGondzioSolver {
     int correction_stall_count_ = 0;
 
     void load_config_() {
+        solving_method = get_attr_or<std::string>(cfg_, "ip_kkt_method", "hykkt");
         config_.max_corrections =
             get_attr_or<int>(cfg_, "gondzio_max_corrections", 3);
         config_.gamma_a = get_attr_or<double>(cfg_, "gondzio_gamma_a", 0.1);
