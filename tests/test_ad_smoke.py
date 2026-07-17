@@ -1,4 +1,5 @@
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -80,3 +81,43 @@ def test_relu_piecewise_gradient_away_from_kink():
     assert_close(neg_grad, np.array([0.0]))
     assert pos_value == 2.0
     assert_close(pos_grad, np.array([1.0]))
+
+
+def test_shared_gradfn_and_duplicate_batch_entries_are_thread_safe():
+    grad_fn = ad.sym_grad(smooth_objective, 2, vector_input=True)
+    points = [np.array([0.1 * i, -0.2 + 0.01 * i]) for i in range(24)]
+    expected = [np.asarray(grad_fn(x)) for x in points]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        actual = list(pool.map(grad_fn, points))
+    for got, want in zip(actual, expected):
+        assert_close(got, want)
+
+    _, jac = ad.batch_valgrad([grad_fn, grad_fn, grad_fn], points[0])
+    assert_close(jac[0], jac[1])
+    assert_close(jac[1], jac[2])
+
+
+def test_lagrangian_hessian_keeps_mutable_multiplier_terms():
+    objective = lambda z: z[0] ** 3 + ad.sin(z[1])
+    inequalities = [lambda z: z[0] * z[1]]
+    equalities = [lambda z: z[0] ** 2 + z[1] ** 2]
+    lag_hess = ad.sym_laghess(
+        objective, inequalities, equalities, 2, vector_input=True
+    )
+
+    x = np.array([0.7, -0.4])
+    lam = np.array([1.3])
+    nu = np.array([-0.2])
+    expected = np.array(
+        [
+            [6.0 * x[0] + 2.0 * nu[0], lam[0]],
+            [lam[0], -np.sin(x[1]) + 2.0 * nu[0]],
+        ]
+    )
+    assert_close(lag_hess.hess(x, lam, nu), expected)
+
+    v = np.array([0.3, -0.8])
+    V = np.column_stack((v, np.array([1.0, 2.0])))
+    assert_close(lag_hess.hvp_numpy(x, lam, nu, v), expected @ v)
+    assert_close(lag_hess.hvp_multi_numpy(x, lam, nu, V), expected @ V)

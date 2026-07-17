@@ -356,7 +356,6 @@ public:
     std::shared_ptr<LineSearcher>          ls_;
     std::shared_ptr<regx::Regularizer>     regularizer_ = std::make_shared<regx::Regularizer>();
     std::unique_ptr<MehrotraGondzioSolver> mg_solver_;
-    std::unique_ptr<AdaptiveShiftManager>  shift_mgr_;
 
     ModelC *m_ = nullptr;
     InteriorPointStepper(nb::object cfg, ModelC *cfg_model) : cfg_(std::move(cfg)), m_(cfg_model) {
@@ -393,12 +392,10 @@ public:
         mg_solver_->set_kkt_solver(
             [this](const spmat &W, const dvec &r1, const std::optional<spmat> &JE, const std::optional<dvec> &r_pE,
                    std::string_view method) { return this->solve_KKT_(W, r1, JE, r_pE, method); });
-        shift_mgr_ = std::make_unique<AdaptiveShiftManager>(cfg_);
     }
 
-    double             penalty_rho_   = 1.0; // cubic penalty ρ parameter
-    double             penalty_sigma_ = 0.1; // cubic penalty σ parameter
-    double             last_theta_    = std::numeric_limits<double>::max();
+    double             penalty_rho_  = 1.0; // L1 penalty ρ parameter
+    double             last_theta_   = std::numeric_limits<double>::max();
     std::deque<double> theta_history_; // Fixed: use deque for pop_front()
 
     std::tuple<dvec, dvec, dvec, SolverInfo> step(const dvec &x, const dvec &lam, const dvec &nu, int it,
@@ -409,7 +406,6 @@ public:
         // -------------------- Init / state --------------------
         if (!st.initialized) {
             reset_kkt_cache_();
-            shift_mgr_->reset();
             tr_clip_streak_            = 0;
             tr_good_streak_            = 0;
             const bool have_warm_state = ip_state_opt && ip_state_opt->initialized &&
@@ -438,9 +434,8 @@ public:
         dvec   zU  = st.zU;
         double mu  = st.mu;
 
-        const bool use_shifted = get_attr_or<bool>(cfg_, "ip_use_shifted_barrier", true);
-        const bool shift_adapt = get_attr_or<bool>(cfg_, "ip_shift_adaptive", true);
-        IP_LAP("init/state");
+        constexpr bool use_shifted = false;
+        IP_LAP("init_state");
 
         // -------------------- Trust region initialization --------------------
         if (!tr_inited_) {
@@ -448,9 +443,8 @@ public:
             tr_ema_    = tr_radius_;
             tr_inited_ = true;
 
-            // Initialize cubic penalty parameters
-            penalty_rho_   = get_attr_or<double>(cfg_, "ip_penalty_rho_init", 1.0);
-            penalty_sigma_ = get_attr_or<double>(cfg_, "ip_penalty_sigma_init", 0.1);
+            // Initialize L1 penalty parameter
+            penalty_rho_ = get_attr_or<double>(cfg_, "ip_penalty_rho_init", 1.0);
             last_theta_    = std::numeric_limits<double>::max();
             theta_history_.clear();
         }
@@ -560,10 +554,8 @@ public:
         // --------------------
         auto update_penalty_parameters = [&](double theta_current, double theta_reduction_rate, double mu_current,
                                              int iteration) {
-            const double rho_min   = get_attr_or<double>(cfg_, "ip_penalty_rho_min", 1e-6);
-            const double rho_max   = get_attr_or<double>(cfg_, "ip_penalty_rho_max", 1e6);
-            const double sigma_min = get_attr_or<double>(cfg_, "ip_penalty_sigma_min", 1e-8);
-            const double sigma_max = get_attr_or<double>(cfg_, "ip_penalty_sigma_max", 1e3);
+            const double rho_min = get_attr_or<double>(cfg_, "ip_penalty_rho_min", 1e-6);
+            const double rho_max = get_attr_or<double>(cfg_, "ip_penalty_rho_max", 1e6);
 
             // Track constraint violation history for trend analysis
             theta_history_.push_back(theta_current);
@@ -589,17 +581,7 @@ public:
                 penalty_rho_ = std::max(penalty_rho_ * 0.9, rho_min);
             }
 
-            // Adaptive cubic penalty parameter σ
-            const double theta_threshold = get_attr_or<double>(cfg_, "ip_theta_cubic_threshold", 1e-2);
-            if (theta_current > theta_threshold) {
-                // Significant violations - increase cubic penalty for
-                // superlinear effect
-                penalty_sigma_ = std::min(penalty_sigma_ * 1.2, sigma_max);
-            } else if (theta_current < theta_threshold * 0.01) {
-                // Very small violations - reduce cubic penalty to avoid
-                // over-penalization
-                penalty_sigma_ = std::max(penalty_sigma_ * 0.95, sigma_min);
-            }
+
 
             // Keep penalty parameters proportional to barrier parameter
             const double min_rho_relative = get_attr_or<double>(cfg_, "ip_penalty_rho_relative", 10.0);
@@ -608,20 +590,20 @@ public:
             last_theta_ = theta_current;
         };
 
-        // -------------------- Cubic Penalty Merit Function (for TR only)
+        // -------------------- Standard L1 Merit Function (barrier + exact penalty)
         // --------------------
-        auto compute_cubic_merit = [&](double f_val, const dvec &s_val, const Bounds &B_val, double mu_val,
-                                       double theta_val) -> double {
-            const double barrier_term   = mu_val * (barrier_sum(s_val) + bound_barrier_sum(B_val));
-            const double linear_penalty = penalty_rho_ * theta_val;
-            const double cubic_penalty  = penalty_sigma_ * std::pow(theta_val, 3.0);
-
-            return f_val - barrier_term + linear_penalty + cubic_penalty;
+        // merit = f + rho * theta - mu * barrier
+        // Standard in IPOPT, SNOPT, KNITRO
+        auto compute_merit = [&](double f_val, const dvec &s_val, const Bounds &B_val, double mu_val,
+                                 double theta_val) -> double {
+            const double barrier_term = mu_val * (barrier_sum(s_val) + bound_barrier_sum(B_val));
+            const double penalty_term = penalty_rho_ * theta_val;
+            return f_val + penalty_term - barrier_term;
         };
 
-        // -------------------- Enhanced Cubic Predicted Reduction
+        // -------------------- Predicted Reduction (L1 merit model)
         // --------------------
-        auto predicted_reduction_cubic = [&](const dvec &dx, const dvec &r_d, dvec &Wdx_scratch, const dvec &s,
+        auto predicted_reduction = [&](const dvec &dx, const dvec &r_d, dvec &Wdx_scratch, const dvec &s,
                                              const dvec &ds, const Bounds &B_cur, double mu, double alpha_step,
                                              const EvalPack &E) -> double {
             // Standard quadratic model terms
@@ -672,41 +654,29 @@ public:
             // Linear penalty contribution
             const double linear_penalty_change = penalty_rho_ * theta_pred_linear;
 
-            // Cubic penalty contribution
-            const double cubic_penalty_old    = penalty_sigma_ * std::pow(E.theta, 3.0);
-            const double cubic_penalty_new    = penalty_sigma_ * std::pow(theta_new, 3.0);
-            const double cubic_penalty_change = cubic_penalty_new - cubic_penalty_old;
+
 
             // Total predicted reduction: -(linear + quadratic) -
-            // mu*barrier_change - penalty_changes
-            return -(lin + q) - mu * dphi - linear_penalty_change - cubic_penalty_change;
+            // mu*barrier_change + rho*delta_theta
+            return -(lin + q) - mu * dphi - penalty_rho_ * theta_pred_linear;
         };
 
         // ------------------------------------------------------------------------
 
         // -------------------- Evaluate model at x --------------------
         EvalPack E = eval_all_at(x, n, mI, mE);
-        IP_LAP("eval_all(x)");
+        IP_LAP("eval_primal");
 
         // Update penalty parameters based on current progress
         const double theta_reduction_rate = (last_theta_ > 1e-16) ? (last_theta_ - E.theta) / last_theta_ : 0.0;
         update_penalty_parameters(E.theta, theta_reduction_rate, mu, it);
 
         Bounds B = get_bounds(x);
-        IP_LAP("bounds(get)");
+        IP_LAP("bounds");
 
-        double tau_shift = 0.0;
-        if (use_shifted) {
-            tau_shift = shift_adapt ? shift_mgr_->compute_slack_shift(s, E.cI, lmb, it, mu)
-                                    : get_attr_or<double>(cfg_, "ip_shift_tau", 0.0);
-        }
-        st.tau_shift       = tau_shift;
-        double bound_shift = 0.0;
-        if (use_shifted) {
-            bound_shift = shift_adapt ? shift_mgr_->compute_bound_shift(x, B, it)
-                                      : get_attr_or<double>(cfg_, "ip_shift_bounds", 0.0);
-        }
-        IP_LAP("bounds & shifts (A)");
+        constexpr double tau_shift = 0.0;
+        constexpr double bound_shift = 0.0;
+
 
         const double tol = get_attr_or<double>(cfg_, "tol", 1e-8);
 
@@ -714,11 +684,10 @@ public:
         dvec         r_d = build_r_d(E, lmb, nuv, zL, zU);
         const double err_prev =
             aggregated_error(E, r_d, zL, zU, mu, s, lmb, nuv, B, n, mE, mI, use_shifted, tau_shift, bound_shift);
-        IP_LAP("compute_error_(x)");
+        IP_LAP("residuals");
 
         // Check penalty-aware convergence
-        const bool penalty_converged =
-            (penalty_rho_ * E.theta < tol) && (penalty_sigma_ * std::pow(E.theta, 3.0) < tol);
+        const bool penalty_converged = (penalty_rho_ * E.theta < tol);
 
         if (err_prev <= tol && penalty_converged) {
             SolverInfo info;
@@ -738,7 +707,6 @@ public:
             info.tr_radius     = tr_radius_;
             info.mu            = mu;
             info.penalty_rho   = penalty_rho_;
-            info.penalty_sigma = penalty_sigma_;
             return {x, lmb, nuv, info};
         }
 
@@ -747,13 +715,13 @@ public:
         const double cap_add = get_attr_or<double>(cfg_, "sigma_cap", 1e8);
         Sigmas       Sg =
             detail::build_sigmas(zL, zU, B, lmb, s, E.cI, tau_shift, bound_shift, use_shifted, eps_abs, cap_add);
-        IP_LAP("build_sigmas");
+
 
         auto H0 = m_->hess(x, lmb, nuv);
-        IP_LAP("get Hessian");
+        IP_LAP("hessian");
         auto [H, reg_info] = regularizer_->regularize(H0, it);
         H.makeCompressed();
-        IP_LAP("regularize(H)");
+        IP_LAP("regularize");
 
         // Compile W operator for fast products
         m_->compileWOp(Sg.Sigma_x, (mI > 0) ? std::optional<spmat>(E.JI) : std::nullopt,
@@ -761,22 +729,17 @@ public:
 
         spmat W = assemble_W(H, Sg.Sigma_x, (mI > 0 && E.JI.nonZeros()) ? std::optional<spmat>(E.JI) : std::nullopt,
                              Sg.Sigma_s);
-        IP_LAP("assemble W");
+        IP_LAP("assemble_W");
 
         // -------------------- Residuals --------------------
         dvec r_pI = (mI > 0) ? (E.cI + s) : dvec();
-        IP_LAP("build residuals");
+
 
         std::optional<spmat> JE_eff = (mE > 0 && E.JE.nonZeros()) ? std::optional<spmat>(E.JE) : std::nullopt;
 
         dvec r_pE = (mE > 0) ? E.cE : dvec();
 
-        if (mE > 0 && shift_adapt) {
-            if (auto d_rE = shift_mgr_->compute_equality_shift(
-                    JE_eff, (E.cE.size() ? std::optional<dvec>(E.cE) : std::nullopt))) {
-                if (d_rE->size() == r_pE.size()) { r_pE.noalias() += *d_rE; }
-            }
-        }
+
 
         m_->set_params(Sg.Sigma_x, (mI > 0) ? std::optional<dvec>(Sg.Sigma_s) : std::nullopt, mu, E.theta, it);
         // -------------------- Solve for step --------------------
@@ -792,7 +755,7 @@ public:
         dvec dzU  = step.dzU;
 
         mu = step.mu_target;
-        IP_LAP("solve step");
+        IP_LAP("kkt_solve");
 
         // -------------------- Cubic Penalty Trust Region Management
         // --------------------
@@ -827,7 +790,7 @@ public:
                 tr_good_streak_ = std::max(0, tr_good_streak_ - 1);
             }
         }
-        IP_LAP("cubic penalty TR management");
+        IP_LAP("trust_region");
 
         // -------------------- Fraction-to-boundary + Funnel Line Search
         // --------------------
@@ -866,17 +829,36 @@ public:
             ls_iters    = std::get<1>(ls_res);
             needs_restoration = std::get<2>(ls_res);
         }
-        IP_LAP("funnel line search");
+        IP_LAP("line_search");
 
         // -------------------- Restoration path --------------------
         const double ls_min_alpha =
             get_attr_or<double>(cfg_, "ls_min_alpha", get_attr_or<double>(cfg_, "ip_alpha_min", 1e-10));
 
         if (alpha <= ls_min_alpha && needs_restoration) {
-            dvec         dxf = -E.g;
-            const double ng  = dxf.norm();
-            if (ng > tr_ema_ && ng > 0.0) dxf *= (tr_ema_ / ng);
-            if (ng > 0) dxf /= ng;
+            // Feasibility restoration: minimize L1 constraint violation
+            // dxf = -J^T * sign(c)  (steepest descent on violation)
+            dvec dxf = dvec::Zero(n);
+            const double ng_E = E.cE.lpNorm<1>();
+            const double ng_I = (mI > 0) ? (E.cI.array().max(0.0)).matrix().lpNorm<1>() : 0.0;
+            const double norm_scale = std::max(1.0, ng_E + ng_I);
+            // Equality contribution
+            if (mE > 0 && E.JE.nonZeros()) {
+                dvec sE = E.cE.array().sign().matrix();
+                dxf.noalias() -= E.JE.transpose() * sE;
+            }
+            // Inequality contribution
+            if (mI > 0 && E.JI.nonZeros()) {
+                dvec sI = (E.cI.array().max(0.0)).array().sign().matrix();
+                dxf.noalias() -= E.JI.transpose() * sI;
+            }
+            const double ng = dxf.norm();
+            if (ng > 1e-15) {
+                dxf = std::min(ng, tr_ema_) / ng * dxf;
+            } else {
+                // Fallback: gradient of objective (no feasible direction found)
+                dxf = -E.g;
+            }
             const double a_safe = std::min(alpha_max, 1e-2);
             dvec         x_new  = x + a_safe * dxf;
 
@@ -911,7 +893,6 @@ public:
             info.tr_radius     = tr_radius_;
             info.mu            = st.mu;
             info.penalty_rho   = penalty_rho_;
-            info.penalty_sigma = penalty_sigma_;
             return {x_new, st.lam, st.nu, info};
         }
 
@@ -926,10 +907,10 @@ public:
 
         Bounds Bn = get_bounds(x_new);
         detail::cap_bound_duals_sigma_box(zL_new, zU_new, Bn, use_shifted, bound_shift, mu, 1e10);
-        IP_LAP("apply step & cap");
+        IP_LAP("apply_step");
 
         EvalPack En = eval_all_at(x_new, n, mI, mE);
-        IP_LAP("eval_all(x_new)");
+        IP_LAP("eval_new");
 
         // -------------------- KKT residuals (new) --------------------
         dvec r_d_new = build_r_d(En, lmb_new, nu_new, zL_new, zU_new);
@@ -943,15 +924,15 @@ public:
         const double tol_outer = tol;
         const bool   converged = (kkt_new.stat <= tol_outer && kkt_new.ineq <= tol_outer && kkt_new.eq <= tol_outer &&
                                   kkt_new.comp <= tol_outer && mu <= tol_outer / 10.0);
-        IP_LAP("KKT new");
+        IP_LAP("kkt_check");
 
         // -------------------- Cubic Penalty Trust Region Update
         // -------------------- Predicted reduction using cubic penalty model
-        double pred = predicted_reduction_cubic(dx, r_d, Wdx_scratch, s, (mI ? ds : dvec()), B, mu, alpha, E);
+        double pred = predicted_reduction(dx, r_d, Wdx_scratch, s, (mI ? ds : dvec()), B, mu, alpha, E);
 
         // Actual reduction using cubic penalty merit function
-        double merit_old = compute_cubic_merit(E.f, s, B, mu, E.theta);
-        double merit_new = compute_cubic_merit(En.f, s_new, Bn, mu, En.theta);
+        double merit_old = compute_merit(E.f, s, B, mu, E.theta);
+        double merit_new = compute_merit(En.f, s_new, Bn, mu, En.theta);
         double ared      = merit_old - merit_new;
 
         // Robust ratio calculation
@@ -1014,7 +995,7 @@ public:
 
         // Adaptive EMA smoothing - faster response when penalties are active
         double adaptive_beta = beta;
-        if (penalty_rho_ * E.theta > 1e-4 || penalty_sigma_ * std::pow(E.theta, 3.0) > 1e-6) {
+        if (penalty_rho_ * E.theta > 1e-4) {
             adaptive_beta *= 1.5; // Faster adaptation when penalties are significant
         }
         adaptive_beta = std::min(adaptive_beta, 0.8);
@@ -1044,13 +1025,9 @@ public:
         info.rho             = rho;
         info.tr_radius       = tr_radius_;
         info.mu              = st.mu;
-        info.shifted_barrier = use_shifted;
-        info.tau_shift       = tau_shift;
-        info.bound_shift     = bound_shift;
 
-        // Enhanced diagnostics for cubic penalty method
+        // Penalty diagnostics
         info.penalty_rho        = penalty_rho_;
-        info.penalty_sigma      = penalty_sigma_;
         info.step_quality_ratio = stepW / std::max(Delta, 1e-12);
         info.was_clipped        = was_clipped;
         info.clip_streak        = tr_clip_streak_;
@@ -1063,7 +1040,6 @@ public:
         st.zL        = std::move(zL_new);
         st.zU        = std::move(zU_new);
         st.mu        = info.mu;
-        st.tau_shift = tau_shift;
 
         return {x_new, st.lam, st.nu, info};
     }
@@ -1123,12 +1099,6 @@ private:
         set_if_missing("ip_exact_hessian", nb::bool_(true));
         set_if_missing("ip_hess_reg0", nb::float_(1e-4));
         set_if_missing("ip_eq_reg", nb::float_(1e-4));
-        set_if_missing("ip_use_shifted_barrier", nb::bool_(true));
-        set_if_missing("ip_shift_tau", nb::float_(0.01));
-        set_if_missing("ip_shift_tau_kappa", nb::float_(1e-3));
-        set_if_missing("ip_shift_tau_floor", nb::float_(1e-4));
-        set_if_missing("ip_shift_bounds", nb::float_(0.1));
-        set_if_missing("ip_shift_adaptive", nb::bool_(true));
         set_if_missing("ip_mu_init", nb::float_(1e-2));
         set_if_missing("ip_mu_min", nb::float_(1e-12));
         set_if_missing("ip_sigma_power", nb::float_(3.0));
@@ -1160,9 +1130,8 @@ private:
         dvec cI = (s.mI > 0) ? m_->get_cI().value() : dvec::Zero(s.mI);
 
         const double mu0            = clamp_min(get_attr_or<double>(cfg_, "ip_mu_init", 1e-2), 1e-12);
-        const bool   use_shifted    = get_attr_or<bool>(cfg_, "ip_use_shifted_barrier", true);
-        const double tau_shift      = use_shifted ? get_attr_or<double>(cfg_, "ip_shift_tau", 0.1) : 0.0;
-        const double bound_shift    = use_shifted ? get_attr_or<double>(cfg_, "ip_shift_bounds", 0.1) : 0.0;
+        constexpr double tau_shift = 0.0;
+        constexpr double bound_shift = 0.0;
         const double slack_init_min = clamp_min(get_attr_or<double>(cfg_, "ip_slack_init_min", 1e-6), 1e-12);
         const double slack_init_pad = clamp_min(get_attr_or<double>(cfg_, "ip_slack_init_pad", 1e-3), 0.0);
 
@@ -1193,7 +1162,6 @@ private:
         }
 
         s.mu          = mu0;
-        s.tau_shift   = tau_shift;
         s.initialized = true;
         return s;
     }

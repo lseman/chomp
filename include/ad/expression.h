@@ -178,7 +178,7 @@ public:
         graph->printTree(rootNode);
     }
 
-    // -------- operator overloads (implemented in Expression.cpp) ----
+    // -------- operator overloads (implemented in expression.cpp) ----
     // Expression ⊕ Expression
     ExpressionPtr operator+(const Expression &other) const;
     ExpressionPtr operator-(const Expression &other) const;

@@ -762,8 +762,13 @@ public:
                 qdldl23::solve(F, x.data());
             }
 
-            dx = hasE ? x.head(n) : x;
-            dy = hasE ? x.tail(m) : dvec::Zero(0);
+            if (hasE) {
+                dx = x.head(n);
+                dy = x.tail(m);
+            } else {
+                dx = x;
+                dy.resize(0);
+            }
 
             // Reusable object: keep U, S, ord, and F for fast multi-RHS solves
             struct Reuse final : KKTReusable {

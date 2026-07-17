@@ -1,4 +1,4 @@
-// Expression.cpp — faster drop-in (API compatible, no Operator::Neg required)
+// expression.cpp — faster drop-in (API compatible, no Operator::Neg required)
 #include <ad/ad_graph.h>
 #include <ad/expression.h>
 #include <ad/operators.h>   // enum Operator

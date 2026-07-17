@@ -12,6 +12,7 @@ import math
 
 import numpy as np
 import pytest
+from scipy import sparse
 
 import ad
 
@@ -48,6 +49,13 @@ def torch_value_jac(fns, x):
         values.append(float(y.detach()))
         jac_rows.append(g.detach().numpy())
     return np.array(values), np.stack(jac_rows)
+
+
+def ad_sparse_hessian(fn, x):
+    """Compile fn and request a sparse Hessian with a sparse input vector."""
+    hess_fn = ad.sym_hess(fn, x.shape[0], vector_input=True)
+    x_sparse = sparse.csr_matrix(x.reshape(-1, 1))
+    return hess_fn.hess(x_sparse).toarray()
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +131,7 @@ def test_value_grad_hessian_match_torch(name, ad_fn, torch_fn, x):
     x = x.astype(float)
 
     value, grad = ad.valgrad(ad_fn, x)
-    hess = ad.hess(ad_fn, x)
+    hess = ad_sparse_hessian(ad_fn, x)
 
     t_value, t_grad, t_hess = torch_value_grad_hess(torch_fn, x)
 
@@ -138,7 +146,7 @@ def test_value_grad_hessian_match_torch(name, ad_fn, torch_fn, x):
 
 def test_hessian_is_symmetric():
     for name, ad_fn, _, x in SCALAR_CASES:
-        h = ad.hess(ad_fn, x.astype(float))
+        h = ad_sparse_hessian(ad_fn, x.astype(float))
         assert np.allclose(h, h.T, atol=1e-9), f"{name}: Hessian not symmetric"
 
 

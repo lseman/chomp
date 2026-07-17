@@ -34,7 +34,15 @@ def make_cfg() -> ChompConfig:
 
 
 def assert_source_regressions_fixed() -> None:
-    manager_src = (ROOT / "include/trustregion/manager.h").read_text()
+    manager_files = (
+        "manager.h",
+        "manager_soc.inl",
+        "manager_restoration.inl",
+    )
+    manager_src = "\n".join(
+        (ROOT / "include/trustregion" / name).read_text()
+        for name in manager_files
+    )
     stepper_src = (ROOT / "include/sqp/stepper.h").read_text()
 
     assert "current_theta_ = *theta_old;" in manager_src

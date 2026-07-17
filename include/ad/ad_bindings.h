@@ -75,6 +75,18 @@ static inline bool is_sequence(const nb::handle &h) noexcept {
     return nb::isinstance<nb::list>(h) || nb::isinstance<nb::tuple>(h);
 }
 
+static inline bool is_scipy_sparse(const nb::handle &h) {
+    nb::object type = nb::module_::import_("builtins").attr("type")(h);
+    std::string module = nb::cast<std::string>(type.attr("__module__"));
+    return module.starts_with("scipy.sparse");
+}
+
+static inline Arr1D scipy_sparse_to_1d(const nb::handle &x) {
+    auto np = nb::module_::import_("numpy");
+    return nb::cast<Arr1D>(np.attr("ascontiguousarray")(
+        x.attr("toarray")().attr("reshape")(-1), "dtype"_a = "float64"));
+}
+
 [[gnu::always_inline, gnu::hot]]
 static inline std::span<const double> as_span_1d(const Arr1D &a) {
     if (a.ndim() != 1) [[unlikely]]
@@ -315,7 +327,7 @@ static inline std::shared_ptr<Expression> max_dispatch(const nb::handle &x, cons
     }
     auto ex = coerce_expr(x);
     auto ey = coerce_expr(y, ex->graph);
-    // Provide this in Expression.cpp:
+    // Provide this in expression.cpp:
     // ExpressionPtr max(const Expression& a, const Expression& b);
     return max(*ex, *ey);
 }
@@ -360,6 +372,7 @@ public:
     std::vector<ADNodePtr> var_nodes;
     bool                   vector_mode{};
     nb::object             python_func;
+    mutable std::mutex     eval_mtx_;
 
     [[gnu::pure]] std::string expr_str() const {
         return (g && expr_root) ? g->getExpression(expr_root) : std::string{};
@@ -374,16 +387,24 @@ public:
     }
 
     nb::list operator()(nb::object x) {
-        set_inputs_from_seq(var_nodes, x);
+        if (!is_sequence(x)) throw std::invalid_argument("expected a list/tuple");
+        nb::sequence sx = nb::cast<nb::sequence>(x);
+        if ((size_t)nb::len(sx) != var_nodes.size()) throw std::invalid_argument("wrong input length");
+        std::vector<double> values(var_nodes.size());
+        for (size_t i = 0; i < values.size(); ++i) values[i] = nb::cast<double>(sx[i]);
+        std::vector<double> result(var_nodes.size());
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_inputs_from_span(var_nodes, values);
             g->resetGradients();
             g->computeForwardPass();
             set_epoch_value(expr_root->gradient, expr_root->grad_epoch, g->cur_grad_epoch_, 1.0);
             g->initiateBackwardPass(expr_root);
+            for (size_t i = 0; i < result.size(); ++i) result[i] = var_nodes[i]->gradient;
         }
         nb::list out;
-        for (auto &nd : var_nodes) out.append(nb::float_(nd->gradient));
+        for (double value : result) out.append(nb::float_(value));
         return out;
     }
 
@@ -392,25 +413,26 @@ public:
         auto x = std::span<const double>(x_in.data(), (size_t)x_in.size());
         if ((size_t)x.size() != var_nodes.size()) [[unlikely]]
             throw std::invalid_argument("GradFn.value_grad: wrong input length");
-        for (size_t i = 0; i < var_nodes.size(); ++i) var_nodes[i]->value = x[i]; // implicit cast double <- scalar
-
         double fval;
+        Eigen::VectorXd grad(var_nodes.size());
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            for (size_t i = 0; i < var_nodes.size(); ++i) var_nodes[i]->value = x[i];
             g->resetGradients();
             g->resetForwardPass();
             g->computeForwardPass();
             fval = expr_root->value;
             set_epoch_value(expr_root->gradient, expr_root->grad_epoch, g->cur_grad_epoch_, 1.0);
             g->initiateBackwardPass(expr_root);
+            for (size_t i = 0; i < var_nodes.size(); ++i) grad[i] = var_nodes[i]->gradient;
         }
-        Eigen::VectorXd grad(var_nodes.size());
-        for (size_t i = 0; i < var_nodes.size(); ++i) grad[i] = var_nodes[i]->gradient;
         return {fval, std::move(grad)};
     }
 
     [[gnu::hot]]
     void value_grad_into_nogil(const double *x, std::size_t n, double *f_out, double *g_out) {
+        std::lock_guard lock(eval_mtx_);
         if (n != var_nodes.size()) throw std::invalid_argument("value_grad_into_nogil: wrong input length");
 
         for (std::size_t i = 0; i < n; ++i) var_nodes[i]->value = x[i];
@@ -429,26 +451,28 @@ public:
     }
 
     [[gnu::hot]] Out1D call_numpy(Arr1D x_in) {
-        set_inputs_from_arr(var_nodes, x_in);
+        const ssize_t n   = (ssize_t)var_nodes.size();
+        Out1D         out = create_uninit_1d(n);
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_inputs_from_arr(var_nodes, x_in);
             g->resetGradients();
             g->computeForwardPass();
             set_epoch_value(expr_root->gradient, expr_root->grad_epoch, g->cur_grad_epoch_, 1.0);
             g->initiateBackwardPass(expr_root);
+            double *om = out.data();
+            for (ssize_t i = 0; i < n; ++i) om[i] = var_nodes[(size_t)i]->gradient;
         }
-        const ssize_t n   = (ssize_t)var_nodes.size();
-        Out1D         out = create_uninit_1d(n);
-        double       *om  = out.data();
-        for (ssize_t i = 0; i < n; ++i) om[i] = var_nodes[(size_t)i]->gradient;
         return out;
     }
 
     [[gnu::hot]] double value_numpy(Arr1D x_in) {
-        set_inputs_from_arr(var_nodes, x_in);
         double fval;
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_inputs_from_arr(var_nodes, x_in);
             g->resetForwardPass();
             g->computeForwardPass();
             fval = expr_root->value;
@@ -460,21 +484,21 @@ public:
         auto x = as_span_1d(x_in);
         if (x.size() != var_nodes.size()) [[unlikely]]
             throw std::invalid_argument("GradFn.value_grad: wrong input length");
-        for (size_t i = 0; i < x.size(); ++i) var_nodes[i]->value = x[i];
-
         double fval;
+        Out1D grad = create_uninit_1d((ssize_t)var_nodes.size());
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            for (size_t i = 0; i < x.size(); ++i) var_nodes[i]->value = x[i];
             g->resetGradients();
             g->resetForwardPass();
             g->computeForwardPass();
             fval = expr_root->value;
             set_epoch_value(expr_root->gradient, expr_root->grad_epoch, g->cur_grad_epoch_, 1.0);
             g->initiateBackwardPass(expr_root);
+            double *gd = grad.data();
+            for (size_t i = 0; i < var_nodes.size(); ++i) gd[i] = var_nodes[i]->gradient;
         }
-        Out1D   grad = create_uninit_1d((ssize_t)var_nodes.size());
-        double *gd   = grad.data();
-        for (size_t i = 0; i < var_nodes.size(); ++i) gd[i] = var_nodes[i]->gradient;
         return {fval, std::move(grad)};
     }
 };
@@ -488,6 +512,14 @@ public:
     nb::object             python_func;
     bool                   order_ready_{false};
     std::vector<int>       x2g_, g2x_;
+    mutable std::mutex     eval_mtx_;
+    std::vector<double>    hess_V_, hess_Y_;
+
+    void prepare_hessian_workspace_(size_t n, size_t lanes) {
+        const size_t size = n * lanes;
+        if (hess_V_.size() != size) hess_V_.resize(size);
+        if (hess_Y_.size() != size) hess_Y_.resize(size);
+    }
 
     [[gnu::pure]] std::string expr_str() const {
         return (g && expr_root) ? g->getExpression(expr_root) : std::string{};
@@ -536,39 +568,33 @@ public:
 
     [[gnu::hot]]
     Out2D call_numpy(Arr1D x_in) {
-        set_inputs_arr(x_in);
         const size_t n = var_nodes.size();
-        build_permutations_once_();
-        {
-            nb::gil_scoped_release nogil;
-            g->resetForwardPass();
-        }
-
         Out2D   H    = create_uninit_2d((ssize_t)n, (ssize_t)n);
         double *data = H.data();
+        const size_t L = std::min<size_t>(16, std::max<size_t>(1, n));
+        {
+            nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_inputs_arr(x_in);
+            build_permutations_once_();
+            g->resetForwardPass();
+            prepare_hessian_workspace_(n, L);
 
-        const size_t        L = std::min<size_t>(16, std::max<size_t>(1, n));
-        std::vector<double> V(n * L, 0.0), Y(n * L, 0.0);
-
-        for (size_t base = 0; base < n; base += L) {
-            const size_t k = std::min(L, n - base);
-            std::fill(V.begin(), V.end(), 0.0);
-            for (size_t j = 0; j < k; ++j) {
-                const size_t xj                     = base + j;
-                const int    gij                    = x2g_[xj];
-                V[static_cast<size_t>(gij) * L + j] = 1.0;
-            }
-
-            {
-                nb::gil_scoped_release nogil;
-                g->hessianMultiVectorProduct(expr_root, V.data(), L, Y.data(), L, k);
-            }
-
-            for (size_t j = 0; j < k; ++j) {
-                const size_t col_x = base + j;
-                for (size_t gi = 0; gi < n; ++gi) {
-                    const size_t xi      = static_cast<size_t>(g2x_[gi]);
-                    data[xi * n + col_x] = Y[gi * L + j];
+            for (size_t base = 0; base < n; base += L) {
+                const size_t k = std::min(L, n - base);
+                std::fill(hess_V_.begin(), hess_V_.end(), 0.0);
+                for (size_t j = 0; j < k; ++j) {
+                    const size_t xj = base + j;
+                    const int gij = x2g_[xj];
+                    hess_V_[static_cast<size_t>(gij) * L + j] = 1.0;
+                }
+                g->hessianMultiVectorProduct(expr_root, hess_V_.data(), L, hess_Y_.data(), L, k);
+                for (size_t j = 0; j < k; ++j) {
+                    const size_t col_x = base + j;
+                    for (size_t gi = 0; gi < n; ++gi) {
+                        const size_t xi = static_cast<size_t>(g2x_[gi]);
+                        data[xi * n + col_x] = hess_Y_[gi * L + j];
+                    }
                 }
             }
         }
@@ -577,22 +603,99 @@ public:
 
     [[gnu::hot]]
     Arr1D hvp_numpy(Arr1D x_in, Arr1D v_in) {
-        set_inputs_arr(x_in);
-        build_permutations_once_();
         auto v = as_span_1d(v_in);
         if (v.size() != var_nodes.size()) [[unlikely]]
             throw std::invalid_argument("HessFn.hvp: wrong vector length");
-        const auto          v_g = x_to_graph_order_(v);
-        std::vector<double> Hv_g;
+        std::vector<double> Hv;
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_inputs_arr(x_in);
+            build_permutations_once_();
+            const auto v_g = x_to_graph_order_(v);
             g->resetForwardPass();
-            Hv_g = g->hessianVectorProduct(expr_root, v_g);
+            auto Hv_g = g->hessianVectorProduct(expr_root, v_g);
+            Hv = graph_to_x_order_(Hv_g);
         }
-        auto  Hv  = graph_to_x_order_(Hv_g);
-        Arr1D out = create_zeros_1d((ssize_t)v.size());
+        Arr1D out = create_uninit_1d((ssize_t)v.size());
         std::memcpy(out.data(), Hv.data(), Hv.size() * sizeof(double));
         return out;
+    }
+
+    // Sparse Hessian via lane-based HVP + upper-triangular triplet collection
+    // Returns (row, col, val) as 1D float64 arrays in COO format
+    // Usage: scipy.sparse.coo_matrix((val,(row,col)),shape=(n,n)).tocsr()
+    [[gnu::hot]]
+    std::tuple<std::vector<int>, std::vector<int>, std::vector<double>> hess_sparse(Arr1D x_in, double tol = 1e-12) {
+        const size_t n = var_nodes.size();
+        constexpr size_t L = 16;
+        std::vector<int> row, col;
+        std::vector<double> val;
+        row.reserve(std::min<size_t>(n * 16, n * n));
+        col.reserve(row.capacity());
+        val.reserve(row.capacity());
+
+        {
+            nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_inputs_arr(x_in);
+            build_permutations_once_();
+            g->resetForwardPass();
+            prepare_hessian_workspace_(n, L);
+            for (size_t base = 0; base < n; base += L) {
+                const size_t k = std::min(L, n - base);
+                std::fill(hess_V_.begin(), hess_V_.end(), 0.0);
+                for (size_t j = 0; j < k; ++j) {
+                    const size_t xj = base + j;
+                    const int gij = x2g_[xj];
+                    hess_V_[static_cast<size_t>(gij) * L + j] = 1.0;
+                }
+                g->hessianMultiVectorProduct(expr_root, hess_V_.data(), L, hess_Y_.data(), L, k);
+                for (size_t j = 0; j < k; ++j) {
+                    const size_t col_x = base + j;
+                    for (size_t gi = 0; gi < n; ++gi) {
+                        const size_t xi = static_cast<size_t>(g2x_[gi]);
+                        if (xi > col_x) continue;
+                        const double v = hess_Y_[gi * L + j];
+                        if (std::abs(v) >= tol) {
+                            row.push_back(static_cast<int>(xi));
+                            col.push_back(static_cast<int>(col_x));
+                            val.push_back(v);
+                            if (xi != col_x) {
+                                row.push_back(static_cast<int>(col_x));
+                                col.push_back(static_cast<int>(xi));
+                                val.push_back(v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Return vectors — nanobind converts to numpy arrays (int64/float64)
+        return std::make_tuple(std::move(row), std::move(col), std::move(val));
+    }
+
+    // Use the input container as the output-format request: NumPy inputs
+    // produce a dense ndarray, while SciPy sparse inputs produce a CSR matrix.
+    nb::object sparse_hessian_object(Arr1D x, double tol = 1e-12) {
+        auto [row, col, val] = hess_sparse(x, tol);
+        auto scipy_sparse = nb::module_::import_("scipy.sparse");
+        nb::object entries = nb::make_tuple(nb::cast(std::move(val)),
+                                             nb::make_tuple(nb::cast(std::move(row)),
+                                                            nb::cast(std::move(col))));
+        return scipy_sparse.attr("coo_matrix")(
+            entries, "shape"_a = nb::make_tuple(var_nodes.size(), var_nodes.size()))
+            .attr("tocsr")();
+    }
+
+    nb::object hess(nb::object x_in, double tol = 1e-12) {
+        if (!is_scipy_sparse(x_in)) return nb::cast(call_numpy(nb::cast<Arr1D>(x_in)));
+
+        Arr1D x = scipy_sparse_to_1d(x_in);
+        if (as_span_1d(x).size() != var_nodes.size())
+            throw std::invalid_argument("HessFn.hess: sparse input has wrong size");
+        return sparse_hessian_object(std::move(x), tol);
     }
 };
 
@@ -610,6 +713,14 @@ public:
     std::vector<nb::object> cI_funs, cE_funs;
     bool                    vector_mode{};
     bool                    order_ready_{false};
+    mutable std::mutex      eval_mtx_;
+    std::vector<double>     hess_V_, hess_Y_;
+
+    void prepare_hessian_workspace_(size_t n, size_t lanes) {
+        const size_t size = n * lanes;
+        if (hess_V_.size() != size) hess_V_.resize(size);
+        if (hess_Y_.size() != size) hess_Y_.resize(size);
+    }
 
     void build_permutations_once_() {
         if (order_ready_) return;
@@ -655,7 +766,8 @@ public:
                 auto ce = nb::cast<std::shared_ptr<Expression>>(ci_ret);
                 g->adoptSubgraph(ce->node);
 
-                // λ initialized as 0.0 in the same graph, stored for external updates
+                // Mutable coefficient node, intentionally kept out of the AD
+                // variable ordering used for x derivatives.
                 auto lam_expr = coerce_expr(nb::float_(0.0), g);
                 coeffs.push_back(lam_expr->node);
 
@@ -667,10 +779,11 @@ public:
         add_lin(cE_funs, nu_nodes);
 
         L_root = acc->node;
-        build_permutations_once_();
-
+        // Do not simplify after inserting mutable zero-valued multiplier
+        // nodes: constant folding would erase all constraint Hessian terms.
         g->initializeNodeVariables();
-        g->simplifyGraph();
+        order_ready_ = false;
+        build_permutations_once_();
 
         {
             nb::gil_scoped_release nogil;
@@ -680,25 +793,25 @@ public:
     }
 
     Arr2D hvp_multi_numpy(Arr1D x_in, Arr1D lam_in, Arr1D nu_in, Arr2D V_in) {
-        set_state_numpy(x_in, lam_in, nu_in);
         auto [n, k] = shape_2d(V_in);
         if ((size_t)n != x_nodes.size()) throw std::invalid_argument("hvp_multi: V.rows() != nvars");
 
         Arr2D         Y  = create_zeros_2d(n, k);
         double       *Yd = Y.data();
         const double *Vd = V_in.data();
-        build_permutations_once_();
-
-        std::vector<double> v_x((size_t)n), v_g, Hy_g, Hy_x;
-        for (ssize_t j = 0; j < k; ++j) {
-            for (ssize_t i = 0; i < n; ++i) v_x[(size_t)i] = Vd[(size_t)i * (size_t)k + (size_t)j];
-            v_g = x_to_graph_order_(std::span<const double>(v_x.data(), (size_t)n));
-            {
-                nb::gil_scoped_release nogil;
+        {
+            nb::gil_scoped_release nogil;
+            std::lock_guard lock(eval_mtx_);
+            set_state_numpy(x_in, lam_in, nu_in);
+            build_permutations_once_();
+            std::vector<double> v_x((size_t)n), v_g, Hy_g, Hy_x;
+            for (ssize_t j = 0; j < k; ++j) {
+                for (ssize_t i = 0; i < n; ++i) v_x[(size_t)i] = Vd[(size_t)i * (size_t)k + (size_t)j];
+                v_g = x_to_graph_order_(std::span<const double>(v_x.data(), (size_t)n));
                 Hy_g = g->hessianVectorProduct(L_root, v_g);
+                Hy_x = graph_to_x_order_(Hy_g);
+                for (ssize_t i = 0; i < n; ++i) Yd[(size_t)i * (size_t)k + (size_t)j] = Hy_x[(size_t)i];
             }
-            Hy_x = graph_to_x_order_(Hy_g);
-            for (ssize_t i = 0; i < n; ++i) Yd[(size_t)i * (size_t)k + (size_t)j] = Hy_x[(size_t)i];
         }
         return Y;
     }
@@ -706,34 +819,30 @@ public:
     Eigen::SparseMatrix<double> hess_sparse(const Eigen::Ref<const Eigen::VectorXd> &x_in,
                                             const Eigen::Ref<const Eigen::VectorXd> &lam_in,
                                             const Eigen::Ref<const Eigen::VectorXd> &nu_in, double tol = 1e-12) {
-        set_state_eigen(x_in, lam_in, nu_in);
-
         const size_t n = x_nodes.size();
-        build_permutations_once_();
-
         constexpr size_t L = 16; // block width
         // Row-major scratch to match (gi*L + j) addressing
-        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> V(n, L);
-        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> Y(n, L);
-
         std::vector<Eigen::Triplet<double>> trips;
         trips.reserve(std::min<size_t>(n * 16, n * n)); // rough guess; grows if needed
 
+        {
+        nb::gil_scoped_release nogil;
+        std::lock_guard lock(eval_mtx_);
+        set_state_eigen(x_in, lam_in, nu_in);
+        build_permutations_once_();
+        prepare_hessian_workspace_(n, L);
         for (size_t base = 0; base < n; base += L) {
             const size_t k = std::min(L, n - base);
 
             // Build k basis columns in graph index space
-            V.setZero();
+            std::fill(hess_V_.begin(), hess_V_.end(), 0.0);
             for (size_t j = 0; j < k; ++j) {
                 const size_t xj                                                 = base + j;
                 const int    gij                                                = x2g_[xj];
-                V(static_cast<Eigen::Index>(gij), static_cast<Eigen::Index>(j)) = 1.0;
+                hess_V_[static_cast<size_t>(gij) * L + j] = 1.0;
             }
 
-            {
-                nb::gil_scoped_release nogil;
-                g->hessianMultiVectorProduct(L_root, V.data(), L, Y.data(), L, k);
-            }
+            g->hessianMultiVectorProduct(L_root, hess_V_.data(), L, hess_Y_.data(), L, k);
 
             // Scatter: we only take i <= col_x (upper triangle)
             for (size_t j = 0; j < k; ++j) {
@@ -742,12 +851,13 @@ public:
                     const size_t xi = static_cast<size_t>(g2x_[gi]);
                     if (xi > col_x) continue; // keep to upper triangle
 
-                    const double val = Y(static_cast<Eigen::Index>(gi), static_cast<Eigen::Index>(j));
+                    const double val = hess_Y_[gi * L + j];
                     if (std::abs(val) >= tol) {
                         trips.emplace_back(static_cast<int>(xi), static_cast<int>(col_x), val);
                     }
                 }
             }
+        }
         }
 
         // Build upper-triangular sparse
@@ -768,7 +878,6 @@ public:
         for (size_t i = 0; i < x_nodes.size(); ++i) x_nodes[i]->value = x[i];
         for (size_t i = 0; i < lam_nodes.size(); ++i) lam_nodes[i]->value = lam[i];
         for (size_t i = 0; i < nu_nodes.size(); ++i) nu_nodes[i]->value = nu[i];
-        nb::gil_scoped_release nogil;
         g->resetForwardPass();
         g->computeForwardPass();
     }
@@ -802,50 +911,51 @@ public:
     }
 
     Arr1D hvp_numpy(Arr1D x_in, Arr1D lam_in, Arr1D nu_in, Arr1D v_in) {
-        set_state_numpy(x_in, lam_in, nu_in);
-        build_permutations_once_();
         std::span<const double> vx{v_in.data(), (size_t)v_in.shape(0)};
-        auto                    v_g = x_to_graph_order_(vx);
-        std::vector<double>     Hv_g;
+        std::vector<double> Hv_x;
         {
             nb::gil_scoped_release nogil;
-            Hv_g = g->hessianVectorProduct(L_root, v_g);
+            std::lock_guard lock(eval_mtx_);
+            set_state_numpy(x_in, lam_in, nu_in);
+            build_permutations_once_();
+            auto v_g = x_to_graph_order_(vx);
+            auto Hv_g = g->hessianVectorProduct(L_root, v_g);
+            Hv_x = graph_to_x_order_(Hv_g);
         }
-        auto  Hv_x = graph_to_x_order_(Hv_g);
-        Arr1D out  = create_zeros_1d((ssize_t)Hv_x.size());
+        Arr1D out = create_uninit_1d((ssize_t)Hv_x.size());
         std::memcpy(out.data(), Hv_x.data(), Hv_x.size() * sizeof(double));
         return out;
     }
 
     Arr2D hess_numpy(Arr1D x_in, Arr1D lam_in, Arr1D nu_in) {
-        set_state_numpy(x_in, lam_in, nu_in);
         const size_t n  = x_nodes.size();
         Arr2D        H  = create_zeros_2d((ssize_t)n, (ssize_t)n);
         double      *Hd = H.data();
 
+        const size_t L = 16;
+        {
+        nb::gil_scoped_release nogil;
+        std::lock_guard lock(eval_mtx_);
+        set_state_numpy(x_in, lam_in, nu_in);
         build_permutations_once_();
-        const size_t        L = 16;
-        std::vector<double> V(n * L, 0.0), Y(n * L, 0.0);
-
+        prepare_hessian_workspace_(n, L);
         for (size_t base = 0; base < n; base += L) {
             const size_t k = std::min(L, n - base);
-            std::fill(V.begin(), V.end(), 0.0);
+            std::fill(hess_V_.begin(), hess_V_.end(), 0.0);
             for (size_t j = 0; j < k; ++j) {
                 const size_t xj        = base + j;
                 const int    gij       = x2g_[xj];
-                V[(size_t)gij * L + j] = 1.0;
+                hess_V_[(size_t)gij * L + j] = 1.0;
             }
-            {
-                nb::gil_scoped_release nogil;
-                g->hessianMultiVectorProduct(L_root, V.data(), L, Y.data(), L, k);
-            }
+            g->hessianMultiVectorProduct(L_root, hess_V_.data(), L, hess_Y_.data(), L, k);
             for (size_t j = 0; j < k; ++j) {
                 const size_t col_x = base + j;
                 for (size_t gi = 0; gi < n; ++gi) {
                     const size_t xi    = (size_t)g2x_[gi];
-                    Hd[xi * n + col_x] = Y[gi * L + j];
+                    Hd[xi * n + col_x] = hess_Y_[gi * L + j];
                 }
             }
+        }
         }
         return H;
     }
@@ -928,19 +1038,18 @@ public:
         if (rows() != static_cast<Eigen::Index>(n))
             throw std::invalid_argument("CompiledWOp::perform_op: vector size mismatch.");
 
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::size_t gi = static_cast<std::size_t>(L_->x2g_[i]);
-            Vcol_[gi]            = x[static_cast<Eigen::Index>(i)];
-        }
-
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard lock(L_->eval_mtx_);
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::size_t gi = static_cast<std::size_t>(L_->x2g_[i]);
+                Vcol_[gi] = x[static_cast<Eigen::Index>(i)];
+            }
             L_->g->hessianMultiVectorProduct(L_->L_root, Vcol_.data(), 1, Ycol_.data(), 1, 1);
-        }
-
-        for (std::size_t gi = 0; gi < n; ++gi) {
-            const std::size_t xi = static_cast<std::size_t>(L_->g2x_[gi]);
-            y_x_[xi]             = Ycol_[gi];
+            for (std::size_t gi = 0; gi < n; ++gi) {
+                const std::size_t xi = static_cast<std::size_t>(L_->g2x_[gi]);
+                y_x_[xi] = Ycol_[gi];
+            }
         }
 
         Eigen::Map<Vec> ymap(y.derived().data(), y.size());
@@ -1154,6 +1263,16 @@ static Out2D py_hessian_numpy(nb::object f, Arr1D x_in) {
     return hf->call_numpy(x_in);
 }
 
+[[gnu::hot]]
+static nb::object py_hessian(nb::object f, nb::object x_in, double tol = 1e-12) {
+    if (!is_scipy_sparse(x_in))
+        return nb::cast(py_hessian_numpy(f, nb::cast<Arr1D>(x_in)));
+
+    Arr1D x = scipy_sparse_to_1d(x_in);
+    auto hf = get_or_make_hess(f, (size_t)as_span_1d(x).size(), /*vec=*/true);
+    return hf->sparse_hessian_object(std::move(x), tol);
+}
+
 // Batch fused value+grad over compiled GradFn objects
 [[gnu::hot]]
 static std::pair<Out1D, Out2D> batch_value_grad_from_gradfns(const std::vector<std::shared_ptr<GradFn>> &gfs,
@@ -1177,6 +1296,7 @@ static std::pair<Out1D, Out2D> batch_value_grad_from_gradfns(const std::vector<s
         nb::gil_scoped_release nogil;
         for (ssize_t j = 0; j < m; ++j) {
             auto &gf = gfs[(size_t)j];
+            std::lock_guard lock(gf->eval_mtx_);
             for (ssize_t i = 0; i < n; ++i) gf->var_nodes[(size_t)i]->value = x[(size_t)i];
 
             gf->g->resetGradients();
@@ -1241,6 +1361,7 @@ batch_value_grad_from_gradfns_sparse(const std::vector<std::shared_ptr<GradFn>> 
 
         for (Eigen::Index j = 0; j < m; ++j) {
             auto &gf = gfs[static_cast<size_t>(j)];
+            std::lock_guard lock(gf->eval_mtx_);
 
             // set inputs
             for (Eigen::Index i = 0; i < n; ++i) gf->var_nodes[static_cast<size_t>(i)]->value = x[i];

@@ -125,10 +125,6 @@ struct ChompConfig : public kkt::KKTConfig {
 
     bool ip_exact_hessian = true;
     double ip_eq_reg = 1e-4;
-    bool ip_use_shifted_barrier = true;
-    double ip_shift_tau = 0.01;
-    double ip_shift_bounds = 0.1;
-    bool ip_shift_adaptive = true;
     double ip_mu_init = 1e-2;
     double ip_mu_min = 1e-12;
     double ip_sigma_power = 3.0;
@@ -167,27 +163,6 @@ struct ChompConfig : public kkt::KKTConfig {
     double ip_tr_min = 1e-8;
     double ip_tr_max = 1e6;
     double ip_s_max = 100.0;
-    double ip_shift_beta = 0.25;
-    double ip_shift_tau_k_mu = 0.50;
-    double ip_shift_tau_k_active = 0.50;
-    double ip_shift_tau_k_stall = 0.25;
-    double ip_active_tol = 1e-3;
-    double ip_mu_target = 1e-4;
-    double ip_shift_tau_max = 1.0;
-    double ip_shift_tau_min = 0.0;
-    double ip_bound_near_tol = 1e-6;
-    double ip_shift_bounds_k_mu = 0.30;
-    double ip_shift_bounds_k_frac = 0.75;
-    double ip_shift_bounds_k_gap = 0.50;
-    double ip_shift_bounds_max = 1.0;
-    double ip_shift_bounds_min = 0.0;
-    double ip_sigma_E = 0.10;
-    double ip_sigma_E_min = 0.02;
-    double ip_sigma_E_max = 0.50;
-    double ip_sigmaE_k_prog = 0.60;
-    double ip_sigmaE_k_cond = 0.80;
-    double ip_max_shift = 1e-2;
-    double ip_max_shift_rel = 0.10;
     double ip_fraction_to_boundary_tau = 0.995;
 
     int gondzio_max_corrections = 3;

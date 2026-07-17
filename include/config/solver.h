@@ -24,12 +24,8 @@ struct SolverInfo {
     double delta{0.0};
     double mu{0.0};
 
-    bool shifted_barrier{false};
-    double tau_shift{0.0};
-    double bound_shift{0.0};
 
     double penalty_rho{0.0};
-    double penalty_sigma{0.0};
     double step_quality_ratio{0.0};
     bool was_clipped{false};
     int clip_streak{0};

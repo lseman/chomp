@@ -32,6 +32,7 @@ option(AD_ENABLE_OPTIMISATIONS "Enable aggressive compiler optimisations (-O3, -
 # accepts NaN steps and reports false convergence).
 option(AD_ENABLE_FAST_MATH "Enable -ffast-math (aggressive FP reassociation; breaks NaN/Inf guards)" OFF)
 option(AD_ENABLE_MARCH_NATIVE "Enable -march=native (CPU-specific codegen; reduces portability)" ON)
+option(AD_ENABLE_SIMD "Enable explicit SIMD acceleration in autodiff lane operations" OFF)
 
 # ------------------------------------------------------------------
 # CPM bootstrap (before any CPMAddPackage)
@@ -259,6 +260,9 @@ endfunction()
 # ------------------------------------------------------------------
 function(ad__common_target_setup tgt)
   target_compile_features(${tgt} PRIVATE cxx_std_23)
+  if(NOT AD_ENABLE_SIMD)
+    target_compile_definitions(${tgt} PRIVATE AD_DISABLE_SIMD=1)
+  endif()
   target_include_directories(${tgt}
     PRIVATE
     "${PROJECT_SOURCE_DIR}/include"
@@ -372,9 +376,9 @@ endfunction()
 # Core AD Python module
 set(AD_SOURCES
   src/ad_bindings.cpp
-  src/ad/Variable.cpp
-  src/ad/Expression.cpp
-  src/ad/ADGraph.cpp
+  src/ad/variable.cpp
+  src/ad/expression.cpp
+  src/ad/ad_graph.cpp
 )
 ad_add_nanobind_module(ad ${AD_SOURCES})
 ad_link_unix_system_libs(ad)
@@ -384,9 +388,9 @@ if(NOT CHOMP_BUILD_AD_ONLY)
   # chomp (nanobind)
   ad_add_nanobind_module(chomp
     src/chomp.cpp
-    src/ad/ADGraph.cpp
-    src/ad/Expression.cpp
-    src/ad/Variable.cpp
+    src/ad/ad_graph.cpp
+    src/ad/expression.cpp
+    src/ad/variable.cpp
   )
   ad_use_cholmod(chomp)
 
@@ -478,3 +482,4 @@ message(STATUS "Link GUROBI           : ${AD_ENABLE_GUROBI} (root: ${GUROBI_ROOT
 message(STATUS "CHOLMOD enabled       : ${AD_ENABLE_CHOLMOD} (use: ${AD_USE_CHOLMOD})")
 message(STATUS "Build only AD module  : ${CHOMP_BUILD_AD_ONLY}")
 message(STATUS "Optimisations         : ${AD_ENABLE_OPTIMISATIONS} (fast-math: ${AD_ENABLE_FAST_MATH}, march-native: ${AD_ENABLE_MARCH_NATIVE})")
+message(STATUS "SIMD acceleration     : ${AD_ENABLE_SIMD}")

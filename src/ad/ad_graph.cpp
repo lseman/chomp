@@ -1,4 +1,4 @@
-// ADGraph.cpp — ULTRA-FAST C++23 VERSION (lanes, fused kernels, minimal allocs)
+// ad_graph.cpp — ULTRA-FAST C++23 VERSION (lanes, fused kernels, minimal allocs)
 #include <ad/ad_graph.h>
 #include <ad/definitions.h>
 #include <ad/variable.h>
@@ -600,7 +600,7 @@ void ADGraph::initiateBackwardPassFused() {
 }
 
 // ======================== Lane-aware forward/backward ========================
-// ADGraph.cpp - Updated methods using dispatcher
+// ad_graph.cpp - Updated methods using dispatcher
 
 void ADGraph::computeForwardPassWithDotLanes() {
     if (cache_.dirty)
@@ -898,7 +898,7 @@ void ADGraph::adoptSubgraph(const ADNodePtr &root) {
     // simplifyGraph(); // Add this line at the end
 }
 
-// In ADGraph.cpp
+// In ad_graph.cpp
 
 void ADGraph::updateNodeIndex_() {
     nodeIndex_.clear();
@@ -1908,7 +1908,7 @@ ECostModel::best_of(int eclass, const EGraph &G,
     return {best_cost, best_idx};
 }
 
-// In ADGraph.cpp
+// In ad_graph.cpp
 #include <ad/egraph_aux.h>
 
 bool ADGraph::egraphSimplify_(std::vector<ADNodePtr> &roots) {

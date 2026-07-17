@@ -6,6 +6,7 @@
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include <Eigen/Dense>
@@ -121,9 +122,9 @@ NB_MODULE(ad, m) {
           "Return (f(x), grad f(x)) fast path (ndarray, cached).");
 
     m.def("hess",
-          [](nb::object f, Arr1D x) { return py_hessian_numpy(f, x); },
-          "f"_a, "x"_a,
-          "Return Hessian at x (ndarray[n,n], cached).");
+          [](nb::object f, nb::object x, double tol) { return py_hessian(f, x, tol); },
+          "f"_a, "x"_a, "tol"_a = 1e-12,
+          "Return a dense or sparse Hessian matching the input container type.");
 
     m.def("grad",
           [](nb::object f, nb::args xs) { return py_gradient(f, xs); },
@@ -204,7 +205,10 @@ NB_MODULE(ad, m) {
 
     // ---------------- Compiled Hessian ----------------
     nb::class_<HessFn>(m, "HessFn")
-        .def("__call__",  &HessFn::call_numpy, "x"_a, "Evaluate Hessian at x (ndarray)->ndarray[n,n]")
+        .def("__call__",  &HessFn::hess, "x"_a, "tol"_a = 1e-12,
+             "Evaluate a dense or sparse Hessian matching the input container type")
+        .def("hess", &HessFn::hess, "x"_a, "tol"_a = 1e-12,
+             "Evaluate a dense or sparse Hessian matching the input container type")
         .def("hvp",       &HessFn::hvp_numpy,  "x"_a, "v"_a, "HVP at x with v (ndarray)->ndarray")
         .def("expr_str",  &HessFn::expr_str)
         .def("__repr__", [](const HessFn& self) { return "<HessFn expr=" + self.expr_str() + ">"; });

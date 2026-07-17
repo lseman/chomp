@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "ad_graph.h"
+#include "simd_helpers.h"
 
 // ---- Optimized helpers ----
 inline double _safe_div(double a, double b) noexcept {
@@ -100,8 +101,12 @@ struct OpTraits<Operator::Sin> {
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double cosx = std::cos(n.inputs[0]->value);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, cosx);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = cosx * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -111,11 +116,16 @@ struct OpTraits<Operator::Sin> {
         const double x = n.inputs[0]->value;
         const double c = std::cos(x), s = std::sin(x);
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, c, -s * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * c + w * (-s) * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -128,8 +138,12 @@ struct OpTraits<Operator::Sin> {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, sinx);
 
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, cosx);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = cosx * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -153,8 +167,12 @@ struct OpTraits<Operator::Cos> {
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double sinx = -std::sin(n.inputs[0]->value);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, sinx);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = sinx * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -164,11 +182,16 @@ struct OpTraits<Operator::Cos> {
         const double x = n.inputs[0]->value;
         const double s = std::sin(x), c = std::cos(x);
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, -s, -c * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * (-s) + w * (-c) * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -181,8 +204,12 @@ struct OpTraits<Operator::Cos> {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, cosx);
 
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, -sinx);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = -sinx * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -208,8 +235,12 @@ struct OpTraits<Operator::Tan> {
         const size_t xbase = g.lanes_.base(ix);
         const double tx = std::tan(n.inputs[0]->value);
         const double sec2 = 1.0 + tx * tx;
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, sec2);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = sec2 * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -220,11 +251,16 @@ struct OpTraits<Operator::Tan> {
         const double t = std::tan(x);
         const double sec2 = 1.0 + t * t;
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, sec2, 2.0 * t * sec2 * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * sec2 + w * (2.0 * t * sec2) * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -237,8 +273,12 @@ struct OpTraits<Operator::Tan> {
 
         const double sec2 = 1.0 + tanx * tanx;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, sec2);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = sec2 * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -263,8 +303,12 @@ struct OpTraits<Operator::Exp> {
         const int ix = n.inputs[0]->id;
         const size_t xbase = g.lanes_.base(ix);
         const double ex = std::exp(n.inputs[0]->value);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, ex);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = ex * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -273,11 +317,16 @@ struct OpTraits<Operator::Exp> {
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double ex = std::exp(n.inputs[0]->value);
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, ex, ex * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * ex + w * ex * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -289,8 +338,12 @@ struct OpTraits<Operator::Exp> {
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, ex);
 
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, ex);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = ex * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -317,10 +370,15 @@ struct OpTraits<Operator::Log> {
         const size_t xbase = g.lanes_.base(ix);
         const double x = n.inputs[0]->value;
         if (x > 0.0) {
+            const double invx = 1.0 / x;
+#if AD_HAS_SIMD
+            ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, invx);
+#else
             for (size_t l = 0; l < L; ++l)
                 g.lanes_.dot[ybase + l] = g.lanes_.dot[xbase + l] / x;
+#endif
         } else {
-            std::fill_n(&g.lanes_.dot[ybase], L, 0.0);
+            ad::simd::vfill_n(&g.lanes_.dot[ybase], L);
         }
     }
 
@@ -333,11 +391,16 @@ struct OpTraits<Operator::Log> {
             const double invx = 1.0 / x;
             const double invx2 = invx * invx;
             const double w = n.gradient;
+#if AD_HAS_SIMD
+            ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                           &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, invx, -invx2 * w);
+#else
             for (size_t l = 0; l < L; ++l) {
                 const double gu = g.lanes_.gdot[ybase + l];
                 const double dx = g.lanes_.dot[xbase + l];
                 g.lanes_.gdot[xbase + l] += gu * invx + w * (-invx2) * dx;
             }
+#endif
         }
     }
 
@@ -351,10 +414,14 @@ struct OpTraits<Operator::Log> {
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         if (x > 0.0) {
             const double invx = 1.0 / x;
+#if AD_HAS_SIMD
+            ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, invx);
+#else
             for (size_t l = 0; l < L; ++l)
                 g.lanes_.dot[ybase + l] = invx * g.lanes_.dot[xbase + l];
+#endif
         } else {
-            std::fill_n(&g.lanes_.dot[ybase], L, 0.0);
+            ad::simd::vfill_n(&g.lanes_.dot[ybase], L);
         }
     }
 };
@@ -381,8 +448,12 @@ struct OpTraits<Operator::Tanh> {
         const size_t xbase = g.lanes_.base(ix);
         const double th = std::tanh(n.inputs[0]->value);
         const double sech2 = 1.0 - th * th;
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, sech2);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = sech2 * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -394,11 +465,16 @@ struct OpTraits<Operator::Tanh> {
         const double sech2 = 1.0 - t * t;
         const double fpp = -2.0 * t * sech2;
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, sech2, fpp * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * sech2 + w * fpp * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -411,8 +487,12 @@ struct OpTraits<Operator::Tanh> {
 
         const double sech2 = 1.0 - th * th;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, sech2);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = sech2 * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -452,8 +532,12 @@ struct OpTraits<Operator::Silu> {
         const double s = fast_sigmoid(x);
         const double sp = s * (1.0 - s);
         const double f1 = s + x * sp;
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, f1);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = f1 * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -466,11 +550,16 @@ struct OpTraits<Operator::Silu> {
         const double f1 = s + x * sp;
         const double f2 = 2.0 * sp + x * sp * (1.0 - 2.0 * s);
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, f1, f2 * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * f1 + w * f2 * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -484,8 +573,12 @@ struct OpTraits<Operator::Silu> {
         const double sigmoid_prime = sigmoid * (1.0 - sigmoid);
         const double f1 = sigmoid + x * sigmoid_prime;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, f1);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = f1 * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -518,8 +611,12 @@ struct OpTraits<Operator::Gelu> {
         const double Phi = 0.5 * (1.0 + std::erf(x * inv_sqrt2));
         const double phi = inv_sqrt2pi * std::exp(-0.5 * x * x);
         const double f1 = Phi + x * phi;
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, f1);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = f1 * g.lanes_.dot[xbase + l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -534,11 +631,16 @@ struct OpTraits<Operator::Gelu> {
         const double f1 = Phi + x * phi;
         const double f2 = phi * (2.0 - x * x);
         const double w = n.gradient;
+#if AD_HAS_SIMD
+        ad::simd::vtwosum4(&g.lanes_.gdot[xbase],
+                       &g.lanes_.gdot[ybase], &g.lanes_.dot[xbase], L, f1, f2 * w);
+#else
         for (size_t l = 0; l < L; ++l) {
             const double gu = g.lanes_.gdot[ybase + l];
             const double dx = g.lanes_.dot[xbase + l];
             g.lanes_.gdot[xbase + l] += gu * f1 + w * f2 * dx;
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -555,8 +657,12 @@ struct OpTraits<Operator::Gelu> {
 
         const double f1 = Phi + x * phi;
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vscal4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L, f1);
+#else
         for (size_t l = 0; l < L; ++l)
             g.lanes_.dot[ybase + l] = f1 * g.lanes_.dot[xbase + l];
+#endif
     }
 };
 
@@ -583,9 +689,9 @@ struct OpTraits<Operator::Relu> {
         const size_t xbase = g.lanes_.base(ix);
         const double xv = n.inputs[0]->value;
         if (xv > 0.0) {
-            std::copy_n(&g.lanes_.dot[xbase], L, &g.lanes_.dot[ybase]);
+            ad::simd::vcopy4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L);
         } else {
-            std::fill_n(&g.lanes_.dot[ybase], L, 0.0);
+            ad::simd::vfill_n(&g.lanes_.dot[ybase], L);
         }
     }
 
@@ -595,8 +701,12 @@ struct OpTraits<Operator::Relu> {
         const size_t xbase = g.lanes_.base(n.inputs[0]->id);
         const double x = n.inputs[0]->value;
         if (x > 0.0) {
+#if AD_HAS_SIMD
+            ad::simd::vadd_eq4(&g.lanes_.gdot[xbase], &g.lanes_.gdot[ybase], L);
+#else
             for (size_t l = 0; l < L; ++l)
                 g.lanes_.gdot[xbase + l] += g.lanes_.gdot[ybase + l];
+#endif
         }
     }
 
@@ -608,10 +718,10 @@ struct OpTraits<Operator::Relu> {
 
         if (x > 0.0) {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, x);
-            std::copy_n(&g.lanes_.dot[xbase], L, &g.lanes_.dot[ybase]);
+            ad::simd::vcopy4(&g.lanes_.dot[ybase], &g.lanes_.dot[xbase], L);
         } else {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, 0.0);
-            std::fill_n(&g.lanes_.dot[ybase], L, 0.0);
+            ad::simd::vfill_n(&g.lanes_.dot[ybase], L);
         }
     }
 };
@@ -642,7 +752,11 @@ struct OpTraits<Operator::Subtract> {
         double* __restrict yd = &g.lanes_.dot[ybase];
         const double* __restrict ad = &g.lanes_.dot[a];
         const double* __restrict bd = &g.lanes_.dot[b];
+#if AD_HAS_SIMD
+        ad::simd::vsub4(yd, ad, bd, L);
+#else
         for (size_t l = 0; l < L; ++l) yd[l] = ad[l] - bd[l];
+#endif
     }
 
     static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
@@ -652,10 +766,15 @@ struct OpTraits<Operator::Subtract> {
         const double* __restrict gu = &g.lanes_.gdot[ybase];
         double* __restrict ga = &g.lanes_.gdot[a];
         double* __restrict gb = &g.lanes_.gdot[b];
+#if AD_HAS_SIMD
+        ad::simd::vadd_eq4(ga, gu, L);
+        ad::simd::vsub_eq4(gb, gu, L);
+#else
         for (size_t l = 0; l < L; ++l) {
             ga[l] += gu[l];
             gb[l] -= gu[l];
         }
+#endif
     }
 
     static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
@@ -667,7 +786,11 @@ struct OpTraits<Operator::Subtract> {
         double* __restrict yd = &g.lanes_.dot[ybase];
         const double* __restrict ad = &g.lanes_.dot[a];
         const double* __restrict bd = &g.lanes_.dot[b];
+#if AD_HAS_SIMD
+        ad::simd::vsub4(yd, ad, bd, L);
+#else
         for (size_t l = 0; l < L; ++l) yd[l] = ad[l] - bd[l];
+#endif
     }
 };
 
@@ -700,14 +823,21 @@ struct OpTraits<Operator::Divide> {
         const size_t abase = g.lanes_.base(ia), bbase = g.lanes_.base(ib);
         const double aval = n.inputs[0]->value, bval = n.inputs[1]->value;
         if (bval == 0.0) {
-            std::fill_n(&g.lanes_.dot[ybase], L, 0.0);
+            ad::simd::vfill_n(&g.lanes_.dot[ybase], L);
         } else {
             const double invb2 = 1.0 / (bval * bval);
+#if AD_HAS_SIMD
+            // (ad * bval - aval * bd) * invb2 = ad * (bval*invb2) + bd * (-aval*invb2)
+            ad::simd::vtwosum4(&g.lanes_.dot[ybase],
+                           &g.lanes_.dot[abase], &g.lanes_.dot[bbase], L,
+                           bval * invb2, -aval * invb2);
+#else
             for (size_t l = 0; l < L; ++l) {
                 const double ad = g.lanes_.dot[abase + l];
                 const double bd = g.lanes_.dot[bbase + l];
                 g.lanes_.dot[ybase + l] = (ad * bval - aval * bd) * invb2;
             }
+#endif
         }
     }
 
@@ -722,6 +852,19 @@ struct OpTraits<Operator::Divide> {
             const double invb = 1.0 / bval;
             const double invb2 = invb * invb;
             const double invb3 = invb2 * invb;
+#if AD_HAS_SIMD
+            // ga += gu * invb + bd * (-w * invb2)
+            ad::simd::vtwosum4(&g.lanes_.gdot[abase],
+                           &g.lanes_.gdot[ybase], &g.lanes_.dot[bbase], L,
+                           invb, -w * invb2);
+            // gb += gu * (-aval * invb2) + ad * (-bval * invb3) + bd * (2.0 * aval * invb3)
+            const double c_ad = -w * bval * invb3;
+            const double c_bd = 2.0 * w * aval * invb3;
+            ad::simd::vtwosum4(&g.lanes_.gdot[bbase],
+                           &g.lanes_.gdot[ybase], &g.lanes_.dot[abase], L,
+                           -aval * invb2, c_ad);
+            ad::simd::vmscadd4(&g.lanes_.gdot[bbase], &g.lanes_.dot[bbase], L, c_bd);
+#else
             for (size_t l = 0; l < L; ++l) {
                 const double gu = g.lanes_.gdot[ybase + l];
                 const double ad = g.lanes_.dot[abase + l];
@@ -731,6 +874,7 @@ struct OpTraits<Operator::Divide> {
                     gu * (-aval * invb2) +
                     w * ((-ad * bval + 2.0 * aval * bd) * invb3);
             }
+#endif
         }
     }
 
@@ -745,16 +889,22 @@ struct OpTraits<Operator::Divide> {
         if (bval == 0.0) {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                             std::numeric_limits<double>::infinity());
-            std::fill_n(&g.lanes_.dot[ybase], L, 0.0);
+            ad::simd::vfill_n(&g.lanes_.dot[ybase], L);
         } else {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                             aval / bval);
             const double invb2 = 1.0 / (bval * bval);
+#if AD_HAS_SIMD
+            ad::simd::vtwosum4(&g.lanes_.dot[ybase],
+                           &g.lanes_.dot[abase], &g.lanes_.dot[bbase], L,
+                           bval * invb2, -aval * invb2);
+#else
             for (size_t l = 0; l < L; ++l) {
                 const double ad = g.lanes_.dot[abase + l];
                 const double bd = g.lanes_.dot[bbase + l];
                 g.lanes_.dot[ybase + l] = (ad * bval - aval * bd) * invb2;
             }
+#endif
         }
     }
 };
@@ -894,19 +1044,27 @@ struct OpTraits<Operator::Add> {
             double* __restrict yd = &g.lanes_.dot[ybase];
             const double* __restrict ad = &g.lanes_.dot[a];
             const double* __restrict bd = &g.lanes_.dot[b];
+#if AD_HAS_SIMD
+            ad::simd::vadd4(yd, ad, bd, L);
+#else
             for (size_t l = 0; l < L; ++l) yd[l] = ad[l] + bd[l];
+#endif
             return;
         }
 
         // Seed from the first child; avoid memset
         const size_t b0 = g.lanes_.base(n.inputs[0]->id);
-        std::copy_n(&g.lanes_.dot[b0], L, &g.lanes_.dot[ybase]);
+        ad::simd::vcopy4(&g.lanes_.dot[ybase], &g.lanes_.dot[b0], L);
 
         double* __restrict yd = &g.lanes_.dot[ybase];
         for (size_t j = 1; j < m; ++j) {
             const size_t bj = g.lanes_.base(n.inputs[j]->id);
             const double* __restrict dj = &g.lanes_.dot[bj];
+#if AD_HAS_SIMD
+            ad::simd::vadd_eq4(yd, dj, L);
+#else
             for (size_t l = 0; l < L; ++l) yd[l] += dj[l];
+#endif
         }
     }
 
@@ -916,7 +1074,11 @@ struct OpTraits<Operator::Add> {
         for (const auto& inp : n.inputs) {
             const size_t b = g.lanes_.base(inp->id);
             double* __restrict gd = &g.lanes_.gdot[b];
+#if AD_HAS_SIMD
+            ad::simd::vadd_eq4(gd, gud, L);
+#else
             for (size_t l = 0; l < L; ++l) gd[l] += gud[l];
+#endif
         }
     }
 
@@ -928,7 +1090,11 @@ struct OpTraits<Operator::Add> {
             set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
                             n.inputs[0]->value);
             const size_t b = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+            ad::simd::vcopy4(&g.lanes_.dot[ybase], &g.lanes_.dot[b], L);
+#else
             std::copy_n(&g.lanes_.dot[b], L, &g.lanes_.dot[ybase]);
+#endif
             return;
         }
 
@@ -936,14 +1102,22 @@ struct OpTraits<Operator::Add> {
         // alongside
         double sum_val = n.inputs[0]->value;
         const size_t b0 = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+        ad::simd::vcopy4(&g.lanes_.dot[ybase], &g.lanes_.dot[b0], L);
+#else
         std::copy_n(&g.lanes_.dot[b0], L, &g.lanes_.dot[ybase]);
+#endif
 
         double* __restrict yd = &g.lanes_.dot[ybase];
         for (size_t j = 1; j < m; ++j) {
             sum_val += n.inputs[j]->value;
             const size_t bj = g.lanes_.base(n.inputs[j]->id);
             const double* __restrict dj = &g.lanes_.dot[bj];
+#if AD_HAS_SIMD
+            ad::simd::vadd_eq4(yd, dj, L);
+#else
             for (size_t l = 0; l < L; ++l) yd[l] += dj[l];
+#endif
         }
         set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_, sum_val);
     }
@@ -1041,7 +1215,11 @@ struct OpTraits<Operator::Multiply> {
         if (!m) return;
         if (m == 1) {
             const size_t b = g.lanes_.base(n.inputs[0]->id);
+#if AD_HAS_SIMD
+            ad::simd::vcopy4(&g.lanes_.dot[ybase], &g.lanes_.dot[b], L);
+#else
             std::copy_n(&g.lanes_.dot[b], L, &g.lanes_.dot[ybase]);
+#endif
             return;
         }
         if (m == 2) {
@@ -1051,8 +1229,13 @@ struct OpTraits<Operator::Multiply> {
             double* __restrict yd = &g.lanes_.dot[ybase];
             const double* __restrict ad = &g.lanes_.dot[a];
             const double* __restrict bd = &g.lanes_.dot[b];
+#if AD_HAS_SIMD
+            // ydot = ad * bval + aval * bd  (avx512: fmadd, avx2: mul + add)
+            ad::simd::vtwosum4(yd, ad, bd, L, bval, aval);
+#else
             for (size_t l = 0; l < L; ++l)
-                yd[l] = std::fma(ad[l], bval, aval * bd[l]);
+                yd[l] = ad[l] * bval + aval * bd[l];
+#endif
             return;
         }
 
@@ -1069,7 +1252,7 @@ struct OpTraits<Operator::Multiply> {
         double* __restrict yd = &g.lanes_.dot[ybase];
 
         if (zc >= 2) {
-            std::fill_n(yd, L, 0.0);
+            for (size_t l = 0; l < L; ++l) yd[l] = 0.0;
             return;
         }
         if (zc == 1) {
