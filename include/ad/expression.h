@@ -27,19 +27,16 @@ public:
     // Construct with graph (creates an empty node placeholder)
     explicit Expression(const ADGraphPtr &graphIn);
 
-    // Constant expression (placeholder variant)
-    explicit Expression(double /*constante*/, const ADGraphPtr &graphIn = nullptr)
+    // Constant expression
+    explicit Expression(double constant, const ADGraphPtr &graphIn = nullptr)
         : graph(graphIn ? graphIn : std::make_shared<ADGraph>()) {
-        initializeNode();
+        node = graph->createConstantNode(constant);
     }
 
     Expression &operator=(const Expression &) = default;
 
-    // From a (placeholder) Variable object; creates an empty node
-    explicit Expression(const Variable) {
-        graph = std::make_shared<ADGraph>();
-        initializeNode();
-    }
+    // Variables are shared because their identity is part of the graph.
+    explicit Expression(const Variable &) = delete;
 
     // From a VariablePtr: build a Var node with meta (name/value/order/bounds)
     Expression(const VariablePtr &variable, double /*coeff*/ = 1.0, const ADGraphPtr &graphIn = nullptr)

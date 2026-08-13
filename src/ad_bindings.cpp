@@ -60,6 +60,15 @@ NB_MODULE(ad, m) {
         .def("getValue",    &Variable::getValue)
         .def("setValue",    &Variable::setValue)
         .def("getGradient", &Variable::getGradient)
+        .def("__add__",      [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Add, a, b); })
+        .def("__sub__",      [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Sub, a, b); })
+        .def("__mul__",      [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Mul, a, b); })
+        .def("__truediv__",  [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Div, a, b); })
+        .def("__radd__",     [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Add, b, a); })
+        .def("__rsub__",     [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Sub, b, a); })
+        .def("__rmul__",     [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Mul, b, a); })
+        .def("__rtruediv__", [](nb::handle a, nb::handle b) { return binary_coerced(BinOp::Div, b, a); })
+        .def("__neg__",      [](nb::handle a) { return binary_coerced(BinOp::Mul, nb::float_(-1.0), a); })
         // v ** p  (defer to Expression::pow)
         .def("__pow__", [](const std::shared_ptr<Variable>& v, double p) {
             auto g  = std::make_shared<ADGraph>();

@@ -143,6 +143,9 @@ inline void dispatch_op(ADNode& n, Fn&& fn) {
         case Operator::Relu:
             fn.template operator()<Operator::Relu>();
             break;
+        case Operator::Neg:
+            fn.template operator()<Operator::Neg>();
+            break;
         case Operator::Softmax:
             fn.template operator()<Operator::Softmax>();
             break;

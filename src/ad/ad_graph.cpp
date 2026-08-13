@@ -194,8 +194,8 @@ void ADGraph::markDirty_(ADNode *n) {
 void ADGraph::addNode(const ADNodePtr &node) {
     if (!node)
         return;
-    if (cache_.id_of.find(node.get()) != cache_.id_of.end())
-        return; // fast dup check
+    if (!cache_.registered.insert(node.get()).second)
+        return;
 
     nodes.push_back(node);
     if (!node->name.empty())
@@ -216,6 +216,7 @@ void ADGraph::addNode(const ADNodePtr &node) {
 void ADGraph::deleteNode(const ADNodePtr &node) {
     if (!node)
         return;
+    cache_.registered.erase(node.get());
     if (!node->name.empty())
         nodeIndex_.erase(node->name);
 
@@ -328,6 +329,11 @@ void ADGraph::makeNodesUnique() {
     } else {
         nodes = std::move(unique);
     }
+
+    cache_.registered.clear();
+    cache_.registered.reserve(nodes.size());
+    for (const auto &n : nodes)
+        if (n) cache_.registered.insert(n.get());
 
     nodeIndex_.clear();
     nodeIndex_.reserve(first_by_name.size());
@@ -898,6 +904,63 @@ void ADGraph::adoptSubgraph(const ADNodePtr &root) {
     // simplifyGraph(); // Add this line at the end
 }
 
+ADNodePtr ADGraph::adoptSubgraphAndReturnRoot(const ADNodePtr &root_src) {
+    if (!root_src)
+        return nullptr;
+
+    // A node's `id` is graph-local, so sharing nodes across graphs corrupts
+    // the source graph as soon as the destination assigns its IDs. Import a
+    // structural copy instead. Variables with the same name are canonicalized
+    // onto the destination variable to preserve symbolic identity.
+    tsl::robin_map<const ADNode *, ADNodePtr> imported;
+    imported.reserve(64);
+    std::vector<std::pair<ADNodePtr, bool>> stack;
+    stack.reserve(128);
+    stack.emplace_back(root_src, false);
+
+    while (!stack.empty()) {
+        auto [src, expanded] = std::move(stack.back());
+        stack.pop_back();
+        if (!src || imported.find(src.get()) != imported.end())
+            continue;
+
+        if (!expanded) {
+            stack.emplace_back(src, true);
+            for (auto it = src->inputs.rbegin(); it != src->inputs.rend(); ++it)
+                if (*it && imported.find(it->get()) == imported.end())
+                    stack.emplace_back(*it, false);
+            continue;
+        }
+
+        if (src->type == Operator::Var && !src->name.empty()) {
+            auto existing = nodeVariables.find(src->name);
+            if (existing != nodeVariables.end()) {
+                imported.emplace(src.get(), existing->second);
+                continue;
+            }
+        }
+
+        std::vector<ADNodePtr> inputs;
+        inputs.reserve(src->inputs.size());
+        for (const auto &input : src->inputs)
+            inputs.push_back(imported.at(input.get()));
+
+        auto dst = createNode(src->type, inputs);
+        dst->name = src->name;
+        dst->value = src->value;
+        dst->gradient = src->gradient;
+        dst->order = src->order;
+        dst->lb = src->lb;
+        dst->ub = src->ub;
+        dst->nlpType = src->nlpType;
+        imported.emplace(src.get(), dst);
+        if (dst->type == Operator::Var && !dst->name.empty())
+            nodeVariables[dst->name] = dst;
+    }
+
+    return imported.at(root_src.get());
+}
+
 // In ad_graph.cpp
 
 void ADGraph::updateNodeIndex_() {
@@ -1230,6 +1293,12 @@ void ADGraph::constantFolding() {
                     result = 0.5 * x *
                              (1.0 + std::tanh(std::sqrt(2.0 / M_PI) *
                                               (x + 0.044715 * x * x * x)));
+                }
+                break;
+
+            case Operator::Neg:
+                if (!node->inputs.empty()) {
+                    result = -node->inputs[0]->value;
                 }
                 break;
 

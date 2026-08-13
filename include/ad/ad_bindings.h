@@ -203,11 +203,7 @@ static inline std::shared_ptr<Expression> coerce_expr(const nb::handle &h, const
     }
     if (is_number(h)) {
         auto g = prefer ? prefer : std::make_shared<ADGraph>();
-        // Prefer an explicit constructor/helper if you expose it:
-        // return Expression::from_constant(g, nb::cast<double>(h));
-        // Fallback: build via Expression arithmetic (0 + s)
-        auto zero = std::make_shared<Expression>(g);
-        return *zero + nb::cast<double>(h);
+        return std::make_shared<Expression>(nb::cast<double>(h), g);
     }
     throw std::invalid_argument("Expected Expression, Variable, or number.");
 }
@@ -765,9 +761,11 @@ public:
                 auto ce = nb::cast<std::shared_ptr<Expression>>(ci_ret);
                 g->adoptSubgraph(ce->node);
 
-                // Mutable coefficient node, intentionally kept out of the AD
-                // variable ordering used for x derivatives.
-                auto lam_expr = coerce_expr(nb::float_(0.0), g);
+                // Mutable leaf with unique storage. Keep it out of
+                // nodeVariables so derivatives remain with respect to x only.
+                auto coefficient = g->createNode(Operator::Var, {});
+                coefficient->value = 0.0;
+                auto lam_expr = std::make_shared<Expression>(coefficient, g);
                 coeffs.push_back(lam_expr->node);
 
                 auto term = (*lam_expr) * (*ce); // term: ExpressionPtr

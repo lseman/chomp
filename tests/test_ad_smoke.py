@@ -59,6 +59,27 @@ def test_basic_polynomial_hessian_and_cross_terms():
     assert_close(hess, np.array([[0.0, 1.0], [1.0, 2.0]]))
 
 
+def test_native_negation_value_gradient_and_hessian():
+    value, grad = ad.valgrad(lambda z: -(z[0] * z[1]) + 2.0, np.array([3.0, 4.0]))
+    hess = ad.hess(lambda z: -(z[0] * z[1]) + 2.0, np.array([3.0, 4.0]))
+    assert value == -10.0
+    assert_close(grad, np.array([-4.0, -3.0]))
+    assert_close(hess, np.array([[0.0, -1.0], [-1.0, 0.0]]))
+
+
+def test_standalone_variables_and_cross_graph_subexpressions_are_reusable():
+    x = ad.Variable("x", 3.0)
+    y = ad.Variable("y", 4.0)
+    product = x * y
+    quotient = x / 3.0
+    combined = 2.0 + product - quotient
+
+    # Combining independently built graphs must not steal or renumber nodes
+    # from either source expression.
+    assert combined.evaluate() == 13.0
+    assert product.evaluate() == 12.0
+    assert quotient.evaluate() == 1.0
+
 def test_batch_valgrad_for_python_callables():
     x = np.array([2.0, 3.0], dtype=float)
     values, jac = ad.batch_valgrad(

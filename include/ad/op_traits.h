@@ -82,6 +82,36 @@ struct OpTraits<Operator::Var> {
 
 // ===== UNARY OPERATORS =====
 template <>
+struct OpTraits<Operator::Neg> {
+    static constexpr const char* name = "neg";
+    static inline void forward(ADNode& n, ADGraph& g) noexcept {
+        set_epoch_value(n.value, n.val_epoch, g.cur_val_epoch_,
+                        -n.inputs[0]->value);
+    }
+    static inline void backward(ADNode& n, ADGraph& g) noexcept {
+        ensure_epoch_zero(n.inputs[0]->gradient, n.inputs[0]->grad_epoch,
+                          g.cur_grad_epoch_) -= n.gradient;
+    }
+    static inline void forward_dot_lanes(ADNode& n, ADGraph& g, size_t L,
+                                         size_t ybase) noexcept {
+        const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+        for (size_t l = 0; l < L; ++l)
+            g.lanes_.dot[ybase + l] = -g.lanes_.dot[xbase + l];
+    }
+    static inline void backward_lanes(ADNode& n, ADGraph& g, size_t L,
+                                      size_t ybase) noexcept {
+        const size_t xbase = g.lanes_.base(n.inputs[0]->id);
+        for (size_t l = 0; l < L; ++l)
+            g.lanes_.gdot[xbase + l] -= g.lanes_.gdot[ybase + l];
+    }
+    static inline void fused_forward(ADNode& n, ADGraph& g, size_t L,
+                                     size_t ybase) noexcept {
+        forward(n, g);
+        forward_dot_lanes(n, g, L, ybase);
+    }
+};
+
+template <>
 struct OpTraits<Operator::Sin> {
     static constexpr const char* name = "sin";
     static inline void forward(ADNode& n, ADGraph& g) noexcept {

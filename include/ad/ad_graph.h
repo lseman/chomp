@@ -166,6 +166,7 @@ struct GraphCache {
 
     // Stable integer ids per node
     tsl::robin_map<const ADNode*, int> id_of;  // node* -> id
+    tsl::robin_set<const ADNode*> registered;  // actually present in nodes
     std::vector<ADNode*> by_id;                // id    -> node*
     std::vector<int> free_ids;
     int next_id = 0;
