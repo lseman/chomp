@@ -35,6 +35,7 @@ class SOC {
     bool apply(StepData& step, const spmat& W,
                const std::optional<spmat>& JE,
                const std::optional<spmat>& JI,
+               const std::optional<dvec>& r_pI,
                const dvec& s, const dvec& lam,
                const dvec& zL, const dvec& zU, const Bounds& B,
                double alpha_aff, double mu_target,
@@ -70,7 +71,7 @@ class SOC {
         }
 
         // Recompute ds, dlam, dzL, dzU to stay consistent with new dx
-        recompute_slack_and_duals(step, JI, s, lam, zL, zU, B,
+        recompute_slack_and_duals(step, JI, r_pI, s, lam, zL, zU, B,
                                   mu_target, use_shifted, tau_shift, bound_shift);
 
         return true;
@@ -194,6 +195,7 @@ class SOC {
     template <typename StepData>
     void recompute_slack_and_duals(StepData& step,
                                    const std::optional<spmat>& JI,
+                                   const std::optional<dvec>& r_pI,
                                    const dvec& s, const dvec& lam,
                                    const dvec& zL, const dvec& zU,
                                    const Bounds& B,
@@ -203,9 +205,10 @@ class SOC {
                                    double bound_shift) const {
         const int n = static_cast<int>(step.dx.size());
 
-        // ds = -JI * dx  (equality with slack: s + JI*x = 0 => ds + JI*dx = 0)
+        // Linearized slack equation: JI*dx + ds = -(cI + s).
         if (s.size() > 0 && JI && JI->nonZeros()) {
             step.ds = -(*JI) * step.dx;
+            if (r_pI) step.ds -= *r_pI;
             step.dlam.resize(s.size());
             for (int i = 0; i < static_cast<int>(s.size()); ++i) {
                 const double d = std::max(

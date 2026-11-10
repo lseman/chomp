@@ -86,17 +86,7 @@ struct SOCResult {
 // }
 
 [[nodiscard]] dvec solve_regularized_ls_(const dmat &A, const dvec &b, double reg) const {
-    if (A.size() == 0) return dvec::Zero(b.size());
-
-    // Build normal equations with a tiny floor on reg for numerical safety
-    const double reg_eff = std::max(reg, 1e-12);
-    dmat         N       = A.transpose() * A;
-    N.diagonal().array() += reg_eff;
-
-    const dvec rhs = A.transpose() * b;
-
-    // Use the QDLDL-based symmetric SPD solver on the upper triangle
-    return solve_sym_spd_qdldl(N, rhs);
+    return tr_detail::regularized_least_squares(A, b, reg);
 }
 
 [[nodiscard]] dvec solve_regularized_metric_ls_(const dmat &A, const dvec &b, const dmat &M, double reg) const {

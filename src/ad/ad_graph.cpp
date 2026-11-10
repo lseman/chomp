@@ -1773,7 +1773,8 @@ void ADGraph::replaceNodeReferences(const ADNodePtr &oldNode,
             if (it.value().get() == oldNode.get())
                 it.value() = newNode;
         }
-        markGraphMutated_();
+        simplification_needed_ = true;
+        markDirty_();
         return;
     }
 
@@ -1798,8 +1799,8 @@ void ADGraph::replaceNodeReferences(const ADNodePtr &oldNode,
         u->invalidate_struct_hash_();
 
         // Rewire adjacency exactly once
-        unlink_edge_(uid, oldId);
-        link_edge_(uid, newId);
+        unlink_edge_(oldId, uid);
+        link_edge_(newId, uid);
 
         if (uses_valid_) {
             uses_[newNode.get()].push_back(u);
@@ -1814,7 +1815,10 @@ void ADGraph::replaceNodeReferences(const ADNodePtr &oldNode,
         if (it_old != uses_.end())
             it_old->second.clear();
     }
-    uses_valid_ = false; // rebuild later to dedup & stay consistent
+    // All changed input references have been reflected in uses_. Keep a
+    // valid index across a batch of replacements instead of rescanning the
+    // entire graph for each subsequent node. Duplicate user entries are
+    // harmless: a user is rewired only when an old input is still present.
 
     // --- 4) Move name and index/variables as before -------------------------
     if (!oldNode->name.empty()) {
@@ -1828,7 +1832,7 @@ void ADGraph::replaceNodeReferences(const ADNodePtr &oldNode,
     }
 
     // --- 5) Final bookkeeping: mark graph mutated & dirty --------------------
-    markGraphMutated_();
+    simplification_needed_ = true;
     markDirty_();
 }
 
@@ -1909,10 +1913,10 @@ inline int ECostModel::op_cost(Operator op) const {
 }
 inline std::pair<int, int>
 ECostModel::best_of(int eclass, const EGraph &G,
-                    std::unordered_map<int, int> &memo) const {
+                    std::unordered_map<int, std::pair<int, int>> &memo) const {
     auto it = memo.find(eclass);
     if (it != memo.end())
-        return {it->second, -1}; // (abuse: store cost only)
+        return it->second;
     
     // Safety: check eclass bounds
     if (eclass < 0 || eclass >= (int)G.classes.size()) {
@@ -1921,7 +1925,7 @@ ECostModel::best_of(int eclass, const EGraph &G,
     
     // Safety: check if class is empty
     if (G.classes[eclass].nodes.empty()) {
-        memo[eclass] = 1;
+        memo[eclass] = {1, -1};
         return {1, -1};
     }
     
@@ -1942,7 +1946,7 @@ ECostModel::best_of(int eclass, const EGraph &G,
             // Check if we've already computed this kid (memoization)
             auto kid_it = memo.find(kid_ec);
             if (kid_it != memo.end()) {
-                c += kid_it->second;
+                c += kid_it->second.first;
             } else {
                 // Check for infinite recursion by limiting recursion depth
                 // If the kid's class contains only one node and it references back to current eclass, skip
@@ -1973,7 +1977,7 @@ ECostModel::best_of(int eclass, const EGraph &G,
             best_idx = idx;
         }
     }
-    memo[eclass] = best_cost;
+    memo[eclass] = {best_cost, best_idx};
     return {best_cost, best_idx};
 }
 

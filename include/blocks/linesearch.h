@@ -309,6 +309,12 @@ class LineSearcher {
         std::optional<double> theta0_opt = std::nullopt,
         double alpha_max = 1.0, double tau_shift = 0.0,
         bool use_shifted = false) const {
+        // Filter objective entries are barrier values at one fixed mu.
+        // Comparing them across barrier subproblems can reject every step.
+        if (filter_ && mu != filter_mu_) {
+            filter_->reset();
+            filter_mu_ = mu;
+        }
         // Shifted-barrier offset: the inequality barrier is log(s + tau_shift),
         // so the slack may legitimately fall to -tau_shift. The fraction-to-
         // boundary rule and barrier evaluations below must use (s + sh), not raw
@@ -847,6 +853,7 @@ class LineSearcher {
 
    private:
     nb::object cfg_obj_;
+    mutable double filter_mu_ = std::numeric_limits<double>::quiet_NaN();
     std::shared_ptr<Filter> filter_;
     std::shared_ptr<Funnel> funnel_;
     LSConfig cfg_;

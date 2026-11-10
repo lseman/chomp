@@ -25,6 +25,7 @@
 #include "ad/suspect.h"
 #include "core/definitions.h"
 #include "trustregion/definitions.h"
+#include "model/hessian_cache.h"
 
 struct ModelSuspectReport {
     using AnalyzerT = suspect::Analyzer<suspect_adapter::ModelView, ADNodePtr>;
@@ -330,7 +331,7 @@ struct EvalEntry {
     std::optional<double> f;
     std::optional<dvec>   g, cI, cE;
     std::optional<spmat>  JI, JE;
-    std::optional<spmat>  H; // Hessian
+    LagrangianHessianCache H;
 
     mutable int access_order{0};
 
@@ -529,8 +530,7 @@ public:
             // Exact AD path (unchanged)
             EvalEntry *e = cache_.find(x);
             if (!e) e = &cache_.insert(x);
-            if (!e->H) e->H = f_hess_->hess_sparse(x, lam, nu);
-            return *e->H;
+            return e->H.get(lam, nu, [&] { return f_hess_->hess_sparse(x, lam, nu); });
         }
         std::cout << "Warning: using L-BFGS Hessian approximation; ensure "
                      "lbfgs_update(...) is called per accepted step.\n";

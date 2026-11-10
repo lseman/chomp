@@ -259,12 +259,31 @@ public:
     }
 
     // Solve; returns the final x as an Eigen vector (NumPy array in Python)
+    nb::dict stats() const {
+        nb::dict out;
+        out["status"] = status_;
+        out["iterations"] = iterations_;
+        out["mode"] = last_info_.mode;
+        out["objective"] = last_info_.f;
+        out["stationarity"] = last_info_.stat;
+        out["inequality_violation"] = last_info_.ineq;
+        out["equality_violation"] = last_info_.eq;
+        out["complementarity"] = last_info_.comp;
+        out["mu"] = last_info_.mu;
+        out["alpha"] = last_info_.alpha;
+        out["trust_radius"] = last_info_.tr_radius;
+        out["accepted"] = last_info_.accepted;
+        return out;
+    }
+
     dvec solve(int max_iter = 100, double tol = 1e-8, bool verbose = true) {
         if (closed_) return x_;
         const double tol_stat = get_float_attr_or(cfg_, "tol_stat", 1e-6);
         const double tol_feas = get_float_attr_or(cfg_, "tol_feas", 1e-6);
         const double tol_comp = get_float_attr_or(cfg_, "tol_comp", 1e-6);
 
+        iterations_ = 0;
+        status_ = "iteration_limit";
         for (int k = 0; k < max_iter; ++k) {
             SolverInfo info;
             if (mode_ == "ip") {
@@ -279,6 +298,8 @@ public:
                 throw std::runtime_error("Unknown mode: " + mode_);
             }
 
+            last_info_ = info;
+            iterations_ = k + 1;
             if (verbose) {
                 print_iteration_row(k, info, mode_, last_header_row_, (k == 0 || (k - last_header_row_) >= 20));
                 if (k == 0 || (k - last_header_row_) >= 20) last_header_row_ = k;
@@ -290,6 +311,7 @@ public:
             const double k_comp = info.comp;
 
             if (k_stat <= tol_stat && k_ineq <= tol_feas && k_eq <= tol_feas && k_comp <= tol_comp) {
+                status_ = "converged";
                 if (verbose) fmt::print("✓ Converged at iteration {}\n", k);
                 break;
             }
@@ -375,6 +397,9 @@ private:
 
 private:
     // Core problem bits
+    SolverInfo last_info_;
+    int iterations_{0};
+    std::string status_{"not_started"};
     nb::object              cfg_;
     std::unique_ptr<ModelC> model_owner_;
 
@@ -565,6 +590,7 @@ NB_MODULE(chomp, m) {
              arg("c_ineq") = nb::none(), arg("c_eq") = nb::none(), arg("lb") = nb::none(), arg("ub") = nb::none(),
              arg("x0"), arg("config") = nb::none())
         .def("close", &chomp::close, "Release solver-owned Python/C++ resources early.")
+        .def_prop_ro("stats", &chomp::stats, "Diagnostics from the most recent solve call.")
         .def(
             "__enter__", [](chomp &self) -> chomp & { return self; }, nb::rv_policy::reference_internal)
         .def("__exit__",

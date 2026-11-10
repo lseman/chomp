@@ -90,7 +90,7 @@ if(NOT Eigen3_FOUND)
     GIT_TAG 3.4.0
   )
   # Some CPM recipes export 'eigen' target; create alias if needed.
-  if(TARGET eigen)
+  if(TARGET eigen AND NOT TARGET Eigen3::Eigen)
     add_library(Eigen3::Eigen ALIAS eigen)
   elseif(NOT TARGET Eigen3::Eigen)
     # Header-only fallback
@@ -108,15 +108,15 @@ if(NOT Eigen3_FOUND)
 endif()
 
 # Python 3 — Interpreter + Development.Module (for nanobind) + Development
-find_package(Python3 3.13 EXACT
+find_package(Python3 3.13
   COMPONENTS Interpreter Development Development.Module
   REQUIRED
 )
 
-# Force unversioned FindPython consumers to reuse the exact Python3 toolchain.
+# Force unversioned FindPython consumers to reuse the selected Python3 toolchain.
 set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
 set(Python_ROOT_DIR "${Python3_PREFIX}")
-find_package(Python 3.13 EXACT
+find_package(Python ${Python3_VERSION} EXACT
   COMPONENTS Interpreter Development Development.Module
   OPTIONAL_COMPONENTS Development.SABIModule
   REQUIRED
@@ -419,8 +419,90 @@ else()
 endif()
 
 if(BUILD_TESTING)
+  add_executable(test_ip_factorization_cache tests/test_ip_factorization_cache.cpp)
+  target_include_directories(test_ip_factorization_cache PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_link_libraries(test_ip_factorization_cache PRIVATE Eigen3::Eigen)
+  if(MSVC)
+    target_compile_options(test_ip_factorization_cache PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_ip_factorization_cache PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME ip_factorization_cache COMMAND test_ip_factorization_cache)
+
+  add_executable(test_regularizer tests/test_regularizer.cpp)
+  target_include_directories(test_regularizer PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_link_libraries(test_regularizer PRIVATE Eigen3::Eigen)
+  if(TARGET TBB::tbb)
+    target_link_libraries(test_regularizer PRIVATE TBB::tbb)
+  endif()
+  if(MSVC)
+    target_compile_options(test_regularizer PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_regularizer PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME regularizer COMMAND test_regularizer)
+
+  add_executable(test_hessian_cache tests/test_hessian_cache.cpp)
+  target_include_directories(test_hessian_cache PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_link_libraries(test_hessian_cache PRIVATE Eigen3::Eigen)
+  if(MSVC)
+    target_compile_options(test_hessian_cache PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_hessian_cache PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME hessian_cache COMMAND test_hessian_cache)
+
+  add_executable(test_regularized_ls tests/test_regularized_ls.cpp)
+  target_include_directories(test_regularized_ls PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_link_libraries(test_regularized_ls PRIVATE Eigen3::Eigen)
+  if(MSVC)
+    target_compile_options(test_regularized_ls PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_regularized_ls PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME regularized_ls COMMAND test_regularized_ls)
+
+  add_executable(test_hessian_sparsity tests/test_hessian_sparsity.cpp)
+  target_include_directories(test_hessian_sparsity PRIVATE
+    "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/third_party")
+  if(MSVC)
+    target_compile_options(test_hessian_sparsity PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_hessian_sparsity PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME hessian_sparsity COMMAND test_hessian_sparsity)
+
+  add_executable(test_sparse_regularization tests/test_sparse_regularization.cpp)
+  target_include_directories(test_sparse_regularization PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_link_libraries(test_sparse_regularization PRIVATE Eigen3::Eigen)
+  if(MSVC)
+    target_compile_options(test_sparse_regularization PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_sparse_regularization PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME sparse_regularization COMMAND test_sparse_regularization)
+
+  add_executable(test_box_qp tests/test_box_qp.cpp)
+  target_include_directories(test_box_qp PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/solvers")
+  target_link_libraries(test_box_qp PRIVATE Eigen3::Eigen)
+  if(MSVC)
+    target_compile_options(test_box_qp PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_box_qp PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME box_qp COMMAND test_box_qp)
+
   set(CHOMP_PYTHON_TESTS
     chomp_ip_smoke tests/test_chomp_ip_smoke.py
+    chomp_ip_bounds tests/test_chomp_ip_bounds.py
+    chomp_negative_curvature tests/test_chomp_negative_curvature.py
+    chomp_sqp_nonlinear tests/test_chomp_sqp_nonlinear.py
+    chomp_ip_nonlinear tests/test_chomp_ip_nonlinear.py
+    chomp_stats tests/test_chomp_stats.py
+    chomp_sparse_sqp tests/test_chomp_sparse_sqp.py
+    chomp_coupled_bounds tests/test_chomp_coupled_bounds.py
+    chomp_mixed_qp tests/test_chomp_mixed_qp.py
+    chomp_large_nlp tests/test_chomp_large_nlp.py
     chomp_binding_lifetimes tests/test_chomp_binding_lifetimes.py
     chomp_convexity_suspect tests/test_chomp_convexity_suspect.py
     chomp_sqp_smoke tests/test_chomp_sqp_smoke.py

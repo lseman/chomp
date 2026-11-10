@@ -196,5 +196,5 @@ struct ECostModel {
     int op_cost(Operator op) const;
     // returns (best_cost, best_node_index_in_class)
     std::pair<int, int> best_of(int eclass, const EGraph& G,
-                                std::unordered_map<int, int>& memo) const;
+                                std::unordered_map<int, std::pair<int, int>>& memo) const;
 };

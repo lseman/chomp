@@ -66,6 +66,20 @@ class MehrotraGondzioSolver {
         // Barrier parameter selection with multiple strategies
         double mu_target = compute_barrier_parameter_(
             mu, mu_aff, sigma, alpha_aff, theta, s, lam, zL, zU, B);
+        if (config_.barrier_strategy == BarrierStrategy::MehrotraSafeguarded) {
+            double primal_dual_error = r_d.lpNorm<Eigen::Infinity>();
+            if (r_pE && r_pE->size())
+                primal_dual_error = std::max(primal_dual_error, r_pE->lpNorm<Eigen::Infinity>());
+            if (r_pI && r_pI->size())
+                primal_dual_error = std::max(primal_dual_error, r_pI->lpNorm<Eigen::Infinity>());
+            // A full affine step solves the linear model, but need not be
+            // feasible for nonlinear constraints. Keep the barrier away from
+            // zero until the current primal-dual equations are resolved.
+            const double mu_min = get_attr_or<double>(cfg_, "ip_mu_min", 1e-12);
+            mu_target = primal_dual_error > 10.0 * mu
+                            ? std::max(mu, mu_min)
+                            : std::max(mu_target, std::max(0.1 * mu, mu_min));
+        }
         IP_LAP("barrier_param");
 
         // Centering + corrector step
@@ -80,7 +94,7 @@ class MehrotraGondzioSolver {
             use_shifted, tau_shift, bound_shift, Sg, base_step);
         IP_LAP("gondzio");
 
-        soc_.apply(final_step, W, JE, JI, s, lam, zL, zU, B, alpha_aff, mu_target,
+        soc_.apply(final_step, W, JE, JI, r_pI, s, lam, zL, zU, B, alpha_aff, mu_target,
                    use_shifted, tau_shift, bound_shift, Sg,
                    [this](const auto& W, const auto& rhs, const auto& JE,
                           const auto& r_pE,
@@ -604,6 +618,7 @@ class MehrotraGondzioSolver {
         }
 
         for (int k = 0; k < max_corr; ++k) {
+            const StepData previous_step = result;
             const double alpha_max =
                 std::min(result.alpha_pri, result.alpha_dual);
             const double centrality_current = result.centrality_measure;
@@ -661,7 +676,10 @@ class MehrotraGondzioSolver {
 
             // Early termination if correction doesn't help
             double new_alpha = std::min(result.alpha_pri, result.alpha_dual);
-            if (new_alpha < alpha_max * 0.95) break;
+            if (new_alpha < alpha_max * 0.95) {
+                result = previous_step;
+                break;
+            }
         }
 
         return result;

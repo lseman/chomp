@@ -17,6 +17,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -210,8 +211,17 @@ class SQPStepper {
                            /*f_old*/ std::optional<double>(f0),
                            HC);
         } else {
-            // Dense TR solve
-            TRResult out_dense = tr_.solve_dense(*H_reg_opt, g0,
+            // Preserve sparse Hessians instead of silently materializing n^2 entries.
+            const bool sparse_hessian = n >= 64 &&
+                static_cast<double>(H_reg_opt->nonZeros()) < 0.2 * n * static_cast<double>(n);
+            auto solve_matrix = [&](const auto& H) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(H)>, spmat>)
+                    return tr_.solve_sparse(H, g0,
+                        (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt), b_in,
+                        (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt), b_eq,
+                        model_, std::optional<dvec>(x), lb, ub, 0.0, std::optional<double>(f0));
+                else
+                    return tr_.solve_dense(H, g0,
                                                /*A_ineq*/ (mI > 0 ? std::optional<dmat>(JI_dense) : std::nullopt),
                                                /*b_ineq*/ b_in,
                                                /*A_eq*/ (mE > 0 ? std::optional<dmat>(JE_dense) : std::nullopt),
@@ -221,7 +231,8 @@ class SQPStepper {
                                                /*lb*/ lb, /*ub*/ ub,
                                                /*mu*/ 0.0,
                                                /*f_old*/ std::optional<double>(f0));
-            out = out_dense;
+            };
+            out = sparse_hessian ? solve_matrix(*H_reg_opt) : solve_matrix(dmat(*H_reg_opt));
         }
 
         const dvec& p = out.p;
@@ -256,7 +267,10 @@ class SQPStepper {
             g1, (mE > 0 ? std::optional<dmat>(JE1_dense) : std::nullopt),
             (mI > 0 ? std::optional<dmat>(JI1_dense) : std::nullopt),
             cE1, cI1, x_trial, lb, ub,
-            /*act_eps=*/1e-10, /*reg=*/1e-12);
+            // Recover duals for constraints active at the requested primal
+            // accuracy. Complementarity is still checked independently below.
+            /*act_eps=*/std::max(1e-10, get_attr_or<double>(cfg_, "tol_feas", 1e-6)),
+            /*reg=*/1e-12);
 
         // ---- 7) KKT residuals at trial (unshifted) ----
         auto kkt = compute_kkt(g1, (mE > 0 ? std::optional<dmat>(JE1_dense) : std::nullopt),
@@ -641,7 +655,7 @@ class SQPStepper {
         double act_eps = 1e-10, double reg = 1e-12) {
         const int n = (int)g1.size();
 
-        // Build column blocks for [JE1ᵀ | JIactᵀ | I_L | -I_U]
+        // Build KKT normals [JE1ᵀ | JIactᵀ | -I_L | I_U].
         dmat AeqT(n, 0);
         if (JE1 && JE1->size()) AeqT = JE1->transpose();
 
@@ -671,6 +685,16 @@ class SQPStepper {
             for (int i = 0; i < n; ++i)
                 if (near((*ub)[i], x_trial[i], act_eps)) idxU.push_back(i);
         }
+        if (AeqT.cols() == 0 && AiactT.cols() == 0) {
+            // Coordinate bound normals are orthogonal. Recover their duals
+            // directly, including fixed variables with two opposite normals.
+            // Solving an unconstrained LS system and clipping its solution
+            // splits a fixed-variable multiplier in half.
+            dvec zL = dvec::Zero(n), zU = dvec::Zero(n);
+            for (int i : idxL) zL[i] = std::max(0.0, g1[i]);
+            for (int i : idxU) zU[i] = std::max(0.0, -g1[i]);
+            return {dvec(0), dvec::Zero(JI1 ? JI1->rows() : 0), std::move(zL), std::move(zU)};
+        }
         dmat IL(n, (int)idxL.size());
         IL.setZero();
         for (int j = 0; j < (int)idxL.size(); ++j) IL(idxL[j], j) = 1.0;
@@ -695,19 +719,16 @@ class SQPStepper {
             ofs += AiactT.cols();
         }
         if (IL.cols()) {
-            AT.middleCols(ofs, IL.cols()) = IL;
+            AT.middleCols(ofs, IL.cols()) = -IL;
             ofs += IL.cols();
         }
         if (IU.cols()) {
-            AT.middleCols(ofs, IU.cols()) = -IU;
+            AT.middleCols(ofs, IU.cols()) = IU;
             ofs += IU.cols();
         }
 
-        // Solve (ATᵀ AT + reg I) y = -ATᵀ g1
-        dmat N = AT.transpose() * AT;
-        N.diagonal().array() += reg;
-        const dvec rhs = -AT.transpose() * g1;
-        dvec y = N.ldlt().solve(rhs);  // fine for small systems
+        dvec y = tr_detail::mixed_nonnegative_least_squares(
+            AT, -g1, AeqT.cols(), reg);
 
         // Unpack and enforce nonnegativity of inequality/bound duals
         ofs = 0;
@@ -729,13 +750,13 @@ class SQPStepper {
             dvec yL = y.segment(ofs, IL.cols());
             ofs += IL.cols();
             for (int j = 0; j < IL.cols(); ++j)
-                zL_hat[idxL[j]] = std::max(0.0, -yL[j]);
+                zL_hat[idxL[j]] = std::max(0.0, yL[j]);
         }
         if (IU.cols()) {
             dvec yU = y.segment(ofs, IU.cols());
             ofs += IU.cols();
             for (int j = 0; j < IU.cols(); ++j)
-                zU_hat[idxU[j]] = std::max(0.0, -yU[j]);
+                zU_hat[idxU[j]] = std::max(0.0, yU[j]);
         }
 
         // Expand λ back to full size if you want (optional)

@@ -71,6 +71,7 @@ inline void flatten_AC_(Operator op, const ADNodePtr& n,
 // Extraction: pick cheapest enode in each class, then rebuild AD nodes
 static ADNodePtr extract_rec(int eclass, const EGraph& EG, ECostModel& cm,
                              std::unordered_map<int, ADNodePtr>& memo,
+                             std::unordered_map<int, std::pair<int, int>>& costmemo,
                              ADGraph& G) {
     int arena_size = (int)EG.arena.size();
     int num_classes = (int)EG.classes.size();
@@ -97,7 +98,6 @@ static ADNodePtr extract_rec(int eclass, const EGraph& EG, ECostModel& cm,
         return r;
     }
 
-    std::unordered_map<int, int> costmemo;
     auto best = cm.best_of(rep, EG, costmemo);  // (cost, idx)
     if (best.second < 0 || best.second >= arena_size) {
         auto r = AD_makeConst(G, 0.0);
@@ -132,7 +132,7 @@ static ADNodePtr extract_rec(int eclass, const EGraph& EG, ECostModel& cm,
             kids.push_back(AD_makeConst(G, 0.0));
             continue;
         }
-        kids.push_back(extract_rec(kid_ec, EG, cm, memo, G));
+        kids.push_back(extract_rec(kid_ec, EG, cm, memo, costmemo, G));
     }
     ADNodePtr built = AD_makeNode(G, n.op, kids);
     memo[rep] = built;
@@ -147,7 +147,8 @@ struct EGraphBridge {
     static ADNodePtr extract_expr(int root_ec, const EGraph& EG, ADGraph& G) {
         ECostModel cm;
         std::unordered_map<int, ADNodePtr> memo;
-        return extract_rec(root_ec, EG, cm, memo, G);
+        std::unordered_map<int, std::pair<int, int>> costmemo;
+        return extract_rec(root_ec, EG, cm, memo, costmemo, G);
     }
     // Extract a full subgraph and return the new root, replacing stale pointers
     // in the old root's children with their memoized (extracted) versions.
@@ -156,7 +157,8 @@ struct EGraphBridge {
         // First, extract the full subgraph into fresh nodes
         ECostModel cm;
         std::unordered_map<int, ADNodePtr> memo;
-        ADNodePtr new_root = extract_rec(root_ec, EG, cm, memo, G);
+        std::unordered_map<int, std::pair<int, int>> costmemo;
+        ADNodePtr new_root = extract_rec(root_ec, EG, cm, memo, costmemo, G);
 
         // Now replace all references from old_root to new_root in G
         if (old_root && new_root && old_root.get() != new_root.get()) {

@@ -31,6 +31,10 @@
 #include "model_utils.h"
 #include "aux.h"
 #include "definitions.h"
+#include "least_squares.h"
+#include "box_qp.h"
+#include "equality_box_qp.h"
+#include "linear_qp.h"
 
 // If you expose nanobind types/errors in ModelC implementations
 namespace nb = nanobind;
@@ -649,8 +653,34 @@ class TrustRegionManager {
         dvec nu(Aeq ? (int)Aeq->rows() : 0);
         dvec p;
 
+        // A full convex QP handles interacting inequalities and bounds
+        // together, including removal of constraints with wrong-sign duals.
+        bool solved_mixed = false;
+        if (Aineq && Aineq->rows() && box_.active() && (sparseH || denseH)) {
+            const int n = static_cast<int>(g.size());
+            const dvec lower = box_.lb ? (*box_.lb - *box_.x).eval()
+                : dvec::Constant(n, -std::numeric_limits<double>::infinity());
+            const dvec upper = box_.ub ? (*box_.ub - *box_.x).eval()
+                : dvec::Constant(n, std::numeric_limits<double>::infinity());
+            const spmat hessian = sparseH ? *sparseH : spmat(denseH->sparseView());
+            if (auto candidate = tr_detail::mixed_linear_qp(
+                    hessian, g, Aeq, beq, *Aineq,
+                    bineq.value_or(dvec::Zero(Aineq->rows())), lower, upper)) {
+                p = std::move(*candidate);
+                const double norm = tr_norm_(p);
+                if (norm > delta_) p *= delta_ / norm;
+                p = box_.enforce_step(p);
+                solved_mixed = true;
+                info.status = "mixed_convex_qp";
+                info.model_reduction = model_reduction_quad_into(Hop, g, p, W_.Hp);
+                info.model_reduction_quad = info.model_reduction;
+            }
+        }
+
         // equality path
-        if (Aeq && Aeq->rows() > 0) {
+        if (solved_mixed) {
+            // Continue through the common prediction and globalization path.
+        } else if (Aeq && Aeq->rows() > 0) {
             auto [pE, infE] = solve_with_equalities_(
                 Hop, g, *Aeq, beq.value_or(dvec::Zero(Aeq->rows())), Aineq,
                 bineq, sparseH, denseH, x, lb, ub);
@@ -684,10 +714,21 @@ class TrustRegionManager {
 
             bool took_step = false;
 
-            if (be == TRBackend::DOGLEG && has_dense) {
+            if (sparseH && spd_hint &&
+                (cfg_.tr_method == "auto" || cfg_.tr_method == "dogleg")) {
+                if (auto dr = sparse_dogleg_step_(*sparseH, g, metric_, delta_)) {
+                    p = dr->p;
+                    info.iterations = dr->iters;
+                    info.status = dr->status;
+                    info.preconditioned = false;
+                    took_step = true;
+                }
+            }
+
+            if (!took_step && be == TRBackend::DOGLEG && has_dense) {
                 // Dense SPD dogleg
                 auto dr = dogleg_step_(*denseH, g, metric_, delta_);
-                dvec p_try = box_.active() ? box_.enforce_step(dr.p) : dr.p;
+                dvec p_try = dr.p;
 
                 info.iterations = dr.iters;
                 info.status = dr.status;
@@ -713,7 +754,7 @@ class TrustRegionManager {
                     steihaug_pcg(Hop, g, metric_, delta_, tol, cfg_.cg_maxiter,
                                  cfg_.neg_curv_tol, P, W_);
 
-                dvec p_try = box_.active() ? box_.enforce_step(cg.p) : cg.p;
+                dvec p_try = cg.p;
 
                 info.iterations = cg.iters;
                 info.status = status_to_string_(cg.status);
@@ -724,6 +765,33 @@ class TrustRegionManager {
             info.step_norm = tr_norm_(p);
             info.model_reduction = model_reduction_quad_into(Hop, g, p, W_.Hp);
             info.model_reduction_quad = info.model_reduction;
+        }
+
+        // Variable bounds belong in the subproblem. Scaling the entire step
+        // to the first bound can pin every free coordinate at a nonstationary
+        // point once one variable is active.
+        if ((!Aeq || Aeq->rows() == 0) && (!Aineq || Aineq->rows() == 0) && box_.active()) {
+            const int n = static_cast<int>(g.size());
+            const dvec lower = box_.lb ? (*box_.lb - *box_.x).eval()
+                                      : dvec::Constant(n, -std::numeric_limits<double>::infinity());
+            const dvec upper = box_.ub ? (*box_.ub - *box_.x).eval()
+                                      : dvec::Constant(n, std::numeric_limits<double>::infinity());
+            if ((p.array() < lower.array()).any() || (p.array() > upper.array()).any()) {
+                dvec diagonal = dvec::Ones(n);
+                if (denseH) diagonal = denseH->diagonal();
+                else if (sparseH) diagonal = sparseH->diagonal();
+                auto bounded = tr_detail::box_truncated_cg(
+                    [&](const dvec& v, dvec& out) { Hop.apply_into(v, out); },
+                    g, lower, upper, diagonal, delta_,
+                    std::max(cfg_.cg_tol, 1e-10 * std::max(1.0, g.norm())),
+                    std::max(cfg_.cg_maxiter, 4 * n), metric_.valid ? &metric_.M : nullptr);
+                p = std::move(bounded.step);
+                info.iterations += bounded.iterations;
+                info.status = "box_projected_cg";
+                info.step_norm = tr_norm_(p);
+                info.model_reduction = model_reduction_quad_into(Hop, g, p, W_.Hp);
+                info.model_reduction_quad = info.model_reduction;
+            }
         }
 
         // cubic prediction
@@ -967,26 +1035,27 @@ class TrustRegionManager {
         if (nn > zeta * delta_) p_n *= (zeta * delta_ / std::max(1e-16, nn));
 
         if (box_.active()) {
-            if (use_projection_()) {
-                const dvec shift =
-                    BoxCtx::pullback(*box_.x, p_n, box_.lb, box_.ub) - p_n;
-                const dvec beqNew = beq + Aeq * shift;
-                p_n = min_norm_normal_(Aeq, beqNew);
-                nn = tr_norm_(p_n);
-                if (nn > zeta * delta_)
-                    p_n *= (zeta * delta_ / std::max(1e-16, nn));
-            } else {
-                const double amax =
-                    BoxCtx::alpha_max(*box_.x, p_n, box_.lb, box_.ub);
-                if (amax < 1.0) {
-                    const dvec shift =
-                        BoxCtx::pullback(*box_.x, p_n, box_.lb, box_.ub) - p_n;
-                    const dvec beqNew = beq + Aeq * shift;
-                    p_n = min_norm_normal_(Aeq, beqNew);
-                    nn = tr_norm_(p_n);
-                    if (nn > zeta * delta_)
-                        p_n *= (zeta * delta_ / std::max(1e-16, nn));
-                }
+            const Eigen::Index n = g.size();
+            const dvec lower = box_.lb ? (*box_.lb - *box_.x).eval()
+                : dvec::Constant(n, -std::numeric_limits<double>::infinity());
+            const dvec upper = box_.ub ? (*box_.ub - *box_.x).eval()
+                : dvec::Constant(n, std::numeric_limits<double>::infinity());
+            if ((p_n.array() < lower.array()).any() ||
+                (p_n.array() > upper.array()).any()) {
+                // Minimize the linearized equality residual inside the box.
+                // Pulling back the unconstrained normal step and recomputing
+                // its minimum-norm preimage can point outside the same bound
+                // again, preventing any further feasibility progress.
+                const dvec normal_gradient = Aeq.transpose() * beq;
+                const dvec diagonal = Aeq.array().square().colwise().sum().transpose();
+                auto normal = tr_detail::box_truncated_cg(
+                    [&](const dvec& v, dvec& out) {
+                        out.noalias() = Aeq.transpose() * (Aeq * v);
+                    }, normal_gradient, lower, upper, diagonal, zeta * delta_,
+                    std::max(1e-14, 1e-10 * normal_gradient.norm()),
+                    std::max(cfg_.cg_maxiter, 4 * static_cast<int>(n)),
+                    metric_.valid ? &metric_.M : nullptr);
+                p_n = std::move(normal.step);
             }
         }
 
@@ -1020,7 +1089,26 @@ class TrustRegionManager {
         dvec p_t;
         bool took_step = false;
 
-        if (be == TRBackend::DOGLEG && has_dense) {
+        if (box_.active() && rem > 0) {
+            const dvec center = *box_.x + p_n;
+            const dvec lower = box_.lb ? (*box_.lb - center).eval()
+                : dvec::Constant(n, -std::numeric_limits<double>::infinity());
+            const dvec upper = box_.ub ? (*box_.ub - center).eval()
+                : dvec::Constant(n, std::numeric_limits<double>::infinity());
+            Hop.apply_into(p_n, W_.Hp);
+            const dvec tangent_gradient = g + W_.Hp;
+            auto bounded = tr_detail::equality_box_truncated_cg(
+                [&](const dvec& v, dvec& out) { Hop.apply_into(v, out); },
+                tangent_gradient, Aeq, lower, upper, delta_,
+                std::max(1e-12, 1e-10 * tangent_gradient.norm()),
+                std::max(cfg_.cg_maxiter, 8 * n), metric_.valid ? &metric_.M : nullptr, &p_n);
+            p_t = std::move(bounded.step);
+            info.iterations += bounded.iterations;
+            took_step = true;
+        }
+
+
+        if (!took_step && be == TRBackend::DOGLEG && has_dense) {
             // Build dense reduced problem in the nullspace of Aeq
             auto [Q2, k] = nullspace_basis_(Aeq);
             if (k > 0) {
@@ -1068,6 +1156,9 @@ class TrustRegionManager {
 
         if (!took_step) {
             // Default: Projected Steihaug-PCG
+            // A cached full-space step need not lie in this active set's
+            // nullspace. Projected CG cannot remove its normal component.
+            W_.clear_warm_start();
             const Prec Pbase =
                 has_dense ? make_prec(&*denseH, cfg_.prec_kind, cfg_.use_prec,
                                       cfg_.ssor_omega)
@@ -1090,15 +1181,6 @@ class TrustRegionManager {
         const double pt_norm = tr_norm_(p_t);
         if (pt_norm > rem) p_t *= (rem / std::max(1e-16, pt_norm));
 
-        if (box_.active()) {
-            if (use_projection_())
-                p_t = box_.enforce_step(p_n + p_t) - p_n;
-            else {
-                const double beta =
-                    BoxCtx::alpha_max(*box_.x + p_n, p_t, box_.lb, box_.ub);
-                if (beta < 1.0) p_t *= beta;
-            }
-        }
 
         dvec p = p_n + p_t;
 
@@ -1368,27 +1450,16 @@ class TrustRegionManager {
             ofs += AactT.cols();
         }
         if (nL) {
-            AT.middleCols(ofs, nL) = IL;
+            AT.middleCols(ofs, nL) = -IL;
             ofs += nL;
         }
         if (nU) {
-            AT.middleCols(ofs, nU) = -IU;
+            AT.middleCols(ofs, nU) = IU;
             ofs += nU;
         }
 
-        // Solve (AT^T AT) y = -AT^T r  (small SPD; LDLT is fine)
-        // const dmat N = AT.transpose() * AT;
-        // const dvec rhs = -AT.transpose() * r;
-        // const dvec y = N.ldlt().solve(rhs);
-
-        // Solve (AT^T AT + reg I) y = -AT^T r  using QDLDL on the upper
-        // triangle
-        const double reg = 1e-12;
-        dmat N = AT.transpose() * AT;
-        N.diagonal().array() += reg;
-        const dvec rhs = -AT.transpose() * r;
-
-        const dvec y = solve_sym_spd_qdldl(N, rhs);
+        const dvec y = tr_detail::mixed_nonnegative_least_squares(
+            AT, -r, AeqT.cols());
 
         // Unpack y -> (nu, lam, muL, muU)
         ofs = 0;
@@ -1422,12 +1493,12 @@ class TrustRegionManager {
         dvec muL = dvec::Zero(n), muU = dvec::Zero(n);
         if (nL) {
             const dvec yL = y.segment(ofs, nL);
-            for (int j = 0; j < nL; ++j) muL[idxL[j]] = std::max(0.0, -yL[j]);
+            for (int j = 0; j < nL; ++j) muL[idxL[j]] = std::max(0.0, yL[j]);
             ofs += nL;
         }
         if (nU) {
             const dvec yU = y.segment(ofs, nU);
-            for (int j = 0; j < nU; ++j) muU[idxU[j]] = std::max(0.0, -yU[j]);
+            for (int j = 0; j < nU; ++j) muU[idxU[j]] = std::max(0.0, yU[j]);
             ofs += nU;
         }
 

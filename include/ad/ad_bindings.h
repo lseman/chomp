@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "ad_graph.h"
+#include "hessian_sparsity.h"
 #include "ad/definitions.h"
 #include "expression.h"
 #include "operators.h" // enum Operator + math free-functions
@@ -711,6 +712,9 @@ public:
     mutable std::mutex      eval_mtx_;
     std::vector<double>     hess_V_, hess_Y_;
 
+    ad_detail::HessianSparsity hessian_pattern_;
+    bool hessian_pattern_ready_ = false;
+
     void prepare_hessian_workspace_(size_t n, size_t lanes) {
         const size_t size = n * lanes;
         if (hess_V_.size() != size) hess_V_.resize(size);
@@ -826,30 +830,45 @@ public:
         std::lock_guard lock(eval_mtx_);
         set_state_eigen(x_in, lam_in, nu_in);
         build_permutations_once_();
+        if (!hessian_pattern_ready_) {
+            hessian_pattern_.build(L_root, x_nodes);
+            hessian_pattern_ready_ = true;
+        }
+        const bool compressed = hessian_pattern_.compressed;
+        const size_t directions = compressed ? static_cast<size_t>(hessian_pattern_.colors) : n;
         prepare_hessian_workspace_(n, L);
-        for (size_t base = 0; base < n; base += L) {
-            const size_t k = std::min(L, n - base);
-
-            // Build k basis columns in graph index space
+        for (size_t base = 0; base < directions; base += L) {
+            const size_t k = std::min(L, directions - base);
             std::fill(hess_V_.begin(), hess_V_.end(), 0.0);
-            for (size_t j = 0; j < k; ++j) {
-                const size_t xj                                                 = base + j;
-                const int    gij                                                = x2g_[xj];
-                hess_V_[static_cast<size_t>(gij) * L + j] = 1.0;
+            if (compressed) {
+                for (size_t col = 0; col < n; ++col) {
+                    const int color = hessian_pattern_.color[col];
+                    if (color >= static_cast<int>(base) && color < static_cast<int>(base + k))
+                        hess_V_[static_cast<size_t>(x2g_[col]) * L + color - base] = 1.0;
+                }
+            } else {
+                for (size_t j = 0; j < k; ++j)
+                    hess_V_[static_cast<size_t>(x2g_[base + j]) * L + j] = 1.0;
             }
-
             g->hessianMultiVectorProduct(L_root, hess_V_.data(), L, hess_Y_.data(), L, k);
-
-            // Scatter: we only take i <= col_x (upper triangle)
-            for (size_t j = 0; j < k; ++j) {
-                const size_t col_x = base + j;
-                for (size_t gi = 0; gi < n; ++gi) {
-                    const size_t xi = static_cast<size_t>(g2x_[gi]);
-                    if (xi > col_x) continue; // keep to upper triangle
-
-                    const double val = hess_Y_[gi * L + j];
-                    if (std::abs(val) >= tol) {
-                        trips.emplace_back(static_cast<int>(xi), static_cast<int>(col_x), val);
+            if (compressed) {
+                for (size_t col = 0; col < n; ++col) {
+                    const int color = hessian_pattern_.color[col];
+                    if (color < static_cast<int>(base) || color >= static_cast<int>(base + k)) continue;
+                    for (int row : hessian_pattern_.rows[col]) {
+                        if (row > static_cast<int>(col)) break;
+                        const double val = hess_Y_[static_cast<size_t>(x2g_[row]) * L + color - base];
+                        if (std::abs(val) >= tol) trips.emplace_back(row, static_cast<int>(col), val);
+                    }
+                }
+            } else {
+                for (size_t j = 0; j < k; ++j) {
+                    const size_t col = base + j;
+                    for (size_t gi = 0; gi < n; ++gi) {
+                        const size_t row = static_cast<size_t>(g2x_[gi]);
+                        if (row > col) continue;
+                        const double val = hess_Y_[gi * L + j];
+                        if (std::abs(val) >= tol) trips.emplace_back(static_cast<int>(row), static_cast<int>(col), val);
                     }
                 }
             }

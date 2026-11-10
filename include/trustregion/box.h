@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 
 #include <core/definitions.h>
@@ -15,7 +16,8 @@ struct BoxCtx {
     BoxMode mode{BoxMode::Alpha};
 
     [[nodiscard]] inline bool active() const noexcept {
-        return x && (lb || ub);
+        return x && ((lb && lb->array().isFinite().any()) ||
+                     (ub && ub->array().isFinite().any()));
     }
 
     static double alpha_max(const dvec& x, const dvec& d,
@@ -23,7 +25,7 @@ struct BoxCtx {
                             const std::optional<dvec>& ub,
                             double tau = 0.999999) {
         if ((!lb && !ub) || d.size() == 0) return 1.0;
-        double amax = 1.0;
+        double amax = std::numeric_limits<double>::infinity();
         if (lb) {
             for (int i = 0; i < d.size(); ++i)
                 if (d[i] < 0.0) amax = std::min(amax, ((*lb)[i] - x[i]) / d[i]);
@@ -32,8 +34,9 @@ struct BoxCtx {
             for (int i = 0; i < d.size(); ++i)
                 if (d[i] > 0.0) amax = std::min(amax, ((*ub)[i] - x[i]) / d[i]);
         }
-        amax = std::clamp(amax, 0.0, 1.0);
-        return std::clamp(tau * amax, 0.0, 1.0);
+        // Apply the safety fraction to the distance to a bound, then cap at
+        // one. Inactive (including infinite) bounds must allow full steps.
+        return std::clamp(tau * std::max(0.0, amax), 0.0, 1.0);
     }
 
     static dvec pullback(const dvec& x, const dvec& p,

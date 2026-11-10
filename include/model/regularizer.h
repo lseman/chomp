@@ -3,13 +3,14 @@
 // Key improvements: SIMD, better caching, randomized eigenvalue estimation,
 // memory management
 
-#include <Eigen/src/IterativeLinearSolvers/IncompleteLUT.h>
+#include <Eigen/IterativeLinearSolvers>
 
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
+#include "sparse_regularization.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -217,6 +218,7 @@ struct RegConfig {
     // Matrix size thresholds
     int small_matrix_threshold{500};
     int large_matrix_threshold{5000};
+    int sparse_factorization_threshold{64};
 };
 
 struct RegInfo {
@@ -236,7 +238,6 @@ class Regularizer {
     mutable double sigma_{1e-8};
     mutable std::unordered_map<uint64_t, std::pair<double, double>>
         bounds_cache_;
-    mutable std::unordered_map<uint64_t, bool> symmetry_cache_;
 
    public:
     explicit Regularizer(RegConfig cfg = {}) : cfg_(std::move(cfg)) {}
@@ -250,6 +251,18 @@ class Regularizer {
 
         // Step 1: Symmetrization
         spmat H = make_symmetric_(H_in);
+
+        if (H.rows() >= cfg_.sparse_factorization_threshold) {
+            auto result = regularize_sparse_inertia(H, cfg_.sigma_min, cfg_.target_cond);
+            info.mode = "SPARSE_INERTIA";
+            info.sigma = result.shift;
+            // Inertia certifies definiteness; it does not estimate eigenvalues.
+            info.min_eig_before = info.cond_before = std::numeric_limits<double>::quiet_NaN();
+            info.min_eig_after = info.cond_after = std::numeric_limits<double>::quiet_NaN();
+            info.nnz_after = result.matrix.nonZeros();
+            info.converged = true;
+            return {std::move(result.matrix), info};
+        }
 
         // Step 2: Spectral bounds
         auto [min_eig, max_eig, converged] = get_spectral_bounds_(H);
@@ -312,44 +325,11 @@ class Regularizer {
     }
 
    private:
-    // Symmetrization with better caching
+    // Symmetrize deterministically: an inertia certificate applies to the
+    // symmetric matrix, not a random sample of its entries.
     spmat make_symmetric_(const spmat& A) const {
-        if (A.rows() != A.cols()) return A;
-
-        const int n = A.rows();
-
-        // For very small matrices, just check directly
-        if (n < 50) {
-            if (is_symmetric_small_(A)) return A;
-            spmat Asym = A;
-            const spmat AT = A.transpose();
-            Asym += AT;
-            Asym *= 0.5;
-            Asym.prune(1e-14);
-            return Asym;
-        }
-
-        // Hash-based caching
-        if (cfg_.enable_cache) {
-            uint64_t hash = compute_hash_(A);
-            auto it = symmetry_cache_.find(hash);
-            if (it != symmetry_cache_.end()) {
-                return it->second ? A : symmetrize_fast_(A);
-            }
-
-            bool is_sym = is_symmetric_sampled_(A);
-            symmetry_cache_[hash] = is_sym;
-
-            // Simple cache management
-            if (symmetry_cache_.size() > cfg_.max_cache_size) {
-                symmetry_cache_.clear();
-            }
-
-            if (is_sym) return A;
-        } else {
-            if (is_symmetric_sampled_(A)) return A;
-        }
-
+        if (A.rows() != A.cols())
+            throw std::invalid_argument("regularization: matrix must be square");
         return symmetrize_fast_(A);
     }
 
@@ -362,45 +342,18 @@ class Regularizer {
         return Asym;
     }
 
-    bool is_symmetric_small_(const spmat& A) const {
-        for (int k = 0; k < A.outerSize(); ++k) {
-            for (spmat::InnerIterator it(A, k); it; ++it) {
-                if (std::abs(it.value() - A.coeff(it.col(), it.row())) >
-                    1e-12) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    bool is_symmetric_sampled_(const spmat& A) const {
-        const int n = A.rows();
-        const int samples = std::min(100, n / 10);  // More samples but capped
-
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(0, n - 1);
-
-        for (int k = 0; k < samples; ++k) {
-            int i = dis(gen);
-            int j = dis(gen);
-            if (i != j && std::abs(A.coeff(i, j) - A.coeff(j, i)) > 1e-11) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     uint64_t compute_hash_(const spmat& A) const {
         uint64_t hash = A.rows();
         hash = hash * 31 + A.cols();
         hash = hash * 31 + A.nonZeros();
 
-        // Sample diagonal and a few off-diagonal elements
-        const int n = std::min(16, static_cast<int>(A.rows()));
-        for (int i = 0; i < n; ++i) {
-            hash = hash * 31 + std::hash<double>{}(A.coeff(i, i));
+        // Spectral bounds depend on every value, including off-diagonals.
+        for (int j = 0; j < A.outerSize(); ++j) {
+            hash = hash * 31 + j;
+            for (spmat::InnerIterator it(A, j); it; ++it) {
+                hash = hash * 31 + it.row();
+                hash = hash * 31 + std::hash<double>{}(it.value());
+            }
         }
 
         return hash;
@@ -494,6 +447,18 @@ class Regularizer {
             return compute_approximate_bounds_(H);
         }
 #else
+        // Diagonal matrices are common (quadratic and separable models).
+        bool diagonal = true;
+        for (int j = 0; j < H.outerSize() && diagonal; ++j)
+            for (spmat::InnerIterator it(H, j); it; ++it)
+                if (it.row() != j && it.value() != 0.0) { diagonal = false; break; }
+        if (diagonal) {
+            const dvec d = H.diagonal();
+            return {d.minCoeff(), d.maxCoeff(), true};
+        }
+        Eigen::SelfAdjointEigenSolver<dmat> es(dmat(H), Eigen::EigenvaluesOnly);
+        if (es.info() == Eigen::Success)
+            return {es.eigenvalues().minCoeff(), es.eigenvalues().maxCoeff(), true};
         return compute_approximate_bounds_(H);
 #endif
     }
@@ -532,8 +497,8 @@ class Regularizer {
         }
 
         // Combine bounds
-        double min_eig = std::max(min_diag, min_gershgorin);
-        double max_eig = std::min(max_diag, max_gershgorin);
+        double min_eig = min_gershgorin;
+        double max_eig = max_gershgorin;
 
         return {min_eig, max_eig, false};  // Mark as approximate
     }
@@ -605,7 +570,7 @@ class Regularizer {
 
         // For smaller matrices, use low-rank eigenvalue modification
         if (cfg_.use_low_rank_update) {
-            return eigen_modification_low_rank_(H, target_min);
+            return eigen_modification_low_rank_(H, target_min, min_eig);
         } else {
             double shift = target_min - min_eig;
             return tikhonov_(H, shift);
@@ -613,7 +578,7 @@ class Regularizer {
     }
 
     spmat eigen_modification_low_rank_(const spmat& H,
-                                       double target_min) const {
+                                       double target_min, double min_eig) const {
         const int n = H.rows();
         const int nev = std::min(cfg_.k_eigs, n / 8);  // Conservative choice
 
@@ -655,7 +620,7 @@ class Regularizer {
         }
 #endif
 
-        double shift = std::max(0.0, target_min - H.diagonal().minCoeff());
+        double shift = std::max(0.0, target_min - min_eig);
         return tikhonov_(H, shift);
     }
 

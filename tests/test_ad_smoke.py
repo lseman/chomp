@@ -142,3 +142,22 @@ def test_lagrangian_hessian_keeps_mutable_multiplier_terms():
     V = np.column_stack((v, np.array([1.0, 2.0])))
     assert_close(lag_hess.hvp_numpy(x, lam, nu, v), expected @ v)
     assert_close(lag_hess.hvp_multi_numpy(x, lam, nu, V), expected @ V)
+
+
+def test_many_rewrites_preserve_repeated_users_and_derivatives():
+    n = 50
+
+    def objective(x):
+        terms = []
+        for i in range(n):
+            a = x[i] + 1.0
+            # Repeated input slots, multiple users, and algebraically
+            # equivalent subexpressions exercise incremental graph rewiring.
+            terms.append(a * a + (1.0 + x[i]) * (x[i] + 1.0))
+        return sum(terms)
+
+    grad = ad.sym_grad(objective, n, vector_input=True)
+    hess = ad.sym_hess(objective, n, vector_input=True)
+    for x in (np.linspace(-2.0, 3.0, n), np.linspace(0.2, 0.8, n)):
+        assert_close(grad(x), 4.0 * (x + 1.0))
+        assert_close(hess(x), 4.0 * np.eye(n))

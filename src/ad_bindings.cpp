@@ -1,5 +1,6 @@
 // ad.cpp — nanobind + NumPy fast paths + GIL release (C++23, de-duplicated)
 #include <nanobind/eigen/dense.h>
+#include <nanobind/eigen/sparse.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
@@ -264,6 +265,8 @@ NB_MODULE(ad, m) {
         .def("set_state", &LagHessFn::set_state_numpy, "x"_a, "lam"_a, "nu"_a)
         .def("hess",      &LagHessFn::hess_numpy,      "x"_a, "lam"_a, "nu"_a,
              "Return full Hessian (ndarray[n,n])")
+        .def("hess_sparse", &LagHessFn::hess_sparse, "x"_a, "lam"_a, "nu"_a, "tol"_a = 1e-12,
+             "Return a sparse Lagrangian Hessian using structural column coloring.")
         .def("hvp_numpy", &LagHessFn::hvp_numpy,       "x"_a, "lam"_a, "nu"_a, "v"_a,
              "Return H·v (ndarray[n])")
         .def("hvp_multi_numpy", &LagHessFn::hvp_multi_numpy,

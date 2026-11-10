@@ -35,13 +35,6 @@
 #include <linear_system/qdldl/qdldl.h>
 #include <linear_system/supernodes.h>
 
-#include <pybind11/eigen.h>
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-
-namespace py = pybind11;
-
 namespace kkt {
 
 // ------------------------------ typedefs ------------------------------

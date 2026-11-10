@@ -76,7 +76,8 @@ class Filter {
         const double theta_scale =
             initial_theta_.value_or(std::max(theta, 1.0));
         const double f_scale = initial_f_.value_or(std::max(std::abs(f), 1.0));
-        const double eps = 1e-8 * std::max(theta_scale, f_scale);
+        const double eps = 32.0 * std::numeric_limits<double>::epsilon() *
+                           std::max({1.0, theta_scale, f_scale});
 
         // Check against all filter entries
         for (const auto& e : entries_) {
@@ -84,12 +85,11 @@ class Filter {
 
             // Forbidden region check
             if (theta >= (1.0 - gθ) * t_i - eps &&
-                f >= e.f - gf * theta - eps) {
+                f >= e.f - gf * theta + eps) {
                 // Switching rescue mechanism
-                const double swθ = cfg_.switch_theta * theta_scale;
                 const double swf = cfg_.switch_f * f_scale;
 
-                if (theta < swθ || f < e.f - swf) {
+                if (f < e.f - swf) {
                     continue;  // Rescue successful
                 }
                 return false;  // In forbidden region, no rescue
@@ -111,7 +111,8 @@ class Filter {
         if (!initial_f_) initial_f_ = std::max(std::abs(f), 1e-8);
 
         const auto [gθ, gf] = compute_margins_(trust_radius);
-        const double eps = 1e-8 * std::max(*initial_theta_, *initial_f_);
+        const double eps = 32.0 * std::numeric_limits<double>::epsilon() *
+                           std::max({1.0, *initial_theta_, *initial_f_});
 
         // Check dominance and build new filter
         std::vector<Entry> kept;

@@ -140,8 +140,8 @@ struct ChompConfig : public kkt::KKTConfig {
     double ip_theta_clip = 1e-2;
     double ip_slack_init_min = 1e-6;
     double ip_slack_init_pad = 1e-3;
-    double sigma_eps_abs = 1e-8;
-    double sigma_cap = 1e8;
+    double sigma_eps_abs = 1e-12;
+    double sigma_cap = 1e12;
     std::string ip_kkt_method = "hykkt";
     double ip_tr_init = 1e3;
     double ip_penalty_rho_init = 1.0;

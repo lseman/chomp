@@ -24,7 +24,7 @@ import ad
 # Reference baselines (measured on CI baseline commit, in µs per call)
 # --------------------------------------------------------------------------- #
 # These are *maximum acceptable* values — the benchmark must be AT LEAST this
-# fast.  If your hardware changes, regenerate these with --regen.
+# fast.  If your hardware changes, remeasure these and update REFERENCE.
 REFERENCE = {
     # n=10 valgrad (µs)  — mid-size workload, most common in the solver
     "valgrad_10": 80.0,
@@ -73,8 +73,8 @@ def run_benchmarks(threshold_pct=DEFAULT_THRESHOLD):
     results = {}
     failures = []
 
-    for name, x in [("n10", rng.standard_normal(10)),
-                    ("n50", rng.standard_normal(50))]:
+    for name, x in [("10", rng.standard_normal(10)),
+                    ("50", rng.standard_normal(50))]:
         f = make_workload(len(x))
         # Warm up once
         ad.valgrad(f, x)
@@ -87,17 +87,17 @@ def run_benchmarks(threshold_pct=DEFAULT_THRESHOLD):
         results[f"hess_{name}"] = round(h_us, 2)
 
         # Check valgrad
-        n = name[1:]  # "n10" -> "10"
+        n = name
         key = f"valgrad_{n}"
         if key in REFERENCE:
             ref = REFERENCE[key]
             deviation = ((vg_us - ref) / ref) * 100
             dev_key = f"valgrad_{n}_dev"
             results[dev_key] = round(deviation, 2)
-            if deviation < -threshold_pct:
+            if deviation > threshold_pct:
                 failures.append(
                     f"valgrad {name}: {vg_us:.1f} µs vs ref {ref:.1f} µs "
-                    f"({deviation:.1f}% vs -{threshold_pct}% threshold)"
+                    f"({deviation:.1f}% vs +{threshold_pct}% threshold)"
                 )
 
         # Check hess
@@ -107,10 +107,10 @@ def run_benchmarks(threshold_pct=DEFAULT_THRESHOLD):
             deviation = ((h_us - ref) / ref) * 100
             dev_key = f"hess_{n}_dev"
             results[dev_key] = round(deviation, 2)
-            if deviation < -threshold_pct:
+            if deviation > threshold_pct:
                 failures.append(
                     f"hess {name}: {h_us:.1f} µs vs ref {ref:.1f} µs "
-                    f"({deviation:.1f}% vs -{threshold_pct}% threshold)"
+                    f"({deviation:.1f}% vs +{threshold_pct}% threshold)"
                 )
 
     return results, failures
@@ -136,8 +136,8 @@ def main():
             continue
         dev_key = key + "_dev"
         dev = results.get(dev_key, "N/A")
-        ref_str = "N/A" if dev == "N/A" else f"{dev}% "
-        print(f"{key:>20} | {results[key]:>10.2f} {'N/A':>10} {f'{dev}%':>10}")
+        ref = REFERENCE.get(key, "N/A")
+        print(f"{key:>20} | {results[key]:>10.2f} {ref:>10} {f'{dev}%':>10}")
 
     # Also output JSON for CI parsing
     json_out = {k: v for k, v in results.items() if not k.endswith("_dev")}
@@ -154,7 +154,7 @@ def main():
         print("Or increase --threshold if the drop is acceptable.")
         sys.exit(1)
     else:
-        print(f"\n✓ All checks within ±{args.threshold}% threshold.")
+        print(f"\n✓ All checks within +{args.threshold}% slowdown threshold.")
         sys.exit(0)
 
 

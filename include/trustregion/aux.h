@@ -5,6 +5,7 @@
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
 #include <Eigen/SparseCore>
+#include <Eigen/SparseCholesky>
 
 // ====== STL ======
 #include <algorithm>
@@ -36,6 +37,31 @@ struct DoglegResult {
     int iters = 1;
     const char* status = "dogleg";
 };
+
+[[nodiscard]] inline std::optional<DoglegResult> sparse_dogleg_step_(
+    const spmat& H, const dvec& g, const Metric& M, double delta) {
+    if (g.size() == 0) return DoglegResult{g, 0, "sparse_dogleg_empty"};
+    Eigen::SimplicialLDLT<spmat> factor;
+    factor.compute(H);
+    if (factor.info() != Eigen::Success || !factor.vectorD().allFinite() ||
+        factor.vectorD().minCoeff() <= 0.0) return std::nullopt;
+    const dvec pN = factor.solve(-g);
+    if (!pN.allFinite()) return std::nullopt;
+    const double denominator = H.norm() * pN.norm() + g.norm();
+    if (denominator > 0.0 && (H * pN + g).norm() > 1e-8 * denominator) return std::nullopt;
+    auto norm = [&](const dvec& p) { return M.valid ? M.norm(p) : p.norm(); };
+    if (norm(pN) <= delta) return DoglegResult{pN, 1, "sparse_dogleg_newton"};
+    const dvec Hg = H * g;
+    const double curvature = g.dot(Hg);
+    if (!(curvature > 0.0)) return std::nullopt;
+    const dvec pC = -(g.squaredNorm() / curvature) * g;
+    const double cauchy_norm = norm(pC);
+    if (cauchy_norm >= delta)
+        return DoglegResult{(delta / cauchy_norm) * pC, 1, "sparse_dogleg_cauchy_boundary"};
+    const dvec direction = pN - pC;
+    const double tau = detail::boundary_intersection_metric(M, pC, direction, delta);
+    return DoglegResult{pC + std::clamp(tau, 0.0, 1.0) * direction, 1, "sparse_dogleg_interpolate"};
+}
 
 DoglegResult dogleg_step_(const dmat& Hspd, const dvec& g, const Metric& M,
                           double delta) {
@@ -323,9 +349,17 @@ struct CGResult {
         // Warm-start: use previous solution as initial guess
         // Recompute residual: r = -g - H*p
         p = W.p_warm_start;
+        const double warm_norm = M.norm(p);
+        if (warm_norm > Delta && warm_norm > 0.0) p *= Delta / warm_norm;
         r = -g;
         H_apply(H, p, W.Hd);
         r.noalias() -= W.Hd;
+        // The Hessian and gradient may have changed since the cached solve.
+        // Start from zero if the old point is worse than the zero step.
+        if (g.dot(p) + 0.5 * p.dot(W.Hd) > 0.0) {
+            p.setZero();
+            r = -g;
+        }
         // Precondition residual
         P.apply_into(r, z);
         d = z;
