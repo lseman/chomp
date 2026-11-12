@@ -163,6 +163,10 @@ int main() {
     auto mixed=tr_detail::mixed_linear_qp(qp_hessian,qp_gradient,qp_eq,qp_eq_res,
         qp_ineq,qp_ineq_res,qp_lo,qp_hi);
     assert(mixed && (*mixed-Eigen::Vector2d(0,1)).norm()<1e-6);
+    // Returned bounds must hold exactly, not merely to QP feasibility
+    // tolerance: callers may apply a fraction-to-boundary step length.
+    assert((mixed->array() >= qp_lo.array()).all());
+    assert((mixed->array() <= qp_hi.array()).all());
     // An infeasible linearization must leave the restoration fallback available.
     qp_ineq=qp_eq;qp_ineq_res << 0;
     mixed=tr_detail::mixed_linear_qp(qp_hessian,qp_gradient,qp_eq,qp_eq_res,

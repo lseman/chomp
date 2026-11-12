@@ -1,3 +1,5 @@
+#pragma once
+
 // ip_cpp.cpp — optimized, modernized C++23 version (behavior preserved)
 
 #include <nanobind/eigen/dense.h>  // dense Eigen

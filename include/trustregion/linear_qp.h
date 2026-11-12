@@ -45,7 +45,11 @@ inline std::optional<Eigen::VectorXd> mixed_linear_qp(
         auto result=solver.solve();
         if(result.status!="solved" || !result.x.allFinite() || !result.z.allFinite() || !result.y.allFinite())
             return std::nullopt;
-        const auto& p=result.x;
+        // The QP certificate permits roundoff-sized bound violations. Remove
+        // them before certifying the returned step: a tiny outward component
+        // at an already active bound makes fraction-to-boundary scaling zero
+        // and would discard progress in every other coordinate.
+        const Eigen::VectorXd p=result.x.cwiseMax(lower).cwiseMin(upper);
         const Eigen::VectorXd slack=rhs-constraints*p;
         Eigen::VectorXd stationarity=hessian*p+gradient+constraints.transpose()*result.z;
         if(eq) stationarity.noalias()+=eq->transpose()*result.y;

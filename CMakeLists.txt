@@ -493,6 +493,7 @@ if(BUILD_TESTING)
   add_test(NAME box_qp COMMAND test_box_qp)
 
   set(CHOMP_PYTHON_TESTS
+    chomp_driver tests/test_chomp_driver.py
     chomp_ip_smoke tests/test_chomp_ip_smoke.py
     chomp_ip_bounds tests/test_chomp_ip_bounds.py
     chomp_negative_curvature tests/test_chomp_negative_curvature.py

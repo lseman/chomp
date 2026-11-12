@@ -1,3 +1,5 @@
+#pragma once
+
 // sqp_stepper.cpp
 // C++23 + nanobind implementation of the Python SQPStepper
 // - Instantiates native TrustRegionManager (no TR passed from Python)

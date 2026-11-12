@@ -1,246 +1,54 @@
-// nlp_hybrid_cpp_nb.cpp
-// C++23 + nanobind hybrid NLP solver wrapper (IP + SQP)
-// Build target name suggestion: `chomp`
-//
-// Requires:
-//   - nanobind (with Eigen support)
-//   - Eigen
-//   - fmt
-//   - Your C++ IP/SQP headers: include/ip/stepper.h,
-//     include/sqp/stepper.h
-//
-// Notes:
-//   * We accept/return Eigen vectors (nanobind auto-converts to/from NumPy).
-//   * Bounds (lb/ub) can be None or 1-D arrays; we forward as Eigen vectors.
-
-#include <fmt/color.h>
-#include <fmt/core.h>
-#include <fmt/format.h>
+// Python interface and interpreter-shutdown resource cleanup for CHOMP.
 #include <nanobind/eigen/dense.h>
 #include <nanobind/nanobind.h>
-#include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
-
-#include <Eigen/Core>
-#include <chrono>
-#include <cmath>
-#include <iostream>
-#include <memory>
+#include <nlp/solver.h>
+#include <nlp/iteration_output.h>
 #include <mutex>
-#include <optional>
-#include <string>
 #include <vector>
-
-#include <ip/stepper.h>
-#include <model/model.h>
-#include <sqp/stepper.h>
 
 namespace nb = nanobind;
 using nb::arg;
-using dvec = Eigen::VectorXd;
 
-// -------------------- small helpers --------------------
-
-inline bool has_attr(const nb::object &o, const char *name) { return nb::hasattr(o, name); }
-
-template <typename T>
-inline void ensure_attr(nb::object &cfg, const char *name, T value) {
-    if (!nb::hasattr(cfg, name)) { cfg.attr(name) = nb::cast(std::move(value)); }
-}
-
-template <typename T>
-inline void ensure_attr_from_alias(nb::object &cfg, const char *name, const char *alias, const T &fallback) {
-    if (!nb::hasattr(cfg, name)) { cfg.attr(name) = nb::cast(get_attr_or<T>(cfg, alias, fallback)); }
-}
-
-inline double get_float_attr_or(const nb::object &o, const char *name, double defval) {
-    if (!nb::hasattr(o, name)) return defval;
-    try {
-        return nb::cast<double>(o.attr(name));
-    } catch (...) { return defval; }
-}
-
-inline std::string get_str_attr_or(const nb::object &o, const char *name, const std::string &defval) {
-    if (!nb::hasattr(o, name)) return defval;
-    try {
-        return nb::cast<std::string>(o.attr(name));
-    } catch (...) { return defval; }
-}
-
-inline bool get_bool_attr_or(const nb::object &o, const char *name, bool defval) {
-    if (!nb::hasattr(o, name)) return defval;
-    try {
-        return nb::cast<bool>(o.attr(name));
-    } catch (...) { return defval; }
-}
-
-inline nb::object make_default_config_object() { return nb::cast(ChompConfig{}); }
-
-inline void ensure_config_aliases(nb::object &cfg) {
-    ensure_attr_from_alias(cfg, "tr_delta0", "delta0", 1.0);
-    ensure_attr_from_alias(cfg, "delta0", "tr_delta0", 1.0);
-    ensure_attr_from_alias(cfg, "tr_norm_type", "norm_type", std::string("2"));
-    ensure_attr_from_alias(cfg, "norm_type", "tr_norm_type", std::string("2"));
-}
-
-// -------------------- Printer --------------------
-static void print_iteration_row(int k, const SolverInfo &info, const std::string &mode, int last_header_ref,
-                                bool force_header = false) {
-    using fmt::color;
-    using fmt::emphasis;
-    using fmt::fg;
-
-    static bool                  banner_printed = false;
-    static std::optional<double> f_prev;
-    static std::optional<double> theta_prev;
-
-    if (!banner_printed) {
-        fmt::print(fg(color::cyan) | emphasis::bold, "\nCHOMP");
-        fmt::print(fg(color::light_gray) | emphasis::bold, " — made by ");
-        fmt::print(fg(color::white) | emphasis::bold, "L. O. Seman\n");
-        banner_printed = true;
-    }
-
-    if (force_header || k == 0 || (k - last_header_ref) >= 20) {
-        fmt::print(fg(color::light_gray) | emphasis::bold, " {:>3s} {:>3s} {:>12s} {:>13s} {:>11s} {:>9s} {:>9s}\n",
-                   "k", "st", "step", "f", "theta", "alpha", "Δ");
-    }
-
-    auto trend_color = [](std::optional<double> prev, double val) -> fmt::color {
-        if (!prev.has_value() || std::isnan(val)) return color::white;
-        return color::white; // (simple neutral trend color for now)
-    };
-    const auto f_col     = trend_color(f_prev, info.f);
-    const auto theta_col = trend_color(theta_prev, info.theta);
-    const auto st_col    = info.accepted ? color::green : color::red;
-
-    fmt::print(" {:>3d} ", k);
-    fmt::print(fg(st_col) | emphasis::bold, "{:>3s} ", info.accepted ? "A" : "R");
-
-    fmt::print("{:>12.3e} ", info.step_norm);
-    fmt::print(fg(f_col), "{:>13.6e} ", info.f);
-    fmt::print(fg(theta_col), "{:>11.3e} ", info.theta);
-    fmt::print("{:>9.2e} {:>9.2e}\n", info.alpha, info.tr_radius);
-
-    if (!std::isnan(info.f)) f_prev = info.f;
-    if (!std::isnan(info.theta)) theta_prev = info.theta;
-}
-
-// ==================== NLPSolver (nanobind) ====================
-
-class chomp {
+class chomp : public nlp::Solver {
 public:
-    ~chomp() {
-        close();
-        unregister_instance_(this);
-    }
-
-    chomp(nb::object  f,
-          nb::object  c_ineq_list, // list[Callable] or None
-          nb::object  c_eq_list,   // list[Callable] or None
-          nb::object  lb_or_none,  // None or 1-D array-like
-          nb::object  ub_or_none,  // None or 1-D array-like
-          const dvec &x0,          // 1-D
-          nb::object  cfg_or_none) // None or config-like
-    {
+    chomp(nb::object f, nb::object cI, nb::object cE, nb::object lb,
+          nb::object ub, const dvec &x0, nb::object cfg)
+        : nlp::Solver(f, cI, cE, lb, ub, x0, cfg) {
         register_instance_(this);
-        // --- config ---
-        cfg_ = cfg_or_none.is_none() ? make_default_config_object() : cfg_or_none;
-        ensure_config_aliases(cfg_);
-        ensure_auto_defaults_(cfg_);
+    }
+    ~chomp() { unregister_instance_(this); }
 
-        // --- x0 (state) ---
-        x_ = x0;
-        n_ = static_cast<int>(x_.size());
-
-        // Default empty bounds
-        nb::object lb_py = nb::cast(dvec()); // size 0
-        nb::object ub_py = nb::cast(dvec()); // size 0
-
-        // lb
-        if (!lb_or_none.is_none()) {
-            try {
-                dvec lb_vec = nb::cast<dvec>(lb_or_none);
-                if (lb_vec.size() > 0) lb_py = nb::cast(std::move(lb_vec));
-            } catch (...) {
-                // keep empty if cast fails
-            }
-        }
-        // ub
-        if (!ub_or_none.is_none()) {
-            try {
-                dvec ub_vec = nb::cast<dvec>(ub_or_none);
-                if (ub_vec.size() > 0) ub_py = nb::cast(std::move(ub_vec));
-            } catch (...) {
-                // keep empty if cast fails
-            }
-        }
-        // Equalities/inequalities sizes
-        mI_ = c_ineq_list.is_none() ? 0 : static_cast<int>(nb::len(c_ineq_list));
-        mE_ = c_eq_list.is_none() ? 0 : static_cast<int>(nb::len(c_eq_list));
-
-        // Multipliers
-        lam_ = dvec::Zero(mI_);
-        nu_  = dvec::Zero(mE_);
-
-        // Mode selection
-        std::string mode = get_str_attr_or(cfg_, "mode", "auto");
-        if (mode != "ip" && mode != "sqp" && mode != "auto" && mode != "dfo") mode = "auto";
-        mode_ = mode;
-
-        try {
-            model_owner_ = std::make_unique<ModelC>(f, c_ineq_list, c_eq_list, n_, lb_or_none, ub_or_none);
-        } catch (const std::exception &e) {
-            throw std::runtime_error(std::string("chomp: ModelC construction failed: ") + e.what());
-        }
-        ModelC *m = model_owner_.get();
-
-        try {
-            const bool print_convexity_analysis = get_bool_attr_or(cfg_, "print_convexity_analysis", false);
-            m->run_convexity_analysis(print_convexity_analysis);
-        } catch (const std::exception &e) {
-            throw std::runtime_error(std::string("chomp: convexity analysis failed: ") + e.what());
-        }
-
-        // IP stepper + state
-        try {
-            ip_state_   = IPState(); // default-init
-            ip_stepper_ = std::make_unique<InteriorPointStepper>(cfg_, m);
-        } catch (const std::exception &e) {
-            throw std::runtime_error(std::string("chomp: IP stepper construction failed: ") + e.what());
-        }
-
-        // SQP stepper
-        try {
-            sqp_stepper_ = std::make_unique<SQPStepper>(cfg_, nb::none(), m);
-        } catch (const std::exception &e) {
-            throw std::runtime_error(std::string("chomp: SQP stepper construction failed: ") + e.what());
-        }
-
-        // Trackers
-        last_header_row_  = -1;
-        last_switch_iter_ = -1000000000;
-        prev_theta_.reset();
-        reject_streak_ = small_alpha_streak_ = no_progress_streak_ = 0;
+    nb::dict stats() const {
+        nb::dict out;
+        out["status"] = status();
+        out["iterations"] = iterations();
+        out["mode"] = last_info().mode;
+        out["objective"] = last_info().f;
+        out["stationarity"] = last_info().stat;
+        out["inequality_violation"] = last_info().ineq;
+        out["equality_violation"] = last_info().eq;
+        out["complementarity"] = last_info().comp;
+        out["mu"] = last_info().mu;
+        out["alpha"] = last_info().alpha;
+        out["trust_radius"] = last_info().tr_radius;
+        out["accepted"] = last_info().accepted;
+        return out;
     }
 
-    void close() {
-        if (closed_) return;
-        closed_ = true;
-
-        sqp_stepper_.reset();
-        ip_stepper_.reset();
-        model_owner_.reset();
-
-        cfg_ = nb::none();
-        x_.resize(0);
-        lam_.resize(0);
-        nu_.resize(0);
-        n_ = mI_ = mE_ = 0;
-        mode_          = "closed";
-        prev_theta_.reset();
-        reject_streak_ = small_alpha_streak_ = no_progress_streak_ = 0;
+    dvec solve(int max_iter = 100, double tol = 1e-8, bool verbose = true) {
+        // Retain the legacy argument; convergence uses config KKT tolerances.
+        (void)tol;
+        int last_header = -1;
+        auto result = nlp::Solver::solve(max_iter, [&](int k, const SolverInfo &info) {
+            if (verbose) {
+                nlp::print_iteration_row(k, info, last_header);
+                if (k == 0 || k - last_header >= 20) last_header = k;
+            }
+        });
+        if (verbose && status() == "converged")
+            fmt::print("✓ Converged at iteration {}\n", iterations() - 1);
+        return result;
     }
 
     static void cleanup_live_instances() {
@@ -256,67 +64,6 @@ public:
                 } catch (...) {}
             }
         }
-    }
-
-    // Solve; returns the final x as an Eigen vector (NumPy array in Python)
-    nb::dict stats() const {
-        nb::dict out;
-        out["status"] = status_;
-        out["iterations"] = iterations_;
-        out["mode"] = last_info_.mode;
-        out["objective"] = last_info_.f;
-        out["stationarity"] = last_info_.stat;
-        out["inequality_violation"] = last_info_.ineq;
-        out["equality_violation"] = last_info_.eq;
-        out["complementarity"] = last_info_.comp;
-        out["mu"] = last_info_.mu;
-        out["alpha"] = last_info_.alpha;
-        out["trust_radius"] = last_info_.tr_radius;
-        out["accepted"] = last_info_.accepted;
-        return out;
-    }
-
-    dvec solve(int max_iter = 100, double tol = 1e-8, bool verbose = true) {
-        if (closed_) return x_;
-        const double tol_stat = get_float_attr_or(cfg_, "tol_stat", 1e-6);
-        const double tol_feas = get_float_attr_or(cfg_, "tol_feas", 1e-6);
-        const double tol_comp = get_float_attr_or(cfg_, "tol_comp", 1e-6);
-
-        iterations_ = 0;
-        status_ = "iteration_limit";
-        for (int k = 0; k < max_iter; ++k) {
-            SolverInfo info;
-            if (mode_ == "ip") {
-                info = ip_step_(k);
-            } else if (mode_ == "sqp") {
-                info = sqp_step_(k);
-            } else if (mode_ == "dfo") {
-                // DFO not wired here; keep placeholder behavior
-                info.accepted = false;
-                info.mode     = "dfo";
-            } else {
-                throw std::runtime_error("Unknown mode: " + mode_);
-            }
-
-            last_info_ = info;
-            iterations_ = k + 1;
-            if (verbose) {
-                print_iteration_row(k, info, mode_, last_header_row_, (k == 0 || (k - last_header_row_) >= 20));
-                if (k == 0 || (k - last_header_row_) >= 20) last_header_row_ = k;
-            }
-
-            const double k_stat = info.stat;
-            const double k_ineq = info.ineq;
-            const double k_eq   = info.eq;
-            const double k_comp = info.comp;
-
-            if (k_stat <= tol_stat && k_ineq <= tol_feas && k_eq <= tol_feas && k_comp <= tol_comp) {
-                status_ = "converged";
-                if (verbose) fmt::print("✓ Converged at iteration {}\n", k);
-                break;
-            }
-        }
-        return x_;
     }
 
 private:
@@ -341,88 +88,6 @@ private:
         instances.erase(std::remove(instances.begin(), instances.end(), instance), instances.end());
     }
 
-    // ---- steps --------------------------------------------------------------
-    SolverInfo ip_step_(int it) {
-        auto [x_out, lam_out, nu_out, info] = ip_stepper_->step(x_, lam_, nu_, it, ip_state_);
-        if (info.accepted) {
-            x_   = std::move(x_out);
-            lam_ = std::move(lam_out);
-            nu_  = std::move(nu_out);
-        }
-        return info;
-    }
-
-    SolverInfo sqp_step_(int it) {
-        auto [x_out, lam_out, nu_out, info] = sqp_stepper_->step(x_, lam_, nu_, it);
-
-        if (info.accepted) {
-            if (get_bool_attr_or(cfg_, "use_watchdog", false)) {
-                watchdog_update_(x_out); // stub (no-op)
-            }
-            x_   = std::move(x_out);
-            lam_ = std::move(lam_out);
-            nu_  = std::move(nu_out);
-        }
-        return info;
-    }
-
-    // ---- config defaults ----------------------------------------------------
-    void ensure_auto_defaults_(nb::object &cfg) {
-        // Initial mode decision
-        ensure_attr(cfg, "ip_switch_theta", 1e-3);
-
-        // IP → SQP switch
-        ensure_attr(cfg, "auto_ip2sqp_theta_cut", 5e-5);
-        ensure_attr(cfg, "auto_ip2sqp_mu_cut", 1e-6);
-        ensure_attr(cfg, "auto_ip_min_iters", 3);
-
-        // SQP → IP switch
-        ensure_attr(cfg, "auto_sqp2ip_theta_blowup", 1e-2);
-        ensure_attr(cfg, "auto_sqp2ip_stall_iters", 3);
-        ensure_attr(cfg, "auto_sqp2ip_reject_streak", 2);
-        ensure_attr(cfg, "auto_sqp2ip_small_alpha_streak", 3);
-        ensure_attr(cfg, "auto_sqp_min_iters", 3);
-
-        // Hysteresis and spacing
-        ensure_attr(cfg, "auto_hysteresis_factor", 2.0);
-        ensure_attr(cfg, "auto_min_iter_between_switches", 2);
-
-        // Small step detection
-        ensure_attr(cfg, "auto_small_alpha", 1e-6);
-    }
-
-    void watchdog_update_(const dvec &x_cand) {
-        (void)x_cand; // stub no-op (port your Python watchdog if/when needed)
-    }
-
-private:
-    // Core problem bits
-    SolverInfo last_info_;
-    int iterations_{0};
-    std::string status_{"not_started"};
-    nb::object              cfg_;
-    std::unique_ptr<ModelC> model_owner_;
-
-    // Steppers
-    std::unique_ptr<InteriorPointStepper> ip_stepper_;
-    IPState                               ip_state_;
-    std::unique_ptr<SQPStepper>           sqp_stepper_;
-
-    // State
-    dvec x_;
-    dvec lam_;
-    dvec nu_;
-    int  n_{0}, mI_{0}, mE_{0};
-    bool closed_{false};
-
-    // Mode + trackers
-    std::string           mode_;
-    int                   last_header_row_{-1};
-    int                   last_switch_iter_{-1000000000};
-    std::optional<double> prev_theta_;
-    int                   reject_streak_{0};
-    int                   small_alpha_streak_{0};
-    int                   no_progress_streak_{0};
 };
 
 // -------------------- nanobind module --------------------
